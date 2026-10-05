@@ -39,7 +39,41 @@ python3 main/centroids/run.py \
 --stat-word-count 1000000 \
 --fast-mode --embeddings-only-low-token
 
-WIP: CLI will be detailed in README when project is finished.
+## Text and NLTK sources
+
+The same metrics, embeddings, clustering, UMAP visualization, and CSV/HTML
+outputs can compare individual texts from an installed NLTK corpus:
+
+```bash
+python3 main/umapper.py --nltk-corpus gutenberg --no-metrics
+python3 main/umapper.py --nltk-corpus reuters --centroid-mode word
+```
+
+To compare `.txt` files from a directory, including files in nested folders,
+use `--txt-directory`. The default maximum depth is 3; depth 0 includes only
+files directly in the selected directory:
+
+```bash
+python3 main/umapper.py --txt-directory ./documents --txt-depth 2
+```
+
+External document sources support the default mode (`--centroid-mode word`).
+YouTube channel processing remains the default when neither source option is
+provided.
+
+For small corpora such as Gutenberg corpus, use a local UMAP neighborhood and tighter
+point packing:
+
+```bash
+python3 main/umapper.py --nltk-corpus gutenberg \
+	--umap-neighbors 5 --umap-min-dist 0
+```
+
+UMAP automatically uses 5 neighbors for datasets of 30 items or fewer. The
+`--umap-neighbors`, `--umap-min-dist`, and `--umap-epochs` options override
+that behavior when needed.
+
+### WIP: More CLI will be detailed in README when project is finished.
 
 Currently in the process of proofreading code and debugging. 
 
