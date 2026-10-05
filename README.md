@@ -1,19 +1,23 @@
 # Centroids
-WIP More advanced version of my "umapper" project with many additional features. Created using AI peer programming with Github Copilot and Deepseek.
+WIP Data Analysis project. More advanced version of my "umapper" project with many, a lot of, additional features. 
 
 ## Important Features different from umapper
 
 Uses Plot.ly to make an interactive HTML output.
 
+Is not limited to just analyzing Youtube channels, it is compatible with directories of TXT files, and NTLK corpuses.
+
 Multiple new creative methods like VADER sentiment, word counts of common words and function words, perplexity, average embedding distance between words.
 
-Correlation mode to see correlation between metrics.
+Experimentation with multiple digital humanities tools and statistical methods such as MALLET, Burrows Delta, and Bayesian log-odds.
 
-Caching system to prevent redoing processes all over again.
+Correlation mode tab in HTML output to see correlation between metrics on a scatter plot. 
 
-Fast metric compute for regex word-count metrics.
+Efficient caching system to prevent redoing processes all over again.
 
-Two separate centroid modes to create a channel embedding, choose to accumulate by a number of videos or choose to accumulate by a number of words.
+Fast metric compute architecture for regex word-count metrics.
+
+In the default Youtube channel analysis mode, there are two separate centroid modes to create a channel embedding, choose to accumulate by a number of videos (like 200 videos) or choose to accumulate by a number of words (like 1 million words).
 
 ## Example
 
@@ -38,4 +42,8 @@ python3 main/centroids/run.py \
 WIP: CLI will be detailed in README when project is finished.
 
 Currently in the process of proofreading code and debugging. 
+
+## Methods
+
+Created using AI peer programming with Github Copilot and Deepseek.
 
