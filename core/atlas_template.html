@@ -259,7 +259,6 @@
             modal.style.display = 'block';
         }
 
-        // FIX: avoid Math.min(...arr) spread, which throws RangeError on large arrays.
         function calculateMetricRange(metricArray) {
             let min = Infinity;
             let max = -Infinity;
@@ -568,9 +567,6 @@
 
             const metricRangeCache = {};
 
-            // FIX: removed unused `buildMarkerSymbols` (dead code) and the unused
-            //      parameters on the focused-marker helpers. The functions now take
-            //      only what they use.
             function buildMarkerSizes() {
                 return new Array(textNames.length).fill(CONFIG.normalSize);
             }
@@ -701,7 +697,6 @@
             }
 
             function refreshFocusedTextMarker() {
-                // FIX: scope opacity restyle to base trace [0] only so the star overlay isn't affected.
                 Plotly.restyle(mainPlot, {
                     'marker.opacity': [buildMarkerOpacities()]
                 }, [0]);
@@ -710,7 +705,6 @@
                     .then(() => updateMainFocusOverlay())
                     .then(() => bringMainFocusOverlayToFront())
                     .then(() => {
-                        // FIX: guarantee the star keeps its size.
                         const overlayIdx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
                         if (overlayIdx >= 0) {
                             return Plotly.restyle(mainPlot, {
@@ -831,7 +825,6 @@
 
             function syncCurrentColorDataFromPlot() {
                 const plotData = mainPlot && mainPlot.data && mainPlot.data[0];
-                // FIX: also guard against marker.color being undefined.
                 if (!plotData || !plotData.marker || plotData.marker.color === undefined) {
                     currentColorDataForPlot = new Array(textNames.length).fill(null);
                     return;
@@ -1012,7 +1005,6 @@
                         const opacities = baseOpacities.map(opacity => opacity === 0 ? 0 : CONFIG.dimmedOpacity);
                         sizes[text.index] = CONFIG.highlightSize;
                         opacities[text.index] = 1.0;
-                        // FIX: scope restyle to base trace [0] only so the star overlay isn't affected.
                         Plotly.restyle(mainPlot, {
                             'marker.size': [sizes],
                             'marker.opacity': [opacities]
@@ -1023,7 +1015,6 @@
                                 'marker.size': [buildMarkerSizes()],
                                 'marker.opacity': [buildMarkerOpacities()]
                             }, [0]).then(() => {
-                                // FIX: restore star overlay size explicitly.
                                 const overlayIdx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
                                 if (overlayIdx >= 0) {
                                     Plotly.restyle(mainPlot, {
@@ -1939,7 +1930,6 @@
                 try {
                     const isCorrelation = (mode === 'correlation');
 
-                    // FIX: textPanel must use `flex` (not `block`) so its internal flex layout works.
                     ['metricPanel', 'colorPanel', 'textPanel'].forEach(id => {
                         const el = document.getElementById(id);
                         if (!el) return;
