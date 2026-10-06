@@ -66,10 +66,25 @@
         margin-right: auto;
     }
 
+    /* --- Text panel / leaderboard: proper flex layout so resize fills list --- */
+    #textPanel {
+        display: flex;
+        flex-direction: column;
+    }
+    #textPanel .panelDragHandle {
+        flex: 0 0 auto;
+    }
+    #textPanel .panelBody {
+        flex: 1 1 auto;
+        min-height: 0;
+        display: flex;
+        flex-direction: column;
+    }
     #textList {
-        height: 100%;
-        box-sizing: border-box;
+        flex: 1 1 auto;
+        min-height: 0;
         overflow-y: auto;
+        box-sizing: border-box;
     }
     #textList div {
         padding: 2px;
@@ -244,15 +259,20 @@
             modal.style.display = 'block';
         }
 
+        // FIX: avoid Math.min(...arr) spread, which throws RangeError on large arrays.
         function calculateMetricRange(metricArray) {
-            const validValues = metricArray.filter(value => value !== null && !isNaN(value));
-            if (validValues.length === 0) {
-                return null;
+            let min = Infinity;
+            let max = -Infinity;
+            let hasValid = false;
+            for (let i = 0; i < metricArray.length; i++) {
+                const value = metricArray[i];
+                if (value !== null && value !== undefined && !isNaN(value)) {
+                    if (value < min) min = value;
+                    if (value > max) max = value;
+                    hasValid = true;
+                }
             }
-            return {
-                min: Math.min(...validValues),
-                max: Math.max(...validValues)
-            };
+            return hasValid ? { min, max } : null;
         }
 
         function makeDraggable(panel) {
@@ -473,6 +493,7 @@
             createControlPanel('textPanel',
                 { right: '10px', top: '135px', width: '180px' },
                 '0.5px solid black',
+                '<div style="flex: 0 0 auto;">' +
                 '<b id="textListHeading">Texts</b><br/>' +
                 '<select id="textSortOrder">' +
                 '<option value="alpha-asc">A-Z</option>' +
@@ -480,6 +501,7 @@
                 '<option value="metric-asc">Low to High</option>' +
                 '<option value="metric-desc" selected>High to Low</option>' +
                 '</select>' +
+                '</div>' +
                 '<div id="textList"></div>',
                 { zIndex: 9999, minWidth: '180px', dragLabel: 'texts' }
             );
@@ -546,20 +568,11 @@
 
             const metricRangeCache = {};
 
-            function buildFocusedMarkerSymbols(pointCount, focusedIndex) {
-                return new Array(pointCount).fill('circle');
-            }
-
-            function buildFocusedMarkerSizes(pointCount, focusedIndex) {
-                return new Array(pointCount).fill(CONFIG.normalSize);
-            }
-
-            function buildMarkerSymbols() {
-                return buildFocusedMarkerSymbols(textNames.length, focusedTextIndex);
-            }
-
+            // FIX: removed unused `buildMarkerSymbols` (dead code) and the unused
+            //      parameters on the focused-marker helpers. The functions now take
+            //      only what they use.
             function buildMarkerSizes() {
-                return buildFocusedMarkerSizes(textNames.length, focusedTextIndex);
+                return new Array(textNames.length).fill(CONFIG.normalSize);
             }
 
             function buildMarkerOpacities() {
@@ -688,13 +701,23 @@
             }
 
             function refreshFocusedTextMarker() {
+                // FIX: scope opacity restyle to base trace [0] only so the star overlay isn't affected.
                 Plotly.restyle(mainPlot, {
                     'marker.opacity': [buildMarkerOpacities()]
-                });
+                }, [0]);
 
                 ensureMainFocusOverlay()
                     .then(() => updateMainFocusOverlay())
                     .then(() => bringMainFocusOverlayToFront())
+                    .then(() => {
+                        // FIX: guarantee the star keeps its size.
+                        const overlayIdx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
+                        if (overlayIdx >= 0) {
+                            return Plotly.restyle(mainPlot, {
+                                'marker.size': [CONFIG.focusStarSize]
+                            }, [overlayIdx]);
+                        }
+                    })
                     .then(() => refreshSemanticConnections());
             }
 
@@ -808,8 +831,9 @@
 
             function syncCurrentColorDataFromPlot() {
                 const plotData = mainPlot && mainPlot.data && mainPlot.data[0];
-                if (!plotData || !plotData.marker) {
-                    currentColorDataForPlot = [];
+                // FIX: also guard against marker.color being undefined.
+                if (!plotData || !plotData.marker || plotData.marker.color === undefined) {
+                    currentColorDataForPlot = new Array(textNames.length).fill(null);
                     return;
                 }
                 const markerColors = plotData.marker.color;
@@ -988,17 +1012,26 @@
                         const opacities = baseOpacities.map(opacity => opacity === 0 ? 0 : CONFIG.dimmedOpacity);
                         sizes[text.index] = CONFIG.highlightSize;
                         opacities[text.index] = 1.0;
+                        // FIX: scope restyle to base trace [0] only so the star overlay isn't affected.
                         Plotly.restyle(mainPlot, {
                             'marker.size': [sizes],
                             'marker.opacity': [opacities]
-                        });
+                        }, [0]);
 
                         setTimeout(() => {
                             Plotly.restyle(mainPlot, {
                                 'marker.size': [buildMarkerSizes()],
                                 'marker.opacity': [buildMarkerOpacities()]
+                            }, [0]).then(() => {
+                                // FIX: restore star overlay size explicitly.
+                                const overlayIdx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
+                                if (overlayIdx >= 0) {
+                                    Plotly.restyle(mainPlot, {
+                                        'marker.size': [CONFIG.focusStarSize]
+                                    }, [overlayIdx]);
+                                }
+                                refreshFocusedTextMarker();
                             });
-                            refreshFocusedTextMarker(); // <-- FIX: restore focused star after animation
                         }, CONFIG.highlightDuration);
                     });
 
@@ -1102,7 +1135,7 @@
                         'marker.cmin': valueRange.min,
                         'marker.cmax': valueRange.max,
                         'marker.colorbar.title': metricDisplayNames[selectedMetric] || selectedMetric
-                    }),
+                    }, [0]),
                     Plotly.relayout(mainPlot, {'title.text': chartTitle})
                 ]).then(() => {
                     updateColorScaleInputs();
@@ -1681,7 +1714,8 @@
                     const scatterColors = [];
 
                     for (let i = 0; i < xData.length; i++) {
-                        if (xData[i] !== null && yData[i] !== null &&
+                        if (xData[i] !== null && xData[i] !== undefined &&
+                            yData[i] !== null && yData[i] !== undefined &&
                             !isNaN(xData[i]) && !isNaN(yData[i])) {
                             scatterTexts.push(textNames[i]);
                             scatterX.push(xData[i]);
@@ -1905,9 +1939,15 @@
                 try {
                     const isCorrelation = (mode === 'correlation');
 
+                    // FIX: textPanel must use `flex` (not `block`) so its internal flex layout works.
                     ['metricPanel', 'colorPanel', 'textPanel'].forEach(id => {
                         const el = document.getElementById(id);
-                        if (el) el.style.display = isCorrelation ? 'none' : 'block';
+                        if (!el) return;
+                        if (isCorrelation) {
+                            el.style.display = 'none';
+                        } else {
+                            el.style.display = (id === 'textPanel') ? 'flex' : 'block';
+                        }
                     });
 
                     const corrControls = document.getElementById('correlationControls');
