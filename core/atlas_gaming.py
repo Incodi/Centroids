@@ -1,6 +1,6 @@
 """atlas_gaming.py
 
-Purposely informal 
+!Purposely informal 
 gaming-specific word count metrics.
 
 These metrics are only registered into ``MetricConfig.METRICS`` when the
@@ -29,7 +29,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-
+UNBELIEVABLY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bunbelievably\b']]
 FART_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bfart\w*\b', r'\bflatul\w*\b', r'\btoot(?:s|ed|ing)?\b']]
 GOD_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bgod\b']]
 BABY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
@@ -294,9 +294,11 @@ BODILY_HUMOR_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
 ACTUAL_PEAK_COMEDY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bpeak comedy\b']]
 REALLY_ACTUAL_PEAK_COMEDY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bno fucking way mr gibbs and just joe king got skibidi\'d i am so sad sobs\b']]
 
+UNBELIEVABLY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bunbelievably\b']]
 
 GAMING_METRIC_CONFIGS: Dict[str, Dict[str, Any]] = {
-    'fart_count': {'name': 'Fart', 'title_suffix': 'ITS CALLED MODDED FORTS NOT MODDED FARTS', 'compute_method': '_compute_fart_count', 'category': 'Silly & Fun Counts'},
+    'unbelievably_count': {'name': 'Unbelievably', 'title_suffix': 'an unbelievably weird word', 'compute_method': '_compute_unbelievably_count', 'category': 'Silly & Fun Counts'},
+    'fart_count': {'name': 'Fart', 'title_suffix': 'we need a fart count', 'compute_method': '_compute_fart_count', 'category': 'Silly & Fun Counts'},
     'dang_count': {'name': 'Dang...', 'title_suffix': 'Count of "dang"', 'compute_method': '_compute_dang_count', 'category': 'Silly & Fun Counts'},
     'damn_count': {'name': 'Damn...', 'title_suffix': 'Count of "damn"', 'compute_method': '_compute_damn_count', 'category': 'Silly & Fun Counts'},
     'darn_count': {'name': 'Darn...', 'title_suffix': 'Count of "darn"', 'compute_method': '_compute_darn_count', 'category': 'Silly & Fun Counts'},
@@ -532,6 +534,7 @@ class GamingMetricsMixin:
         text_lower = self._get_runtime_text_lower(tokens)
         return float(text_lower.count(letter.lower() if letter else 'a'))
 
+    def _compute_unbelievably_count(self, tokens): return self._compute_pattern_count(tokens, UNBELIEVABLY_PATTERNS)
     def _compute_fart_count(self, tokens): return self._compute_pattern_count(tokens, FART_PATTERNS)
     def _compute_god_count(self, tokens): return self._compute_pattern_count(tokens, GOD_PATTERNS)
     def _compute_baby_count(self, tokens): return self._compute_pattern_count(tokens, BABY_PATTERNS)
