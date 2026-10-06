@@ -3,3 +3,5 @@ data/
 cache/
 __pycache__
 SBERTClustersHD.html
+core/SBERTClustersHD.html
+core/data/output/
