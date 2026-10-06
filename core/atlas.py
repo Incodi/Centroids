@@ -1452,6 +1452,9 @@ class TextClassifier(TextMetricsMixin):
         filters = {k: v for k, v in filter_kwargs.items() if v is not None}
         cache_filters = {k: v for k, v in filters.items() if k in CACHE_FILTER_KEYS}
         cache_filters.update(self.embedding_cache_signature)
+        cache_filters['metric_signature'] = hashlib.md5(
+            ','.join(sorted(MetricConfig.get_metric_names())).encode('utf-8')
+        ).hexdigest()[:12]
 
         safe_text = sanitize_filename(text)
         txt_dir = self.processor.base_dir / "data/input" / safe_text / "txt_files"
@@ -1636,6 +1639,9 @@ class TextClassifier(TextMetricsMixin):
         cache_filters['centroid_words'] = int(self.centroid_words)
         cache_filters['stat_word_count'] = int(self.stat_word_count)
         cache_filters.update(self.embedding_cache_signature)
+        cache_filters['metric_signature'] = hashlib.md5(
+            ','.join(sorted(MetricConfig.get_metric_names())).encode('utf-8')
+        ).hexdigest()[:12]
 
         if self.centroid_mode == 'video':
             min_stat_tokens = (

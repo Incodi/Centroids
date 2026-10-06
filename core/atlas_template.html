@@ -1,4 +1,4 @@
-    <style>
+<style>
     * {
         font-family: Arial, sans-serif;
     }
@@ -67,7 +67,8 @@
     }
 
     #textList {
-        max-height: 600px;
+        height: 100%;
+        box-sizing: border-box;
         overflow-y: auto;
     }
     #textList div {
@@ -997,6 +998,7 @@
                                 'marker.size': [buildMarkerSizes()],
                                 'marker.opacity': [buildMarkerOpacities()]
                             });
+                            refreshFocusedTextMarker(); // <-- FIX: restore focused star after animation
                         }, CONFIG.highlightDuration);
                     });
 

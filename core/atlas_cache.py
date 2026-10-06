@@ -290,7 +290,7 @@ class SimpleCache:
                 'metrics': metrics
             }
 
-            if chunk_embs is not None and mean_emb is not None:
+            if mean_emb is not None:
                 np.save(npy_path, {
                     'chunk_embs': chunk_embs,
                     'mean_emb': mean_emb,
