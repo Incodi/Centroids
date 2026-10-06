@@ -1,4 +1,4 @@
-""" umapper_educational.py
+""" atlas_educational.py
 Broad educational / knowledge-domain word-count metrics.
 
 This is an educational counterpart to the original niche-specific metric module.

@@ -1,4 +1,4 @@
-"""umapper_gaming.py
+"""atlas_gaming.py
 
 Purposely informal 
 gaming-specific word count metrics.
