@@ -2,7 +2,7 @@
 
 An advanced text analysis and visualization tool for comparing linguistic features across large text corpora. Built with YouTube channel analysis in mind, but supports NLTK corpora and custom text directories. 
 
-## README is WIP
+## README is in WIP 
 
 This README is in boilerplate mode now. It will be updated soon, currently have an AI generated version of it.
 
@@ -134,6 +134,9 @@ Centroid modes control how text embeddings are computed from multiple documents:
 --clear-cache [TEXT]      Clear cache for specific text or all texts
 --annotations             Enable annotation loading and click-to-view notes
 ```
+
+Each channel directory may also contain an optional `tag.txt`. Its short contents
+appear directly below the channel name in the visualization hover text.
 
 ### Advanced Features
 

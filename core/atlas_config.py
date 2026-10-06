@@ -97,7 +97,7 @@ CACHE_FILTER_KEYS = {
     'stat_word_count',
 }
 
-SBERT_MODEL = os.getenv('UMAPPER_EMBEDDING_MODEL', 'all-MiniLM-L12-v2')
+SBERT_MODEL = os.getenv('ATLAS_EMBEDDING_MODEL', 'all-MiniLM-L12-v2')
 
 EMBEDDING_MODEL_PROFILES: Dict[str, Dict[str, int]] = {
     'thenlper/gte-small': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
