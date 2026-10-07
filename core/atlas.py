@@ -1,3 +1,49 @@
+import argparse
+import csv
+import hashlib
+import importlib
+import inspect
+import json
+import math
+import os
+import re
+import shutil
+import subprocess
+import time
+import webbrowser
+from collections import Counter, defaultdict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+from scipy.stats import rankdata
+from sentence_transformers import SentenceTransformer
+import umap
+
+try:
+    from sklearn.cluster import HDBSCAN as SklearnHDBSCAN
+except ImportError:
+    SklearnHDBSCAN = None
+
+from sklearn.cluster import KMeans
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import StandardScaler
+from lexicalrichness import LexicalRichness
+
+try:
+    import enchant
+    ENCHANT_AVAILABLE = True
+    enchant_dict = None
+    enchant_word_check_cache = {}
+except ImportError:
+    enchant = None
+    ENCHANT_AVAILABLE = False
+    enchant_dict = None
+    enchant_word_check_cache = {}
+
+from plotly import graph_objects as go
+
 from atlas_config import *  # noqa
 from atlas_config import (
     _format_trimmed_decimal,
@@ -6,9 +52,7 @@ from atlas_config import (
 from atlas_cache import SimpleCache
 from atlas_metrics import TextMetricsMixin
 from atlas_processor import TextProcessor
-import importlib
 import atlas_config as cfg
-from scipy.stats import rankdata
 
 try:
     import igraph as ig
@@ -44,19 +88,29 @@ def _pure_terms(pattern):
         return _pure_terms_cache[pattern]
     except KeyError:
         pass
+
     terms = None
     src = getattr(pattern, 'pattern', None)
+
     if isinstance(src, str) and not (pattern.flags & re.VERBOSE):
         m = _PURE_TERMS_RE.match(src)
-        if m and src.startswith('\\b(?:') == src.endswith(')\\b'):
-            lower = bool(pattern.flags & re.IGNORECASE)
-            alts = {tuple(w.lower() if lower else w for w in a.split(' '))
-                    for a in m.group(1).split('|')}
-            if not _ambiguous(alts):
-                by_k: Dict[int, set] = {}
-                for a in alts:
-                    by_k.setdefault(len(a), set()).add(a)
-                terms = {k: frozenset(v) for k, v in by_k.items()}
+        if m:
+            has_open_wrapper = src.startswith('\\b(?:')
+            has_close_wrapper = src.endswith(')\\b')
+            wrapper_state_matches = (has_open_wrapper == has_close_wrapper)
+
+            if wrapper_state_matches:
+                lower = bool(pattern.flags & re.IGNORECASE)
+                alts = {
+                    tuple(w.lower() if lower else w for w in a.split(' '))
+                    for a in m.group(1).split('|')
+                }
+                if not _ambiguous(alts):
+                    by_k: Dict[int, set] = {}
+                    for a in alts:
+                        by_k.setdefault(len(a), set()).add(a)
+                    terms = {k: frozenset(v) for k, v in by_k.items()}
+
     _pure_terms_cache[pattern] = terms
     return terms
 
@@ -64,6 +118,7 @@ def _pure_terms(pattern):
 class TextClassifier(TextMetricsMixin):
 
     CROSS_CHANNEL_METRICS = {'burrows_cosine_disagreement'}
+
     BURROWS_FUNCTION_WORDS = tuple(sorted({
         'i', 'you', 'he', 'she', 'it', 'we', 'they',
         'me', 'him', 'her', 'us', 'them',
@@ -84,6 +139,7 @@ class TextClassifier(TextMetricsMixin):
         'oh', 'yeah', 'yes', 'okay', 'ok', 'like', 'well', 'uh', 'um', 'right',
         'mhm', 'next', 'again',
     }))
+
     BURROWS_CONTRACTIONS = {
         "i'm": "i am", "i've": "i have", "i'd": "i would", "i'll": "i will",
         "you're": "you are", "you've": "you have", "you'd": "you would", "you'll": "you will",
@@ -102,8 +158,8 @@ class TextClassifier(TextMetricsMixin):
         "y'all": "you all",
     }
 
-    @staticmethod
-    def get_word_count_metric_names() -> List[str]:
+    @classmethod
+    def get_word_count_metric_names(cls) -> List[str]:
         selected = set()
 
         for metric_name, config in MetricConfig.METRICS.items():
@@ -113,12 +169,8 @@ class TextClassifier(TextMetricsMixin):
                 selected.add(metric_name)
                 continue
 
-            if compute_method == 'compute_insult_density':
-                selected.add(metric_name)
-                continue
-
             if compute_method.startswith('_compute'):
-                method = getattr(TextClassifier, compute_method, None)
+                method = getattr(cls, compute_method, None)
                 if method is None:
                     continue
                 try:
@@ -131,31 +183,40 @@ class TextClassifier(TextMetricsMixin):
 
         return sorted(selected)
 
-    def _get_target_metric_names(self, include_global_metrics: bool = False,
-                                 skip_centroid_duplicates: bool = False,
-                                 skip_video_centroid_only: bool = False) -> List[str]:
+    def _get_target_metric_names(
+        self,
+        include_global_metrics: bool = False,
+        skip_centroid_duplicates: bool = False,
+        skip_video_centroid_only: bool = False,
+    ) -> List[str]:
         if getattr(self, 'no_metrics', False):
             return []
+
         if self.word_counts_only:
             names = self.get_word_count_metric_names()
         else:
             names = MetricConfig.get_metric_names()
 
+        fighting_words_exclusions = (
+            FIGHTING_WORDS_PEAK_METRIC,
+            FIGHTING_WORDS_FLOOR_METRIC,
+            FIGHTING_WORDS_PEAK_CENTROID_METRIC,
+            FIGHTING_WORDS_FLOOR_CENTROID_METRIC,
+        )
+
         if include_global_metrics:
             if not getattr(self, 'compute_fighting_words', False):
-                names = [name for name in names if name not in (FIGHTING_WORDS_PEAK_METRIC, FIGHTING_WORDS_FLOOR_METRIC,
-                                                                  FIGHTING_WORDS_PEAK_CENTROID_METRIC, FIGHTING_WORDS_FLOOR_CENTROID_METRIC)]
+                names = [n for n in names if n not in fighting_words_exclusions]
         else:
-            names = [name for name in names if name not in (FIGHTING_WORDS_PEAK_METRIC, FIGHTING_WORDS_FLOOR_METRIC,
-                                                              FIGHTING_WORDS_PEAK_CENTROID_METRIC, FIGHTING_WORDS_FLOOR_CENTROID_METRIC)]
+            names = [n for n in names if n not in fighting_words_exclusions]
 
-        names = [name for name in names if name not in self.CROSS_CHANNEL_METRICS]
+        names = [n for n in names if n not in self.CROSS_CHANNEL_METRICS]
 
         if skip_centroid_duplicates:
-            names = [name for name in names if not MetricConfig.is_centroid_duplicate(name)]
+            names = [n for n in names if not MetricConfig.is_centroid_duplicate(n)]
 
         if skip_video_centroid_only:
-            names = [name for name in names if not MetricConfig.is_video_centroid_only(name)]
+            names = [n for n in names if not MetricConfig.is_video_centroid_only(n)]
 
         return names
 
@@ -164,14 +225,20 @@ class TextClassifier(TextMetricsMixin):
         profile = np.zeros(len(cls.BURROWS_FUNCTION_WORDS), dtype=np.float64)
         if not tokens:
             return profile
-        word_indices = {word: index for index, word in enumerate(cls.BURROWS_FUNCTION_WORDS)}
+
+        word_indices = {
+            word: index for index, word in enumerate(cls.BURROWS_FUNCTION_WORDS)
+        }
+
         expanded_tokens = []
         for token in tokens:
             expanded_tokens.extend(cls.BURROWS_CONTRACTIONS.get(token, token).split())
+
         for token in expanded_tokens:
             index = word_indices.get(token)
             if index is not None:
                 profile[index] += 1.0
+
         return profile / len(expanded_tokens)
 
     @staticmethod
@@ -187,6 +254,7 @@ class TextClassifier(TextMetricsMixin):
         valid = [index for index, text in enumerate(texts) if text in style_profiles]
         if len(valid) < 2:
             return None, []
+
         profile_matrix = np.vstack([style_profiles[texts[index]] for index in valid])
         means = profile_matrix.mean(axis=0)
         std = profile_matrix.std(axis=0, ddof=0)
@@ -207,28 +275,42 @@ class TextClassifier(TextMetricsMixin):
         if style_distances is None or len(valid) < 3:
             return scores
 
-        normalized = embeddings / np.maximum(np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-12)
+        normalized = embeddings / np.maximum(
+            np.linalg.norm(embeddings, axis=1, keepdims=True), 1e-12
+        )
         semantic_distances = 1.0 - normalized @ normalized.T
+
         for row, text_index in enumerate(valid):
             peers = [peer for peer in range(len(valid)) if peer != row]
             if len(peers) < 2:
                 continue
+
             style_ranks = rankdata(style_distances[row, peers], method='average')
-            semantic_ranks = rankdata(semantic_distances[text_index, [valid[peer] for peer in peers]], method='average')
+            semantic_ranks = rankdata(
+                semantic_distances[text_index, [valid[peer] for peer in peers]],
+                method='average',
+            )
             style_centered = style_ranks - style_ranks.mean()
             semantic_centered = semantic_ranks - semantic_ranks.mean()
-            denominator = np.linalg.norm(style_centered) * np.linalg.norm(semantic_centered)
+            denominator = (
+                np.linalg.norm(style_centered) * np.linalg.norm(semantic_centered)
+            )
             rho = float(style_centered @ semantic_centered / denominator) if denominator else 0.0
             scores[texts[text_index]] = float(1.0 - rho)
+
         return scores
 
-    def _load_burrows_rate_profile(self, text: str, filter_kwargs: Dict[str, Any]) -> Optional[np.ndarray]:
+    def _load_burrows_rate_profile(
+        self, text: str, filter_kwargs: Dict[str, Any]
+    ) -> Optional[np.ndarray]:
         filters = {key: value for key, value in filter_kwargs.items() if value is not None}
         ignore_ids = filter_kwargs.get('ignore_ids', set())
+
         if self.centroid_mode == 'video':
             files = self.processor._get_filtered_files(text, filters, ignore_ids)
             if not files:
                 return None
+
             result = self.processor.load_video_centroids(
                 text, self.centroid_videos, filters, ignore_ids,
                 max_accumulated_tokens=self.stat_word_count,
@@ -239,30 +321,20 @@ class TextClassifier(TextMetricsMixin):
             )
             if not result:
                 return None
+
             return self._burrows_rate_profile(result[3]) if result[3] else None
 
         result = self.processor.get_tokens(text, filters, ignore_ids)
         if not result:
             return None
+
         tokens = result[0]
         if self.centroid_mode == 'word' and self.centroid_words > 0:
             tokens = tokens[-self.centroid_words:]
+
         return self._burrows_rate_profile(tokens)
 
-    def _metric_is_skipped(self, name: str) -> bool:
-        return not MetricConfig.is_metric_eligible(
-            name,
-            enable_spacy=self.enable_spacy,
-            needs_perplexity_model=self.processor.needs_perplexity_model,
-            enable_ngram_entropy=self.enable_ngram_entropy,
-            fast_mode=self.fast_mode,
-        )
-
-    def _metric_needs_compute(self, name: str, cached_metrics: Dict[str, Any]) -> bool:
-        if name not in cached_metrics:
-            return True
-        if cached_metrics[name] is not None:
-            return False
+    def _metric_is_eligible(self, name: str) -> bool:
         return MetricConfig.is_metric_eligible(
             name,
             enable_spacy=self.enable_spacy,
@@ -271,17 +343,33 @@ class TextClassifier(TextMetricsMixin):
             fast_mode=self.fast_mode,
         )
 
+    def _metric_is_skipped(self, name: str) -> bool:
+        return not self._metric_is_eligible(name)
+
+    def _metric_needs_compute(self, name: str, cached_metrics: Dict[str, Any]) -> bool:
+        if name not in cached_metrics:
+            return True
+        if cached_metrics[name] is not None:
+            return False
+        return self._metric_is_eligible(name)
+
     @staticmethod
-    def _summarize_metric_names(metric_names: List[str], max_items: Optional[int] = 16) -> str:
+    def _summarize_metric_names(
+        metric_names: List[str], max_items: Optional[int] = 16
+    ) -> str:
         if not metric_names:
             return "none"
+
         names = sorted(set(metric_names))
         if max_items is None or max_items <= 0 or len(names) <= max_items:
             return ', '.join(names)
+
         shown = ', '.join(names[:max_items])
         return f"{shown} ... (+{len(names) - max_items} more)"
 
-    def _print_metric_completion_summary(self, metric_values: Dict[str, Any], source: str) -> None:
+    def _print_metric_completion_summary(
+        self, metric_values: Dict[str, Any], source: str
+    ) -> None:
         if not metric_values:
             return
 
@@ -300,15 +388,26 @@ class TextClassifier(TextMetricsMixin):
         other_metrics = [name for name in completed if name not in grouped_names]
 
         if word_count_metrics:
-            print(f"      • Word counts ({len(word_count_metrics)}): {self._summarize_metric_names(word_count_metrics)}")
+            print(
+                f"      • Word counts ({len(word_count_metrics)}): "
+                f"{self._summarize_metric_names(word_count_metrics)}"
+            )
         if embedding_metrics:
-            print(f"      • Embedding metrics ({len(embedding_metrics)}): {self._summarize_metric_names(embedding_metrics)}")
+            print(
+                f"      • Embedding metrics ({len(embedding_metrics)}): "
+                f"{self._summarize_metric_names(embedding_metrics)}"
+            )
         if other_metrics:
-            print(f"      • Other metrics ({len(other_metrics)}): {self._summarize_metric_names(other_metrics)}")
+            print(
+                f"      • Other metrics ({len(other_metrics)}): "
+                f"{self._summarize_metric_names(other_metrics)}"
+            )
 
         category_buckets: Dict[str, List[str]] = defaultdict(list)
         for metric_name in completed:
-            category = MetricConfig.METRICS.get(metric_name, {}).get('category', 'Uncategorized')
+            category = MetricConfig.METRICS.get(metric_name, {}).get(
+                'category', 'Uncategorized'
+            )
             category_buckets[str(category)].append(metric_name)
 
         linguistic_categories = {
@@ -318,6 +417,7 @@ class TextClassifier(TextMetricsMixin):
             'Discourse Markers',
             'Common Phrases',
         }
+
         for category_name in sorted(category_buckets):
             names_in_category = category_buckets[category_name]
             full_list = category_name in linguistic_categories
@@ -328,7 +428,10 @@ class TextClassifier(TextMetricsMixin):
             print(f"      • {category_name} ({len(names_in_category)}): {summary}")
 
         if skipped:
-            print(f"      • Skipped/unavailable ({len(skipped)}): {self._summarize_metric_names(skipped)}")
+            print(
+                f"      • Skipped/unavailable ({len(skipped)}): "
+                f"{self._summarize_metric_names(skipped)}"
+            )
 
     @staticmethod
     def _detect_embedding_device() -> str:
@@ -363,16 +466,52 @@ class TextClassifier(TextMetricsMixin):
                     raise
                 batch_size = max(1, batch_size // 2)
                 self.embedding_batch_size = batch_size
-                print(f"    Warning: embedding encode memory pressure, retrying with batch_size={batch_size}")
+                print(
+                    f"    Warning: embedding encode memory pressure, "
+                    f"retrying with batch_size={batch_size}"
+                )
 
-    def __init__(self, use_cache: bool = True, active_metric: Optional[str] = None, enable_spacy: bool = False, enable_ngram_entropy: bool = False, fast_mode: bool = False, word_counts_only: bool = False, force_latest_cache: bool = False, embedding_model: Optional[str] = None, embedding_chunk_size: Optional[int] = None, embedding_min_chunk: Optional[int] = None, embedding_batch_size: Optional[int] = None, no_metrics: bool = False, compute_fighting_words: bool = False, compute_fighting_words_floor: Optional[bool] = None, centroid_mode: Optional[str] = None, centroid_videos: int = 10, centroid_words: int = 1000000, stat_word_count: int = 1000000, cluster_method: str = 'hdbscan', leiden_resolution_min: float = 0.3, leiden_resolution_max: float = 2.0, leiden_k_neighbors: int = 20, leiden_whiten: bool = True, umap_neighbors: Optional[int] = None, umap_min_dist: float = 0.1, umap_epochs: int = 50, mallet_num_topics: int = 0):
+    def __init__(
+        self,
+        use_cache: bool = True,
+        active_metric: Optional[str] = None,
+        enable_spacy: bool = False,
+        enable_ngram_entropy: bool = False,
+        fast_mode: bool = False,
+        word_counts_only: bool = False,
+        force_latest_cache: bool = False,
+        embedding_model: Optional[str] = None,
+        embedding_chunk_size: Optional[int] = None,
+        embedding_min_chunk: Optional[int] = None,
+        embedding_batch_size: Optional[int] = None,
+        no_metrics: bool = False,
+        compute_fighting_words: bool = False,
+        compute_fighting_words_floor: Optional[bool] = None,
+        centroid_mode: Optional[str] = None,
+        centroid_videos: int = 10,
+        centroid_words: int = 1000000,
+        stat_word_count: int = 1000000,
+        cluster_method: str = 'hdbscan',
+        leiden_resolution_min: float = 0.3,
+        leiden_resolution_max: float = 2.0,
+        leiden_k_neighbors: int = 20,
+        leiden_whiten: bool = True,
+        umap_neighbors: Optional[int] = None,
+        umap_min_dist: float = 0.1,
+        umap_epochs: int = 50,
+        mallet_num_topics: int = 0,
+    ):
         self.embedding_model_name = resolve_embedding_model_name(embedding_model)
         self.model = SentenceTransformer(self.embedding_model_name)
         profile = get_embedding_model_profile(self.embedding_model_name)
         self.embedding_device = self._detect_embedding_device()
 
         detected_context_window = int(getattr(self.model, 'max_seq_length', 0) or 0)
-        self.embedding_context_window = detected_context_window if detected_context_window > 0 else profile['context_window']
+        self.embedding_context_window = (
+            detected_context_window
+            if detected_context_window > 0
+            else profile['context_window']
+        )
 
         practical_key = f"practical_max_tokens_{self.embedding_device}"
         practical_max_tokens = int(profile.get(practical_key, profile['chunk_target']))
@@ -381,12 +520,18 @@ class TextClassifier(TextMetricsMixin):
         if embedding_chunk_size is None:
             embedding_chunk_size = profile['chunk_target']
             if self.embedding_context_window > 0:
-                embedding_chunk_size = min(embedding_chunk_size, max(16, self.embedding_context_window - 8))
+                embedding_chunk_size = min(
+                    embedding_chunk_size,
+                    max(16, self.embedding_context_window - 8),
+                )
             embedding_chunk_size = min(int(embedding_chunk_size), practical_max_tokens)
         else:
             embedding_chunk_size = int(embedding_chunk_size)
             if self.embedding_context_window > 0:
-                embedding_chunk_size = min(embedding_chunk_size, max(16, self.embedding_context_window - 8))
+                embedding_chunk_size = min(
+                    embedding_chunk_size,
+                    max(16, self.embedding_context_window - 8),
+                )
 
         if embedding_min_chunk is None:
             embedding_min_chunk = profile['min_chunk']
@@ -407,10 +552,14 @@ class TextClassifier(TextMetricsMixin):
         }
 
         print(
-            f"Embedding model: {self.embedding_model_name} | device={self.embedding_device} | context={self.embedding_context_window} "
-            f"| chunk={int(embedding_chunk_size)} | min_chunk={int(embedding_min_chunk)} "
+            f"Embedding model: {self.embedding_model_name} "
+            f"| device={self.embedding_device} "
+            f"| context={self.embedding_context_window} "
+            f"| chunk={int(embedding_chunk_size)} "
+            f"| min_chunk={int(embedding_min_chunk)} "
             f"| batch={self.embedding_batch_size}"
         )
+
         self.base_dir = Path(__file__).resolve().parents[1]
         self.cache = SimpleCache(self.base_dir / "cache" / "metrics") if use_cache else None
         self.active_metric = active_metric
@@ -425,6 +574,7 @@ class TextClassifier(TextMetricsMixin):
             if compute_fighting_words_floor is None
             else compute_fighting_words_floor
         )
+
         self._fighting_words_unigrams: Dict[str, Counter] = {}
         self._fighting_words_token_counts: Dict[str, int] = {}
         self._fighting_words_unigrams_centroid: Dict[str, Counter] = {}
@@ -450,8 +600,9 @@ class TextClassifier(TextMetricsMixin):
         self.umap_epochs = int(umap_epochs)
         self.cluster_metric_labels: Dict[str, str] = {}
 
-        needs_perplexity = (active_metric and
-                           MetricConfig.requires_perplexity_model(active_metric))
+        needs_perplexity = (
+            active_metric and MetricConfig.requires_perplexity_model(active_metric)
+        )
 
         self.processor = TextProcessor(
             self.base_dir,
@@ -494,24 +645,38 @@ class TextClassifier(TextMetricsMixin):
     @classmethod
     def validate_metric_wiring(cls) -> None:
         bad = []
+
         for name, cfg_ in MetricConfig.METRICS.items():
             m = cfg_.get('compute_method', '')
+
             if m == '_compute_dynamic_token_count':
                 fb = DYNAMIC_COUNT_FALLBACK_METHODS.get(name)
-                ok = (name in SIMPLE_COLOR_PATTERN_MAP
-                      or name in DYNAMIC_PATTERN_METRIC_MAP
-                      or name in DYNAMIC_TOKEN_SET_METRIC_MAP
-                      or name in ('right_count', 'unique_words_count', 'unique_oov_count',
-                                  'total_oov_count', 'unique_non_oov_count', 'total_non_oov_count')
-                      or (fb and fb != '_compute_dynamic_token_count' and hasattr(cls, fb)))
+                ok = (
+                    name in SIMPLE_COLOR_PATTERN_MAP
+                    or name in DYNAMIC_PATTERN_METRIC_MAP
+                    or name in DYNAMIC_TOKEN_SET_METRIC_MAP
+                    or name in (
+                        'right_count', 'unique_words_count', 'unique_oov_count',
+                        'total_oov_count', 'unique_non_oov_count', 'total_non_oov_count',
+                    )
+                    or (fb and fb != '_compute_dynamic_token_count' and hasattr(cls, fb))
+                )
             elif m.startswith('_compute'):
                 ok = hasattr(cls, m)
             else:
-                ok = m in ('compute_insult_density', 'calculate_perplexity', 'compute_vader_sentiment')
+                ok = m in (
+                    'calculate_perplexity',
+                    'compute_vader_sentiment',
+                )
+
             if not ok:
                 bad.append(name)
+
         if bad:
-            print(f"WARNING: {len(bad)} metrics have no resolvable compute path: {sorted(bad)}")
+            print(
+                f"WARNING: {len(bad)} metrics have no resolvable compute path: "
+                f"{sorted(bad)}"
+            )
 
     def _compute_fighting_words_peak_placeholder(self, tokens: List[str]) -> Optional[float]:
         return None
@@ -519,25 +684,42 @@ class TextClassifier(TextMetricsMixin):
     def _compute_fighting_words_floor_placeholder(self, tokens: List[str]) -> Optional[float]:
         return None
 
-    def _compute_fighting_words_peak_centroid_placeholder(self, tokens: List[str]) -> Optional[float]:
+    def _compute_fighting_words_peak_centroid_placeholder(
+        self, tokens: List[str]
+    ) -> Optional[float]:
         return None
 
-    def _compute_fighting_words_floor_centroid_placeholder(self, tokens: List[str]) -> Optional[float]:
+    def _compute_fighting_words_floor_centroid_placeholder(
+        self, tokens: List[str]
+    ) -> Optional[float]:
         return None
 
     def _compute_avg_words_per_video(self, tokens: List[str]) -> Optional[float]:
         return None
 
-    def _compute_fighting_words_values(self, texts: List[str], rank: int,
-                                       use_centroid: bool = False) -> Dict[str, Optional[float]]:
+    def _compute_fighting_words_values(
+        self,
+        texts: List[str],
+        rank: int,
+        use_centroid: bool = False,
+    ) -> Dict[str, Optional[float]]:
         if not texts:
             return {}
 
-        source_unigrams = self._fighting_words_unigrams_centroid if use_centroid else self._fighting_words_unigrams
-        source_counts = self._fighting_words_token_counts_centroid if use_centroid else self._fighting_words_token_counts
+        source_unigrams = (
+            self._fighting_words_unigrams_centroid
+            if use_centroid
+            else self._fighting_words_unigrams
+        )
+        source_counts = (
+            self._fighting_words_token_counts_centroid
+            if use_centroid
+            else self._fighting_words_token_counts
+        )
 
         counters: Dict[str, Counter] = {}
         token_counts: Dict[str, int] = {}
+
         for text in texts:
             counter = source_unigrams.get(text)
             token_count = source_counts.get(text, 0)
@@ -556,9 +738,11 @@ class TextClassifier(TextMetricsMixin):
             total_tokens += token_counts[text]
 
         floors: Dict[str, Optional[float]] = {}
+
         for text in texts:
             focus_counts = counters.get(text)
             focus_token_count = token_counts.get(text, 0)
+
             if focus_counts is None or focus_token_count <= 0:
                 floors[text] = None
                 continue
@@ -569,13 +753,17 @@ class TextClassifier(TextMetricsMixin):
                 continue
 
             rest_counts = total_counts - focus_counts
-            candidates = [phrase for phrase, count in focus_counts.items() if count >= FIGHTING_WORDS_FLOOR_MIN_COUNT]
+            candidates = [
+                phrase for phrase, count in focus_counts.items()
+                if count >= FIGHTING_WORDS_FLOOR_MIN_COUNT
+            ]
             if not candidates:
                 floors[text] = None
                 continue
 
             V = len(candidates)
             z_scores: List[float] = []
+
             for phrase in candidates:
                 f_focus = focus_counts[phrase]
                 f_rest = rest_counts.get(phrase, 0)
@@ -583,11 +771,20 @@ class TextClassifier(TextMetricsMixin):
                 if f_rest <= 0:
                     continue
 
-                p_focus = (f_focus + FIGHTING_WORDS_FLOOR_ALPHA) / (focus_token_count + FIGHTING_WORDS_FLOOR_ALPHA * V)
-                p_rest = (f_rest + FIGHTING_WORDS_FLOOR_ALPHA) / (rest_token_count + FIGHTING_WORDS_FLOOR_ALPHA * V)
+                p_focus = (
+                    (f_focus + FIGHTING_WORDS_FLOOR_ALPHA)
+                    / (focus_token_count + FIGHTING_WORDS_FLOOR_ALPHA * V)
+                )
+                p_rest = (
+                    (f_rest + FIGHTING_WORDS_FLOOR_ALPHA)
+                    / (rest_token_count + FIGHTING_WORDS_FLOOR_ALPHA * V)
+                )
 
                 log_odds = math.log(p_focus) - math.log(p_rest)
-                variance = (1.0 / (f_focus + FIGHTING_WORDS_FLOOR_ALPHA)) + (1.0 / (f_rest + FIGHTING_WORDS_FLOOR_ALPHA))
+                variance = (
+                    (1.0 / (f_focus + FIGHTING_WORDS_FLOOR_ALPHA))
+                    + (1.0 / (f_rest + FIGHTING_WORDS_FLOOR_ALPHA))
+                )
                 z_scores.append(log_odds / math.sqrt(variance))
 
             if not z_scores:
@@ -600,17 +797,26 @@ class TextClassifier(TextMetricsMixin):
 
         return floors
 
-    def _compute_fighting_words_floor_values(self, texts: List[str],
-                                             use_centroid: bool = False) -> Dict[str, Optional[float]]:
-        return self._compute_fighting_words_values(texts, FIGHTING_WORDS_FLOOR_RANK,
-                                                    use_centroid=use_centroid)
+    def _compute_fighting_words_floor_values(
+        self,
+        texts: List[str],
+        use_centroid: bool = False,
+    ) -> Dict[str, Optional[float]]:
+        return self._compute_fighting_words_values(
+            texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=use_centroid
+        )
 
-    def _get_centroid_tokens_for_mallet(self, text: str, filters: Dict,
-                                        ignore_ids: set) -> List[str]:
+    def _get_centroid_tokens_for_mallet(
+        self,
+        text: str,
+        filters: Dict,
+        ignore_ids: set,
+    ) -> List[str]:
         if self.centroid_mode == 'video':
             files = self.processor._get_filtered_files(text, filters, ignore_ids)
             if not files:
                 return []
+
             result = self.processor.load_video_centroids(
                 text, self.centroid_videos, filters, ignore_ids,
                 max_accumulated_tokens=self.stat_word_count,
@@ -621,21 +827,24 @@ class TextClassifier(TextMetricsMixin):
             )
             if not result:
                 return []
+
             return result[3] or []
 
         result = self.processor.get_tokens(text, filters, ignore_ids)
         if not result:
             return []
+
         tokens = result[0]
         if self.centroid_mode == 'word' and self.centroid_words and self.centroid_words > 0:
             tokens = tokens[-self.centroid_words:]
         return tokens
 
-    def _train_mallet_topics(self, texts: List[str], ignore_ids: set,
-                             filter_kwargs: Dict[str, Any]) -> None:
-        import shutil
-        import subprocess
-
+    def _train_mallet_topics(
+        self,
+        texts: List[str],
+        ignore_ids: set,
+        filter_kwargs: Dict[str, Any],
+    ) -> None:
         if self.mallet_num_topics <= 0:
             return
 
@@ -649,10 +858,13 @@ class TextClassifier(TextMetricsMixin):
                 candidate = Path(mallet_home) / 'bin' / 'mallet'
                 if candidate.exists():
                     mallet_binary = str(candidate)
+
         if not mallet_binary:
-            print("  MALLET not found; skipping topic modeling. "
-                  "Install it (brew install mallet, or set MALLET_HOME to a "
-                  "MALLET install directory).")
+            print(
+                "  MALLET not found; skipping topic modeling. "
+                "Install it (brew install mallet, or set MALLET_HOME to a "
+                "MALLET install directory)."
+            )
             return
 
         cache_dir = self.base_dir / "cache" / "mallet"
@@ -690,13 +902,16 @@ class TextClassifier(TextMetricsMixin):
             try:
                 with open(sig_path, 'r', encoding='utf-8') as f:
                     saved_sig = json.load(f)
+
                 if saved_sig == cache_signature:
                     with open(proportions_path, 'r', encoding='utf-8') as f:
                         loaded_props = json.load(f)
+
                     self.mallet_topic_proportions = {
                         tx: {int(k): float(v) for k, v in topics.items()}
                         for tx, topics in loaded_props.items()
                     }
+
                     if labels_path.exists():
                         try:
                             with open(labels_path, 'r', encoding='utf-8') as f:
@@ -706,15 +921,20 @@ class TextClassifier(TextMetricsMixin):
                             }
                         except Exception:
                             self.mallet_topic_labels = {}
-                    print(f"  MALLET topics loaded from cache "
-                          f"({len(self.mallet_topic_proportions)} texts, "
-                          f"{self.mallet_num_topics} topics)")
+
+                    print(
+                        f"  MALLET topics loaded from cache "
+                        f"({len(self.mallet_topic_proportions)} texts, "
+                        f"{self.mallet_num_topics} topics)"
+                    )
                     return
             except Exception as exc:
                 print(f"  Warning: failed to load MALLET cache ({exc}); retraining")
 
-        print(f"  Training MALLET LDA: {self.mallet_num_topics} topics "
-              f"(streaming input across {len(texts)} texts)")
+        print(
+            f"  Training MALLET LDA: {self.mallet_num_topics} topics "
+            f"(streaming input across {len(texts)} texts)"
+        )
         filters = {k: v for k, v in filter_kwargs.items() if v is not None}
         written = 0
         doc_map: Dict[str, str] = {}
@@ -723,12 +943,16 @@ class TextClassifier(TextMetricsMixin):
             with open(input_txt, 'w', encoding='utf-8') as f:
                 for tx in texts:
                     try:
-                        tokens = self._get_centroid_tokens_for_mallet(tx, filters, ignore_ids)
+                        tokens = self._get_centroid_tokens_for_mallet(
+                            tx, filters, ignore_ids
+                        )
                     except Exception as exc:
                         print(f"    Warning: could not gather tokens for {tx}: {exc}")
                         continue
+
                     if not tokens:
                         continue
+
                     safe_id = f"tx_{written:06d}"
                     doc_map[safe_id] = tx
                     f.write(safe_id)
@@ -752,21 +976,25 @@ class TextClassifier(TextMetricsMixin):
 
         try:
             subprocess.run(
-                [mallet_binary, 'import-file',
-                 '--input', str(input_txt),
-                 '--output', str(mallet_bin_file),
-                 '--keep-sequence',
-                 '--remove-stopwords'],
+                [
+                    mallet_binary, 'import-file',
+                    '--input', str(input_txt),
+                    '--output', str(mallet_bin_file),
+                    '--keep-sequence',
+                    '--remove-stopwords',
+                ],
                 check=True, capture_output=True, env=run_env,
             )
             subprocess.run(
-                [mallet_binary, 'train-topics',
-                 '--input', str(mallet_bin_file),
-                 '--num-topics', str(self.mallet_num_topics),
-                 '--num-iterations', '1000',
-                 '--optimize-interval', '10',
-                 '--output-doc-topics', str(doc_topics),
-                 '--output-topic-keys', str(topic_keys)],
+                [
+                    mallet_binary, 'train-topics',
+                    '--input', str(mallet_bin_file),
+                    '--num-topics', str(self.mallet_num_topics),
+                    '--num-iterations', '1000',
+                    '--optimize-interval', '10',
+                    '--output-doc-topics', str(doc_topics),
+                    '--output-topic-keys', str(topic_keys),
+                ],
                 check=True, capture_output=True, env=run_env,
             )
         except subprocess.CalledProcessError as exc:
@@ -796,6 +1024,7 @@ class TextClassifier(TextMetricsMixin):
             return True
 
         proportions: Dict[str, Dict[int, float]] = {}
+
         try:
             with open(doc_topics, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -812,6 +1041,7 @@ class TextClassifier(TextMetricsMixin):
                         if part in doc_map:
                             source_idx = i
                             break
+
                     if source_idx < 0:
                         if parts[0] in doc_map:
                             source_idx = 0
@@ -856,8 +1086,8 @@ class TextClassifier(TextMetricsMixin):
                 print(f"    (could not preview file: {preview_exc})")
 
         self.mallet_topic_proportions = proportions
-
         self.mallet_topic_labels = {}
+
         try:
             with open(topic_keys, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -886,12 +1116,16 @@ class TextClassifier(TextMetricsMixin):
             print(f"  Warning: failed to write MALLET cache: {exc}")
 
         matched = sum(1 for tx in texts if tx in self.mallet_topic_proportions)
-        print(f"  MALLET topics trained; matched {matched}/{len(texts)} texts "
-              f"({len(self.mallet_topic_proportions)} docs parsed)")
+        print(
+            f"  MALLET topics trained; matched {matched}/{len(texts)} texts "
+            f"({len(self.mallet_topic_proportions)} docs parsed)"
+        )
 
     def _ensure_runtime_cache_for_tokens(self, tokens: List[str]) -> None:
-        if (getattr(self, '_runtime_cache_tokens_ref', None) is not tokens
-                or getattr(self, '_runtime_cache_len', -1) != len(tokens)):
+        if (
+            getattr(self, '_runtime_cache_tokens_ref', None) is not tokens
+            or getattr(self, '_runtime_cache_len', -1) != len(tokens)
+        ):
             self._runtime_cache_tokens_ref = tokens
             self._runtime_cache_len = len(tokens)
             self._runtime_cache_text = None
@@ -954,15 +1188,17 @@ class TextClassifier(TextMetricsMixin):
         src = getattr(pattern_obj, 'pattern', None)
         if src is None:
             return None
+
         if isinstance(src, bytes):
             try:
                 src = src.decode('utf-8', errors='ignore')
             except Exception:
                 return None
+
         if not isinstance(src, str):
             return None
-        n = len(src)
 
+        n = len(src)
         depth, i = 0, 0
         while i < n:
             ch = src[i]
@@ -987,6 +1223,7 @@ class TextClassifier(TextMetricsMixin):
         while i < n and src[i].isalnum():
             chars.append(src[i].lower())
             i += 1
+
         if chars and i < n and src[i] in '?*{':
             chars.pop()
 
@@ -1011,7 +1248,9 @@ class TextClassifier(TextMetricsMixin):
             self._runtime_cache_pieces = pieces
         return self._runtime_cache_pieces
 
-    def _runtime_edges(self, tokens: List[str]) -> Tuple[List[str], List[str], Dict[int, Counter]]:
+    def _runtime_edges(
+        self, tokens: List[str]
+    ) -> Tuple[List[str], List[str], Dict[int, Counter]]:
         self._ensure_runtime_cache_for_tokens(tokens)
         if self._runtime_cache_edges is None:
             first, last = {}, {}
@@ -1046,7 +1285,9 @@ class TextClassifier(TextMetricsMixin):
                 total += sum(c.get(w, 0) for w in words)
         return total
 
-    def _get_runtime_spacy_stats(self, tokens: List[str]) -> Optional[Dict[str, int]]:
+    def _get_runtime_spacy_stats(
+        self, tokens: List[str]
+    ) -> Optional[Dict[str, int]]:
         if not self.enable_spacy:
             return None
 
@@ -1071,6 +1312,7 @@ class TextClassifier(TextMetricsMixin):
             text = self._get_runtime_text(tokens)
             if len(text) + 1 > getattr(cfg.spacy_nlp, 'max_length', 1_000_000):
                 cfg.spacy_nlp.max_length = len(text) + 1
+
             doc = cfg.spacy_nlp(text, disable=['parser', 'ner'])
 
             content_tags = {'NOUN', 'VERB', 'ADJ', 'ADV'}
@@ -1089,7 +1331,11 @@ class TextClassifier(TextMetricsMixin):
                     gerund_count += 1
 
                 if token.pos_ == 'VERB' and token.tag_ == 'VB':
-                    if token.i == 0 or doc[token.i - 1].is_punct or doc[token.i - 1].pos_ == 'CCONJ':
+                    if (
+                        token.i == 0
+                        or doc[token.i - 1].is_punct
+                        or doc[token.i - 1].pos_ == 'CCONJ'
+                    ):
                         imperative_count += 1
 
             stats = {
@@ -1110,9 +1356,18 @@ class TextClassifier(TextMetricsMixin):
         self._ensure_runtime_cache_for_tokens(tokens)
         count = 0
         text = self._get_runtime_text(tokens)
-        pattern_cache: Dict[Tuple[int, bool], int] = getattr(self, '_runtime_cache_pattern_counts', {})
-        prefix_cache: Dict[int, Optional[str]] = getattr(self, '_runtime_cache_pattern_prefixes', {})
-        pending = list(patterns) if isinstance(patterns, (list, tuple, set)) else [patterns]
+        pattern_cache: Dict[Tuple[int, bool], int] = getattr(
+            self, '_runtime_cache_pattern_counts', {}
+        )
+        prefix_cache: Dict[int, Optional[str]] = getattr(
+            self, '_runtime_cache_pattern_prefixes', {}
+        )
+
+        pending = (
+            list(patterns)
+            if isinstance(patterns, (list, tuple, set))
+            else [patterns]
+        )
 
         while pending:
             pattern = pending.pop()
@@ -1132,6 +1387,7 @@ class TextClassifier(TextMetricsMixin):
             pattern_id = id(pattern)
             if pattern_id not in prefix_cache:
                 prefix_cache[pattern_id] = self._extract_required_literal_prefix(pattern)
+
             required_prefix = prefix_cache.get(pattern_id)
             if required_prefix:
                 text_lower = self._get_runtime_text_lower(tokens)
@@ -1156,39 +1412,56 @@ class TextClassifier(TextMetricsMixin):
 
         return float(count)
 
-    def _compute_dynamic_token_count(self, tokens: List[str], metric_name: str) -> float:
+    def _compute_dynamic_token_count(
+        self, tokens: List[str], metric_name: str
+    ) -> float:
         if not tokens:
             return 0.0
 
         self._ensure_runtime_cache_for_tokens(tokens)
-        dynamic_cache: Dict[str, float] = getattr(self, '_runtime_cache_dynamic_counts', {})
+        dynamic_cache: Dict[str, float] = getattr(
+            self, '_runtime_cache_dynamic_counts', {}
+        )
         cached_dynamic = dynamic_cache.get(metric_name)
         if cached_dynamic is not None:
             return cached_dynamic
 
         if metric_name in SIMPLE_COLOR_PATTERN_MAP:
-            value = self._compute_pattern_count(tokens, SIMPLE_COLOR_PATTERN_MAP[metric_name])
+            value = self._compute_pattern_count(
+                tokens, SIMPLE_COLOR_PATTERN_MAP[metric_name]
+            )
             dynamic_cache[metric_name] = value
             return value
 
         if metric_name == 'right_count':
-            base_count = self._compute_pattern_count(tokens, DYNAMIC_PATTERN_METRIC_MAP['right_count'])
+            base_count = self._compute_pattern_count(
+                tokens, DYNAMIC_PATTERN_METRIC_MAP['right_count']
+            )
             text = self._get_runtime_text(tokens)
-            all_right_phrase_count = len(re.findall(r'\ball\s+right\b', text, re.IGNORECASE))
+            all_right_phrase_count = len(
+                re.findall(r'\ball\s+right\b', text, re.IGNORECASE)
+            )
             value = float(max(0.0, base_count - all_right_phrase_count))
             dynamic_cache[metric_name] = value
             return value
 
         if metric_name in DYNAMIC_PATTERN_METRIC_MAP:
-            value = self._compute_pattern_count(tokens, DYNAMIC_PATTERN_METRIC_MAP[metric_name])
+            value = self._compute_pattern_count(
+                tokens, DYNAMIC_PATTERN_METRIC_MAP[metric_name]
+            )
             dynamic_cache[metric_name] = value
             return value
 
         if metric_name == 'unique_words_count':
             return self._compute_unique_words_count(tokens)
 
-        if metric_name in ('unique_oov_count', 'total_oov_count', 'unique_non_oov_count', 'total_non_oov_count'):
-            unique_oov, total_oov, unique_non_oov, total_non_oov = self._compute_oov_split_counts(tokens)
+        if metric_name in (
+            'unique_oov_count', 'total_oov_count',
+            'unique_non_oov_count', 'total_non_oov_count',
+        ):
+            unique_oov, total_oov, unique_non_oov, total_non_oov = (
+                self._compute_oov_split_counts(tokens)
+            )
             if metric_name == 'unique_oov_count':
                 return unique_oov
             if metric_name == 'total_oov_count':
@@ -1200,7 +1473,9 @@ class TextClassifier(TextMetricsMixin):
         token_forms = DYNAMIC_TOKEN_SET_METRIC_MAP.get(metric_name)
         if token_forms is not None:
             token_counter = self._get_runtime_token_counter(tokens)
-            value = float(sum(token_counter.get(token_form, 0) for token_form in token_forms))
+            value = float(
+                sum(token_counter.get(token_form, 0) for token_form in token_forms)
+            )
             dynamic_cache[metric_name] = value
             return value
 
@@ -1217,6 +1492,7 @@ class TextClassifier(TextMetricsMixin):
     def _compute_unique_words_count(self, tokens: List[str]) -> float:
         if not tokens:
             return 0.0
+
         unique_words = set()
         for token in tokens:
             cleaned = token.lower().strip("'\".,!?;:()[]{}")
@@ -1225,9 +1501,12 @@ class TextClassifier(TextMetricsMixin):
             if not re.fullmatch(r"[a-z]+(?:'[a-z]+)?", cleaned):
                 continue
             unique_words.add(cleaned)
+
         return float(len(unique_words))
 
-    def _compute_oov_split_counts(self, tokens: List[str]) -> Tuple[float, float, float, float]:
+    def _compute_oov_split_counts(
+        self, tokens: List[str]
+    ) -> Tuple[float, float, float, float]:
         if not tokens:
             return 0.0, 0.0, 0.0, 0.0
 
@@ -1315,28 +1594,39 @@ class TextClassifier(TextMetricsMixin):
         except Exception:
             return 0.0, 0.0
 
-    def _compute_all_metrics(self, tokens: List[str], chunks: List[str],
-                             chunk_embs: Optional[np.ndarray] = None) -> Dict[str, any]:
+    def _compute_all_metrics(
+        self, tokens: List[str], chunks: List[str]
+    ) -> Dict[str, any]:
         all_metric_names = [
             name for name in self._get_target_metric_names()
             if not MetricConfig.is_centroid_metric(name)
         ]
         return self._compute_metrics(tokens, chunks, all_metric_names)
 
-    def _compute_metrics_subset(self, tokens: List[str], chunks: List[str],
-                                metric_names: List[str]) -> Dict[str, any]:
+    def _compute_metrics_subset(
+        self, tokens: List[str], chunks: List[str], metric_names: List[str]
+    ) -> Dict[str, any]:
         return self._compute_metrics(tokens, chunks, metric_names)
 
-    def _compute_specific_metrics(self, tokens: List[str], chunks: List[str],
-                                   chunk_embs: Optional[np.ndarray],
-                                   metric_names: List[str]) -> Dict[str, any]:
-        return self._compute_metrics(tokens, chunks, metric_names)
+    def _compute_specific_metrics(
+        self,
+        tokens: List[str],
+        chunks: List[str],
+        chunk_embs: Optional[np.ndarray],
+        metric_names: List[str],
+    ) -> Dict[str, any]:
+        return self._compute_metrics_subset(tokens, chunks, metric_names)
 
-    def _compute_metrics(self, tokens: List[str], chunks: List[str],
-                         metric_names: List[str]) -> Dict[str, any]:
+    def _compute_metrics(
+        self, tokens: List[str], chunks: List[str], metric_names: List[str]
+    ) -> Dict[str, any]:
         metrics = {}
         total_metrics = len(metric_names)
-        progress_interval = 25 if total_metrics >= 100 else 10 if total_metrics >= 30 else 0
+        progress_interval = (
+            25 if total_metrics >= 100
+            else 10 if total_metrics >= 30
+            else 0
+        )
         started_at = time.time()
 
         joined_text: Optional[str] = None
@@ -1370,58 +1660,76 @@ class TextClassifier(TextMetricsMixin):
 
                     metric_elapsed = time.time() - metric_started_at
                     if metric_elapsed >= 8.0:
-                        print(f"      slow metric: {metric_name} ({metric_elapsed:.1f}s, method={method_name})")
+                        print(
+                            f"      slow metric: {metric_name} "
+                            f"({metric_elapsed:.1f}s, method={method_name})"
+                        )
 
                 if progress_interval and (index % progress_interval == 0 or index == total_metrics):
                     elapsed = time.time() - started_at
-                    print(f"      progress: {index}/{total_metrics} metrics ({elapsed:.1f}s)")
+                    print(
+                        f"      progress: {index}/{total_metrics} metrics ({elapsed:.1f}s)"
+                    )
 
             return metrics
         finally:
             self._clear_runtime_cache()
 
-    def _compute_single_metric(self, metric_name: str, config: Dict, tokens: List[str],
-                               chunks: List[str],
-                               freq_counter: Counter, lex_obj: Optional[LexicalRichness]) -> any:
+    def _compute_single_metric(
+        self,
+        metric_name: str,
+        config: Dict,
+        tokens: List[str],
+        chunks: List[str],
+        freq_counter: Counter,
+        lex_obj: Optional[LexicalRichness],
+    ) -> any:
         try:
             method_name = config['compute_method']
 
             if method_name.startswith('_compute'):
                 method = getattr(self, method_name)
+
                 if metric_name.startswith('letter_') and metric_name.endswith('_count'):
                     letter = metric_name.split('_')[1]
                     return method(tokens, letter=letter)
-                elif method_name == '_compute_dynamic_token_count':
+
+                if method_name == '_compute_dynamic_token_count':
                     return method(tokens, metric_name=metric_name)
-                elif metric_name in ('word_burstiness', 'hapax_ratio', 'dis_ratio'):
+
+                if metric_name in ('word_burstiness', 'hapax_ratio', 'dis_ratio'):
                     return method(tokens, freq_counter=freq_counter)
-                elif metric_name in ('MATTR', 'yules_k', 'MATTR_centroid'):
+
+                if metric_name in ('MATTR', 'yules_k', 'MATTR_centroid'):
                     return method(tokens, lex=lex_obj)
-                elif method_name == '_compute_MTLD_score':
+
+                if method_name == '_compute_MTLD_score':
                     return method(tokens)
-                else:
-                    metric_kwargs = {
-                        key: config[key]
-                        for key in ('lexicon_key', 'phrase_key')
-                        if key in config
-                    }
-                    return method(tokens, **metric_kwargs)
-            elif method_name == 'compute_insult_density':
-                return self.processor.compute_insult_density(tokens)
-            elif method_name == 'calculate_perplexity':
+
+                metric_kwargs = {
+                    key: config[key]
+                    for key in ('lexicon_key', 'phrase_key')
+                    if key in config
+                }
+                return method(tokens, **metric_kwargs)
+
+            if method_name == 'calculate_perplexity':
                 return self.processor.calculate_perplexity(chunks)
-            elif method_name == 'compute_vader_sentiment':
+
+            if method_name == 'compute_vader_sentiment':
                 vader_results = self.processor.compute_vader_sentiment(chunks)
                 return vader_results[config.get('result_index', 0)]
-            else:
-                print(f"    Warning: Unknown compute method '{method_name}' for '{metric_name}'")
-                return None
+
+            print(f"    Warning: Unknown compute method '{method_name}' for '{metric_name}'")
+            return None
         except Exception as e:
             print(f"    Error computing {metric_name}: {e}")
             return None
 
     @staticmethod
-    def _low_token_result(mean_emb: np.ndarray, token_count: int, file_count: int) -> Dict[str, Any]:
+    def _low_token_result(
+        mean_emb: np.ndarray, token_count: int, file_count: int
+    ) -> Dict[str, Any]:
         return {
             'mean_emb': mean_emb,
             'token_count': token_count,
@@ -1440,7 +1748,28 @@ class TextClassifier(TextMetricsMixin):
             return False
         return a == b
 
-    def process_text(self, text: str, ignore_ids: Optional[set] = None, **filter_kwargs) -> Optional[Dict]:
+    def _build_cache_filters(
+        self,
+        filters: Dict,
+        centroid_extras: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
+        cache_filters = {k: v for k, v in filters.items() if k in CACHE_FILTER_KEYS}
+
+        if centroid_extras:
+            cache_filters.update(centroid_extras)
+
+        cache_filters.update(self.embedding_cache_signature)
+        cache_filters['metric_signature'] = hashlib.md5(
+            ','.join(sorted(MetricConfig.get_metric_names())).encode('utf-8')
+        ).hexdigest()[:12]
+        return cache_filters
+
+    def process_text(
+        self,
+        text: str,
+        ignore_ids: Optional[set] = None,
+        **filter_kwargs,
+    ) -> Optional[Dict]:
         if ignore_ids is None:
             ignore_ids = set()
 
@@ -1450,11 +1779,7 @@ class TextClassifier(TextMetricsMixin):
 
         print(f"Processing: {text}")
         filters = {k: v for k, v in filter_kwargs.items() if v is not None}
-        cache_filters = {k: v for k, v in filters.items() if k in CACHE_FILTER_KEYS}
-        cache_filters.update(self.embedding_cache_signature)
-        cache_filters['metric_signature'] = hashlib.md5(
-            ','.join(sorted(MetricConfig.get_metric_names())).encode('utf-8')
-        ).hexdigest()[:12]
+        cache_filters = self._build_cache_filters(filters)
 
         safe_text = sanitize_filename(text)
         txt_dir = self.processor.base_dir / "data/input" / safe_text / "txt_files"
@@ -1485,20 +1810,26 @@ class TextClassifier(TextMetricsMixin):
         min_tokens_total = filters.get('min_tokens_total', 0)
         if len(tokens) < min_tokens_total:
             if embeddings_only_low_token:
-                print(f"  Low tokens: {text} ({len(tokens):,} tokens, minimum is {min_tokens_total:,}) - generating embeddings only")
+                print(
+                    f"  Low tokens: {text} ({len(tokens):,} tokens, "
+                    f"minimum is {min_tokens_total:,}) - generating embeddings only"
+                )
 
                 cached_embeddings = None
                 cached_mean_emb = None
                 cached_chunks = None
+
                 if self.cache:
-                    cached = self.cache.load(text, cache_filters, video_ids,
-                                             enable_spacy=self.enable_spacy,
-                                             needs_perplexity_model=self.processor.needs_perplexity_model,
-                                             enable_ngram_entropy=self.enable_ngram_entropy,
-                                             fast_mode=self.fast_mode,
-                                             expected_token_count=len(tokens),
-                                             embeddings_only=True,
-                                             force_latest_cache=self.force_latest_cache)
+                    cached = self.cache.load(
+                        text, cache_filters, video_ids,
+                        enable_spacy=self.enable_spacy,
+                        needs_perplexity_model=self.processor.needs_perplexity_model,
+                        enable_ngram_entropy=self.enable_ngram_entropy,
+                        fast_mode=self.fast_mode,
+                        expected_token_count=len(tokens),
+                        embeddings_only=True,
+                        force_latest_cache=self.force_latest_cache,
+                    )
                     if cached is not None:
                         cached_embeddings = cached.get('embeddings')
                         cached_mean_emb = cached.get('mean_emb')
@@ -1507,7 +1838,11 @@ class TextClassifier(TextMetricsMixin):
                 if cached_chunks is not None and cached_embeddings is not None:
                     chunks = cached_chunks
                     chunk_embs = cached_embeddings
-                    mean_emb = cached_mean_emb if cached_mean_emb is not None else np.mean(chunk_embs, axis=0).astype(np.float32)
+                    mean_emb = (
+                        cached_mean_emb
+                        if cached_mean_emb is not None
+                        else np.mean(chunk_embs, axis=0).astype(np.float32)
+                    )
                     print(f"  Cached: {text} (using cached embeddings)")
                 else:
                     chunks = self.processor.chunk(tokens)
@@ -1522,22 +1857,31 @@ class TextClassifier(TextMetricsMixin):
                     'token_count': len(tokens),
                     'chunk_count': len(chunks),
                     'file_count': file_count,
-                    'low_token_text': True
+                    'low_token_text': True,
                 }
 
                 if self.cache and (cached_chunks is None or cached_embeddings is None):
-                    self.cache.save(text, cache_filters, result_dict, video_ids, len(tokens), len(chunks),
-                                    chunk_embs=chunk_embs, mean_emb=mean_emb, chunks=chunks,
-                                    enable_spacy=self.enable_spacy,
-                                    needs_perplexity_model=self.processor.needs_perplexity_model,
-                                    enable_ngram_entropy=self.enable_ngram_entropy,
-                                    fast_mode=self.fast_mode)
+                    self.cache.save(
+                        text, cache_filters, result_dict, video_ids,
+                        len(tokens), len(chunks),
+                        chunk_embs=chunk_embs, mean_emb=mean_emb, chunks=chunks,
+                        enable_spacy=self.enable_spacy,
+                        needs_perplexity_model=self.processor.needs_perplexity_model,
+                        enable_ngram_entropy=self.enable_ngram_entropy,
+                        fast_mode=self.fast_mode,
+                    )
 
-                print(f"  Complete: {text} ({len(tokens):,} tokens, {len(chunks)} chunks, {file_count} files) [embeddings only]")
+                print(
+                    f"  Complete: {text} ({len(tokens):,} tokens, "
+                    f"{len(chunks)} chunks, {file_count} files) [embeddings only]"
+                )
                 return result_dict
-            else:
-                print(f"  Skipped: {text} ({len(tokens):,} tokens, minimum is {min_tokens_total:,})")
-                return None
+
+            print(
+                f"  Skipped: {text} ({len(tokens):,} tokens, "
+                f"minimum is {min_tokens_total:,})"
+            )
+            return None
 
         cached_metrics = {}
         missing_metrics = []
@@ -1547,20 +1891,25 @@ class TextClassifier(TextMetricsMixin):
         target_metric_names = self._get_target_metric_names(skip_centroid_duplicates=True)
 
         if self.cache:
-            cached = self.cache.load(text, cache_filters, video_ids,
-                                     enable_spacy=self.enable_spacy,
-                                     needs_perplexity_model=self.processor.needs_perplexity_model,
-                                     enable_ngram_entropy=self.enable_ngram_entropy,
-                                     fast_mode=self.fast_mode,
-                                     expected_token_count=len(tokens),
-                                     embeddings_only=self.no_metrics,
-                                     force_latest_cache=self.force_latest_cache)
+            cached = self.cache.load(
+                text, cache_filters, video_ids,
+                enable_spacy=self.enable_spacy,
+                needs_perplexity_model=self.processor.needs_perplexity_model,
+                enable_ngram_entropy=self.enable_ngram_entropy,
+                fast_mode=self.fast_mode,
+                expected_token_count=len(tokens),
+                embeddings_only=self.no_metrics,
+                force_latest_cache=self.force_latest_cache,
+            )
             if cached is not None:
                 cached_metrics = cached.get('metrics', {})
                 cached_embeddings = cached.get('embeddings')
                 cached_mean_emb = cached.get('mean_emb')
                 cached_chunks = cached.get('chunks')
-                missing_metrics = [m for m in target_metric_names if self._metric_needs_compute(m, cached_metrics)]
+                missing_metrics = [
+                    m for m in target_metric_names
+                    if self._metric_needs_compute(m, cached_metrics)
+                ]
             else:
                 missing_metrics = list(target_metric_names)
 
@@ -1592,7 +1941,7 @@ class TextClassifier(TextMetricsMixin):
                 metric_report_values = cached_metrics
                 metric_report_source = 'cache'
             else:
-                all_metrics = self._compute_all_metrics(tokens, chunks, chunk_embs)
+                all_metrics = self._compute_all_metrics(tokens, chunks)
                 metric_report_values = all_metrics
                 metric_report_source = 'computed'
 
@@ -1605,352 +1954,428 @@ class TextClassifier(TextMetricsMixin):
             'chunk_count': len(chunks),
             'file_count': file_count,
             '_burrows_rate_profile': style_rate_profile,
-            **all_metrics
+            **all_metrics,
         }
 
         if self.cache:
-            self.cache.save(text, cache_filters, result_dict, video_ids, len(tokens), len(chunks),
-                            chunk_embs=chunk_embs, mean_emb=mean_emb, chunks=chunks,
-                            enable_spacy=self.enable_spacy,
-                            needs_perplexity_model=self.processor.needs_perplexity_model,
-                            enable_ngram_entropy=self.enable_ngram_entropy,
-                            fast_mode=self.fast_mode)
-
-        compression = all_metrics.get('compression')
-        if isinstance(compression, (float, int)):
-            print(
-                f"  Complete: {text} ({len(tokens):,} tokens, {len(chunks)} chunks, {file_count} files, "
-                f"CR: {_format_trimmed_decimal(float(compression), 4)})"
-            )
-        else:
-            print(f"  Complete: {text} ({len(tokens):,} tokens, {len(chunks)} chunks, {file_count} files)")
-
-        return result_dict
-
-    def _process_text_centroid(self, text: str, filters: Dict,
-                                ignore_ids: Optional[set] = None, **filter_kwargs):
-        if ignore_ids is None:
-            ignore_ids = set()
-        print(f"Processing (centroid mode={self.centroid_mode}): {text}")
-
-        cache_filters = {k: v for k, v in filters.items() if k in CACHE_FILTER_KEYS}
-        cache_filters['centroid_mode'] = self.centroid_mode
-        cache_filters['centroid_videos'] = int(self.centroid_videos)
-        cache_filters['centroid_words'] = int(self.centroid_words)
-        cache_filters['stat_word_count'] = int(self.stat_word_count)
-        cache_filters.update(self.embedding_cache_signature)
-        cache_filters['metric_signature'] = hashlib.md5(
-            ','.join(sorted(MetricConfig.get_metric_names())).encode('utf-8')
-        ).hexdigest()[:12]
-
-        if self.centroid_mode == 'video':
-            min_stat_tokens = (
-                int(self.stat_word_count)
-                if (self.stat_word_count and self.stat_word_count > 0)
-                else 0
-            )
-            token_cap = min_stat_tokens if min_stat_tokens > 0 else None
-            enforce_min_tokens = (not self.no_metrics) and min_stat_tokens > 0
-
-            all_filtered_files = self.processor._get_filtered_files(
-                text, filters, ignore_ids
-            )
-            if not all_filtered_files:
-                print(f"  Skipped: {text} (no txt_files directory or no files passed filters)")
-                return None
-            video_ids_for_cache = [
-                extract_video_id(f.name) for _, f in all_filtered_files
-            ]
-            n_files = len(video_ids_for_cache)
-
-            target_metric_names = self._get_target_metric_names()
-            stat_metric_names = [m for m in target_metric_names if not MetricConfig.is_centroid_metric(m)]
-            centroid_metric_names = [m for m in target_metric_names if MetricConfig.is_centroid_metric(m)]
-
-            cached_metrics: Dict[str, Any] = {}
-            text_emb: Optional[np.ndarray] = None
-            cached_is_low_token: Optional[bool] = None
-            missing_metrics: List[str] = list(target_metric_names)
-            cache_kwargs = dict(
+            self.cache.save(
+                text, cache_filters, result_dict, video_ids,
+                len(tokens), len(chunks),
+                chunk_embs=chunk_embs, mean_emb=mean_emb, chunks=chunks,
                 enable_spacy=self.enable_spacy,
                 needs_perplexity_model=self.processor.needs_perplexity_model,
                 enable_ngram_entropy=self.enable_ngram_entropy,
                 fast_mode=self.fast_mode,
             )
 
-            if self.cache:
-                cached = self.cache.load(
-                    text, cache_filters, video_ids_for_cache,
-                    embeddings_only=self.no_metrics,
-                    force_latest_cache=self.force_latest_cache, **cache_kwargs,
+        compression = all_metrics.get('compression')
+        if isinstance(compression, (float, int)):
+            print(
+                f"  Complete: {text} ({len(tokens):,} tokens, {len(chunks)} chunks, "
+                f"{file_count} files, CR: {_format_trimmed_decimal(float(compression), 4)})"
+            )
+        else:
+            print(
+                f"  Complete: {text} ({len(tokens):,} tokens, "
+                f"{len(chunks)} chunks, {file_count} files)"
+            )
+
+        return result_dict
+
+    def _process_text_centroid(
+        self,
+        text: str,
+        filters: Dict,
+        ignore_ids: Optional[set] = None,
+        **filter_kwargs,
+    ):
+        if ignore_ids is None:
+            ignore_ids = set()
+
+        print(f"Processing (centroid mode={self.centroid_mode}): {text}")
+
+        cache_filters = self._build_cache_filters(
+            filters,
+            centroid_extras={
+                'centroid_mode': self.centroid_mode,
+                'centroid_videos': int(self.centroid_videos),
+                'centroid_words': int(self.centroid_words),
+                'stat_word_count': int(self.stat_word_count),
+            },
+        )
+
+        if self.centroid_mode == 'video':
+            return self._process_text_centroid_video(
+                text, filters, ignore_ids, cache_filters
+            )
+
+        if self.centroid_mode == 'word':
+            return self._process_text_centroid_word(
+                text, filters, ignore_ids, cache_filters
+            )
+
+        print(f"  Skipped: {text} (unknown centroid mode: {self.centroid_mode})")
+        return None
+
+    def _process_text_centroid_video(
+        self, text: str, filters: Dict, ignore_ids: set, cache_filters: Dict
+    ):
+        min_stat_tokens = (
+            int(self.stat_word_count)
+            if (self.stat_word_count and self.stat_word_count > 0)
+            else 0
+        )
+        token_cap = min_stat_tokens if min_stat_tokens > 0 else None
+        enforce_min_tokens = (not self.no_metrics) and min_stat_tokens > 0
+
+        all_filtered_files = self.processor._get_filtered_files(text, filters, ignore_ids)
+        if not all_filtered_files:
+            print(f"  Skipped: {text} (no txt_files directory or no files passed filters)")
+            return None
+
+        video_ids_for_cache = [extract_video_id(f.name) for _, f in all_filtered_files]
+        n_files = len(video_ids_for_cache)
+
+        target_metric_names = self._get_target_metric_names()
+        stat_metric_names = [
+            m for m in target_metric_names
+            if not MetricConfig.is_centroid_metric(m)
+        ]
+        centroid_metric_names = [
+            m for m in target_metric_names
+            if MetricConfig.is_centroid_metric(m)
+        ]
+
+        cached_metrics: Dict[str, Any] = {}
+        text_emb: Optional[np.ndarray] = None
+        cached_is_low_token: Optional[bool] = None
+        missing_metrics: List[str] = list(target_metric_names)
+
+        cache_kwargs = dict(
+            enable_spacy=self.enable_spacy,
+            needs_perplexity_model=self.processor.needs_perplexity_model,
+            enable_ngram_entropy=self.enable_ngram_entropy,
+            fast_mode=self.fast_mode,
+        )
+
+        if self.cache:
+            cached = self.cache.load(
+                text, cache_filters, video_ids_for_cache,
+                embeddings_only=self.no_metrics,
+                force_latest_cache=self.force_latest_cache,
+                **cache_kwargs,
+            )
+            if cached is not None and cached.get('mean_emb') is not None:
+                text_emb = cached['mean_emb']
+                cached_metrics = cached.get('metrics', {}) or {}
+                cached_tokens = cached.get('token_count', 0)
+                cached_is_low_token = bool(
+                    enforce_min_tokens and cached_tokens < min_stat_tokens
                 )
-                if cached is not None and cached.get('mean_emb') is not None:
-                    text_emb = cached['mean_emb']
-                    cached_metrics = cached.get('metrics', {}) or {}
-                    cached_tokens = cached.get('token_count', 0)
-                    cached_is_low_token = bool(
-                        enforce_min_tokens and cached_tokens < min_stat_tokens
-                    )
 
-                    if cached_is_low_token:
-                        needed_metrics = [
-                            m for m in target_metric_names
-                            if MetricConfig.is_centroid_metric(m)
-                        ]
-                    else:
-                        needed_metrics = list(target_metric_names)
-
-                    missing_metrics = [
-                        m for m in needed_metrics
-                        if self._metric_needs_compute(m, cached_metrics)
+                if cached_is_low_token:
+                    needed_metrics = [
+                        m for m in target_metric_names
+                        if MetricConfig.is_centroid_metric(m)
                     ]
-
-                    if self.no_metrics or (not missing_metrics and not self.compute_fighting_words):
-                        if not self.no_metrics:
-                            self._print_metric_completion_summary(cached_metrics, 'cache')
-                        result_metrics = dict(cached_metrics)
-                        if cached_is_low_token:
-                            for m in stat_metric_names:
-                                result_metrics.pop(m, None)
-                        print(f"  Complete: {text} ({cached_tokens:,} tokens, cached)")
-
-                        return {
-                            'mean_emb': text_emb,
-                            'token_count': cached_tokens,
-                            'chunk_count': 0,
-                            'file_count': n_files,
-                            'low_token_text': bool(cached_is_low_token),
-                            '_centroid_only': bool(cached_is_low_token),
-                            **({} if self.no_metrics else result_metrics),
-                        }
-
-                    print(f"    -> {len(missing_metrics)} metrics missing; computing only those")
-
-            result = self.processor.load_video_centroids(
-                text, self.centroid_videos, filters, ignore_ids,
-                max_accumulated_tokens=token_cap,
-                precomputed_files=all_filtered_files,
-                need_embeddings=text_emb is None,
-                need_stat_corpus=not self.no_metrics,
-                need_centroid_tokens=not self.no_metrics,
-            )
-            if not result:
-                print(f"  Skipped: {text} (no video centroids)")
-                return None
-            video_ids, video_embeddings, stat_tokens, centroid_tokens, avg_words_per_video = result
-
-            if text_emb is None:
-                if not video_embeddings:
-                    print(f"  Skipped: {text} (no embeddings)")
-                    return None
-                text_emb = np.mean(video_embeddings, axis=0).astype(np.float32)
-                video_embeddings.clear()
-
-            centroid_equals_stat = self._token_lists_are_identical(centroid_tokens, stat_tokens)
-            self._centroid_equals_stat[text] = centroid_equals_stat
-            is_low_token = bool(enforce_min_tokens and len(stat_tokens) < min_stat_tokens)
-
-            if self.compute_fighting_words:
-                if not is_low_token:
-                    self._fighting_words_unigrams[text] = Counter(stat_tokens)
-                    self._fighting_words_token_counts[text] = len(stat_tokens)
-
-                if centroid_equals_stat and not is_low_token:
-                    self._fighting_words_unigrams_centroid[text] = self._fighting_words_unigrams[text]
-                    self._fighting_words_token_counts_centroid[text] = self._fighting_words_token_counts[text]
                 else:
-                    self._fighting_words_unigrams_centroid[text] = Counter(centroid_tokens)
-                    self._fighting_words_token_counts_centroid[text] = len(centroid_tokens)
+                    needed_metrics = list(target_metric_names)
 
-            chunks: List[str] = []
-            stat_metrics: Dict[str, Any] = {}
-            centroid_metrics: Dict[str, Any] = {}
+                missing_metrics = [
+                    m for m in needed_metrics
+                    if self._metric_needs_compute(m, cached_metrics)
+                ]
 
-            if not self.no_metrics and centroid_tokens:
-                centroid_missing = [m for m in missing_metrics if m in centroid_metric_names]
-                if centroid_equals_stat and not is_low_token:
-                    centroid_missing = [
-                        m for m in centroid_missing
-                        if not MetricConfig.is_centroid_duplicate(m)
-                    ]
+                if self.no_metrics or (not missing_metrics and not self.compute_fighting_words):
+                    if not self.no_metrics:
+                        self._print_metric_completion_summary(cached_metrics, 'cache')
 
-                if is_low_token:
-                    for m in missing_metrics:
-                        if m in ('ngram_entropy_2', 'ngram_entropy_3') and m not in centroid_missing:
-                            centroid_missing.append(m)
+                    result_metrics = dict(cached_metrics)
+                    if cached_is_low_token:
+                        for m in stat_metric_names:
+                            result_metrics.pop(m, None)
 
-                if centroid_missing:
-                    needs_centroid_chunks = any(
-                        MetricConfig.METRICS.get(m, {}).get('compute_method')
-                        in ('calculate_perplexity', 'compute_vader_sentiment')
-                        for m in centroid_missing
-                    )
-                    centroid_chunks = self.processor.chunk(centroid_tokens) if needs_centroid_chunks else []
-                    print(f"    -> Computing {len(centroid_missing)} centroid metrics from {len(centroid_tokens):,} tokens")
-                    centroid_metrics = self._compute_metrics(centroid_tokens, centroid_chunks, centroid_missing)
+                    print(f"  Complete: {text} ({cached_tokens:,} tokens, cached)")
 
-            if 'avg_words_per_video' in centroid_metric_names and 'avg_words_per_video' not in cached_metrics:
-                centroid_metrics['avg_words_per_video'] = avg_words_per_video
+                    return {
+                        'mean_emb': text_emb,
+                        'token_count': cached_tokens,
+                        'chunk_count': 0,
+                        'file_count': n_files,
+                        'low_token_text': bool(cached_is_low_token),
+                        '_centroid_only': bool(cached_is_low_token),
+                        **({} if self.no_metrics else result_metrics),
+                    }
 
-            if not self.no_metrics and not is_low_token and stat_tokens:
-                stat_missing = [m for m in missing_metrics if m in stat_metric_names]
-                if stat_missing:
-                    needs_stat_chunks = any(
-                        MetricConfig.METRICS.get(m, {}).get('compute_method')
-                        in ('calculate_perplexity', 'compute_vader_sentiment')
-                        for m in stat_missing
-                    )
-                    stat_chunks = self.processor.chunk(stat_tokens) if needs_stat_chunks else []
-                    if needs_stat_chunks:
-                        chunks = stat_chunks
-                    print(f"    -> Computing {len(stat_missing)} stat metrics from {len(stat_tokens):,} tokens")
-                    stat_metrics = self._compute_metrics(stat_tokens, stat_chunks, stat_missing)
+                print(f"    -> {len(missing_metrics)} metrics missing; computing only those")
 
-            new_metrics = {**stat_metrics, **centroid_metrics}
-            if new_metrics:
-                self._print_metric_completion_summary(new_metrics, 'computed')
+        result = self.processor.load_video_centroids(
+            text, self.centroid_videos, filters, ignore_ids,
+            max_accumulated_tokens=token_cap,
+            precomputed_files=all_filtered_files,
+            need_embeddings=text_emb is None,
+            need_stat_corpus=not self.no_metrics,
+            need_centroid_tokens=not self.no_metrics,
+        )
+        if not result:
+            print(f"  Skipped: {text} (no video centroids)")
+            return None
 
-            all_metrics = {**cached_metrics, **new_metrics}
-            if is_low_token:
-                for m in stat_metric_names:
-                    all_metrics.pop(m, None)
+        video_ids, video_embeddings, stat_tokens, centroid_tokens, avg_words_per_video = result
 
-            result_dict = {
-                'mean_emb': text_emb,
-                'token_count': len(stat_tokens),
-                'chunk_count': len(chunks),
-                'file_count': n_files,
-                '_burrows_rate_profile': self._burrows_rate_profile(centroid_tokens),
-                '_centroid_equals_stat': centroid_equals_stat,
-                '_centroid_only': is_low_token,
-                **all_metrics,
-            }
-
-            if self.cache:
-                self.cache.save(text, cache_filters, result_dict, video_ids_for_cache,
-                                len(stat_tokens), len(chunks), chunk_embs=None,
-                                mean_emb=text_emb, chunks=None, **cache_kwargs)
-
-            if is_low_token:
-                print(f"  Complete: {text} ({len(stat_tokens):,} tokens, centroid metrics only)")
-            else:
-                print(f"  Complete: {text} ({len(stat_tokens):,} tokens, {len(video_ids) or n_files} videos)")
-            return result_dict
-
-        elif self.centroid_mode == 'word':
-            result = self.processor.get_tokens(text, filters, ignore_ids)
-            if not result:
+        if text_emb is None:
+            if not video_embeddings:
+                print(f"  Skipped: {text} (no embeddings)")
                 return None
-            tokens, txt_dir, file_count, video_ids = result
+            text_emb = np.mean(video_embeddings, axis=0).astype(np.float32)
+            video_embeddings.clear()
 
-            word_centroid_tokens = (
-                tokens[-self.centroid_words:]
-                if len(tokens) > self.centroid_words
-                else tokens
-            )
-            stat_tokens = tokens
-            centroid_tokens = word_centroid_tokens
-            centroid_equals_stat = self._token_lists_are_identical(centroid_tokens, stat_tokens)
-            self._centroid_equals_stat[text] = centroid_equals_stat
+        centroid_equals_stat = self._token_lists_are_identical(centroid_tokens, stat_tokens)
+        self._centroid_equals_stat[text] = centroid_equals_stat
+        is_low_token = bool(enforce_min_tokens and len(stat_tokens) < min_stat_tokens)
 
-            if self.compute_fighting_words:
+        if self.compute_fighting_words:
+            if not is_low_token:
                 self._fighting_words_unigrams[text] = Counter(stat_tokens)
                 self._fighting_words_token_counts[text] = len(stat_tokens)
-                if centroid_equals_stat:
-                    self._fighting_words_unigrams_centroid[text] = self._fighting_words_unigrams[text]
-                    self._fighting_words_token_counts_centroid[text] = self._fighting_words_token_counts[text]
-                else:
-                    self._fighting_words_unigrams_centroid[text] = Counter(centroid_tokens)
-                    self._fighting_words_token_counts_centroid[text] = len(centroid_tokens)
 
-            chunks = self.processor.chunk(word_centroid_tokens)
-            if not chunks and word_centroid_tokens:
-                chunks = [' '.join(word_centroid_tokens)]
-            if not chunks:
-                print(f"  Skipped: {text} (no chunks generated)")
-                return None
+            if centroid_equals_stat and not is_low_token:
+                self._fighting_words_unigrams_centroid[text] = self._fighting_words_unigrams[text]
+                self._fighting_words_token_counts_centroid[text] = self._fighting_words_token_counts[text]
+            else:
+                self._fighting_words_unigrams_centroid[text] = Counter(centroid_tokens)
+                self._fighting_words_token_counts_centroid[text] = len(centroid_tokens)
 
-            chunk_embs = self._encode_embeddings(chunks)
-            text_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
+        chunks: List[str] = []
+        stat_metrics: Dict[str, Any] = {}
+        centroid_metrics: Dict[str, Any] = {}
 
-            all_metrics = {}
-            if not self.no_metrics:
-                target_metric_names = self._get_target_metric_names(
-                    skip_centroid_duplicates=centroid_equals_stat,
-                    skip_video_centroid_only=True,
+        if not self.no_metrics and centroid_tokens:
+            centroid_missing = [m for m in missing_metrics if m in centroid_metric_names]
+
+            if centroid_equals_stat and not is_low_token:
+                centroid_missing = [
+                    m for m in centroid_missing
+                    if not MetricConfig.is_centroid_duplicate(m)
+                ]
+
+            if is_low_token:
+                for m in missing_metrics:
+                    if m in ('ngram_entropy_2', 'ngram_entropy_3') and m not in centroid_missing:
+                        centroid_missing.append(m)
+
+            if centroid_missing:
+                needs_centroid_chunks = any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in centroid_missing
                 )
-                stat_metric_names = [m for m in target_metric_names if not MetricConfig.is_centroid_metric(m)]
-                centroid_metric_names = [m for m in target_metric_names if MetricConfig.is_centroid_metric(m)]
-
-                if target_metric_names:
-                    corpus_tokens = len(word_centroid_tokens)
-                    unique_tokens = len(set(word_centroid_tokens))
-                    tt_ratio = (
-                        unique_tokens / corpus_tokens
-                        if corpus_tokens else 0.0
-                    )
-                    print(
-                        f"    -> Stats corpus: {corpus_tokens:,} tokens, "
-                        f"{unique_tokens:,} unique (TTR={tt_ratio:.4f}), "
-                        f"centroid_words_cap={self.centroid_words:,}, "
-                        f"chunks={len(chunks):,}"
-                    )
-                    print(
-                        f"    -> Computing {len(target_metric_names)} metrics "
-                        f"from {len(word_centroid_tokens):,} tokens"
-                    )
-
-                    stat_chunks_for_metrics: List[str] = []
-                    needs_stat_chunks = any(
-                        MetricConfig.METRICS.get(m, {}).get('compute_method') in ('calculate_perplexity', 'compute_vader_sentiment')
-                        for m in stat_metric_names
-                    )
-                    if needs_stat_chunks:
-                        stat_chunks_for_metrics = self.processor.chunk(stat_tokens) or [' '.join(stat_tokens)]
-
-                    stat_metrics = self._compute_metrics(stat_tokens, stat_chunks_for_metrics, stat_metric_names) if stat_metric_names else {}
-
-                    centroid_chunks_for_metrics: List[str] = []
-                    needs_centroid_chunks = any(
-                        MetricConfig.METRICS.get(m, {}).get('compute_method') in ('calculate_perplexity', 'compute_vader_sentiment')
-                        for m in centroid_metric_names
-                    )
-                    if needs_centroid_chunks:
-                        centroid_chunks_for_metrics = self.processor.chunk(centroid_tokens) or [' '.join(centroid_tokens)]
-
-                    centroid_metrics = self._compute_metrics(centroid_tokens, centroid_chunks_for_metrics, centroid_metric_names) if centroid_metric_names else {}
-
-                    all_metrics = {**stat_metrics, **centroid_metrics}
-                    self._print_metric_completion_summary(all_metrics, 'computed')
-
-            result_dict = {
-                'mean_emb': text_emb,
-                'token_count': len(stat_tokens),
-                'chunk_count': len(chunks),
-                'file_count': file_count,
-                'chunk_embs': chunk_embs,
-                '_burrows_rate_profile': self._burrows_rate_profile(centroid_tokens),
-                '_centroid_equals_stat': centroid_equals_stat,
-                **all_metrics
-            }
-
-            if self.cache:
-                self.cache.save(
-                    text, cache_filters, result_dict, video_ids,
-                    len(stat_tokens), len(chunks),
-                    chunk_embs=chunk_embs, mean_emb=text_emb, chunks=chunks,
-                    enable_spacy=self.enable_spacy,
-                    needs_perplexity_model=self.processor.needs_perplexity_model,
-                    enable_ngram_entropy=self.enable_ngram_entropy,
-                    fast_mode=self.fast_mode,
+                centroid_chunks = (
+                    self.processor.chunk(centroid_tokens)
+                    if needs_centroid_chunks
+                    else []
+                )
+                print(
+                    f"    -> Computing {len(centroid_missing)} centroid metrics "
+                    f"from {len(centroid_tokens):,} tokens"
+                )
+                centroid_metrics = self._compute_metrics(
+                    centroid_tokens, centroid_chunks, centroid_missing
                 )
 
-            print(f"  Complete: {text} ({len(stat_tokens):,} tokens, {len(chunks)} chunks)")
-            return result_dict
+        if (
+            'avg_words_per_video' in centroid_metric_names
+            and 'avg_words_per_video' not in cached_metrics
+        ):
+            centroid_metrics['avg_words_per_video'] = avg_words_per_video
 
+        if not self.no_metrics and not is_low_token and stat_tokens:
+            stat_missing = [m for m in missing_metrics if m in stat_metric_names]
+            if stat_missing:
+                needs_stat_chunks = any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in stat_missing
+                )
+                stat_chunks = self.processor.chunk(stat_tokens) if needs_stat_chunks else []
+                if needs_stat_chunks:
+                    chunks = stat_chunks
+                print(
+                    f"    -> Computing {len(stat_missing)} stat metrics "
+                    f"from {len(stat_tokens):,} tokens"
+                )
+                stat_metrics = self._compute_metrics(stat_tokens, stat_chunks, stat_missing)
+
+        new_metrics = {**stat_metrics, **centroid_metrics}
+        if new_metrics:
+            self._print_metric_completion_summary(new_metrics, 'computed')
+
+        all_metrics = {**cached_metrics, **new_metrics}
+        if is_low_token:
+            for m in stat_metric_names:
+                all_metrics.pop(m, None)
+
+        result_dict = {
+            'mean_emb': text_emb,
+            'token_count': len(stat_tokens),
+            'chunk_count': len(chunks),
+            'file_count': n_files,
+            '_burrows_rate_profile': self._burrows_rate_profile(centroid_tokens),
+            '_centroid_equals_stat': centroid_equals_stat,
+            '_centroid_only': is_low_token,
+            **all_metrics,
+        }
+
+        if self.cache:
+            self.cache.save(
+                text, cache_filters, result_dict, video_ids_for_cache,
+                len(stat_tokens), len(chunks),
+                chunk_embs=None, mean_emb=text_emb, chunks=None,
+                **cache_kwargs,
+            )
+
+        if is_low_token:
+            print(f"  Complete: {text} ({len(stat_tokens):,} tokens, centroid metrics only)")
         else:
-            print(f"  Skipped: {text} (unknown centroid mode: {self.centroid_mode})")
+            print(f"  Complete: {text} ({len(stat_tokens):,} tokens, {len(video_ids) or n_files} videos)")
+
+        return result_dict
+
+    def _process_text_centroid_word(
+        self, text: str, filters: Dict, ignore_ids: set, cache_filters: Dict
+    ):
+        result = self.processor.get_tokens(text, filters, ignore_ids)
+        if not result:
             return None
+
+        tokens, txt_dir, file_count, video_ids = result
+
+        word_centroid_tokens = (
+            tokens[-self.centroid_words:]
+            if len(tokens) > self.centroid_words
+            else tokens
+        )
+        stat_tokens = tokens
+        centroid_tokens = word_centroid_tokens
+        centroid_equals_stat = self._token_lists_are_identical(centroid_tokens, stat_tokens)
+        self._centroid_equals_stat[text] = centroid_equals_stat
+
+        if self.compute_fighting_words:
+            self._fighting_words_unigrams[text] = Counter(stat_tokens)
+            self._fighting_words_token_counts[text] = len(stat_tokens)
+
+            if centroid_equals_stat:
+                self._fighting_words_unigrams_centroid[text] = self._fighting_words_unigrams[text]
+                self._fighting_words_token_counts_centroid[text] = self._fighting_words_token_counts[text]
+            else:
+                self._fighting_words_unigrams_centroid[text] = Counter(centroid_tokens)
+                self._fighting_words_token_counts_centroid[text] = len(centroid_tokens)
+
+        chunks = self.processor.chunk(word_centroid_tokens)
+        if not chunks and word_centroid_tokens:
+            chunks = [' '.join(word_centroid_tokens)]
+        if not chunks:
+            print(f"  Skipped: {text} (no chunks generated)")
+            return None
+
+        chunk_embs = self._encode_embeddings(chunks)
+        text_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
+
+        all_metrics = {}
+
+        if not self.no_metrics:
+            target_metric_names = self._get_target_metric_names(
+                skip_centroid_duplicates=centroid_equals_stat,
+                skip_video_centroid_only=True,
+            )
+            stat_metric_names = [
+                m for m in target_metric_names
+                if not MetricConfig.is_centroid_metric(m)
+            ]
+            centroid_metric_names = [
+                m for m in target_metric_names
+                if MetricConfig.is_centroid_metric(m)
+            ]
+
+            if target_metric_names:
+                corpus_tokens = len(word_centroid_tokens)
+                unique_tokens = len(set(word_centroid_tokens))
+                tt_ratio = unique_tokens / corpus_tokens if corpus_tokens else 0.0
+
+                print(
+                    f"    -> Stats corpus: {corpus_tokens:,} tokens, "
+                    f"{unique_tokens:,} unique (TTR={tt_ratio:.4f}), "
+                    f"centroid_words_cap={self.centroid_words:,}, "
+                    f"chunks={len(chunks):,}"
+                )
+                print(
+                    f"    -> Computing {len(target_metric_names)} metrics "
+                    f"from {len(word_centroid_tokens):,} tokens"
+                )
+
+                stat_chunks_for_metrics: List[str] = []
+                needs_stat_chunks = any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in stat_metric_names
+                )
+                if needs_stat_chunks:
+                    stat_chunks_for_metrics = (
+                        self.processor.chunk(stat_tokens) or [' '.join(stat_tokens)]
+                    )
+
+                stat_metrics = (
+                    self._compute_metrics(stat_tokens, stat_chunks_for_metrics, stat_metric_names)
+                    if stat_metric_names
+                    else {}
+                )
+
+                centroid_chunks_for_metrics: List[str] = []
+                needs_centroid_chunks = any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in centroid_metric_names
+                )
+                if needs_centroid_chunks:
+                    centroid_chunks_for_metrics = (
+                        self.processor.chunk(centroid_tokens) or [' '.join(centroid_tokens)]
+                    )
+
+                centroid_metrics = (
+                    self._compute_metrics(
+                        centroid_tokens, centroid_chunks_for_metrics, centroid_metric_names
+                    )
+                    if centroid_metric_names
+                    else {}
+                )
+
+                all_metrics = {**stat_metrics, **centroid_metrics}
+                self._print_metric_completion_summary(all_metrics, 'computed')
+
+        result_dict = {
+            'mean_emb': text_emb,
+            'token_count': len(stat_tokens),
+            'chunk_count': len(chunks),
+            'file_count': file_count,
+            'chunk_embs': chunk_embs,
+            '_burrows_rate_profile': self._burrows_rate_profile(centroid_tokens),
+            '_centroid_equals_stat': centroid_equals_stat,
+            **all_metrics,
+        }
+
+        if self.cache:
+            self.cache.save(
+                text, cache_filters, result_dict, video_ids,
+                len(stat_tokens), len(chunks),
+                chunk_embs=chunk_embs, mean_emb=text_emb, chunks=chunks,
+                enable_spacy=self.enable_spacy,
+                needs_perplexity_model=self.processor.needs_perplexity_model,
+                enable_ngram_entropy=self.enable_ngram_entropy,
+                fast_mode=self.fast_mode,
+            )
+
+        print(f"  Complete: {text} ({len(stat_tokens):,} tokens, {len(chunks)} chunks)")
+        return result_dict
 
     def reduce_dimensions(self, embeddings: np.ndarray, n_texts: int) -> np.ndarray:
         if self._scaler_cache is None:
@@ -1959,6 +2384,7 @@ class TextClassifier(TextMetricsMixin):
         embeddings = np.ascontiguousarray(
             self._scaler_cache.fit_transform(embeddings), dtype=np.float32
         )
+
         if n_texts < 3:
             if embeddings.shape[1] >= 2:
                 return embeddings[:, :2]
@@ -1972,13 +2398,25 @@ class TextClassifier(TextMetricsMixin):
         n_neighbors = max(2, n_neighbors)
 
         reducer = umap.UMAP(
-            n_components=2, metric='cosine', n_neighbors=n_neighbors,
-            min_dist=self.umap_min_dist, init='spectral', random_state=20, n_jobs=1,
-            verbose=False, n_epochs=self.umap_epochs, low_memory=False
+            n_components=2,
+            metric='cosine',
+            n_neighbors=n_neighbors,
+            min_dist=self.umap_min_dist,
+            init='spectral',
+            random_state=20,
+            n_jobs=1,
+            verbose=False,
+            n_epochs=self.umap_epochs,
+            low_memory=False,
         )
         return reducer.fit_transform(embeddings)
 
-    def _cluster_embeddings_default(self, embeddings: np.ndarray, full_token_indices: List[int], random_seed: int = 42) -> List[Optional[int]]:
+    def _cluster_embeddings_default(
+        self,
+        embeddings: np.ndarray,
+        full_token_indices: List[int],
+        random_seed: int = 42,
+    ) -> List[Optional[int]]:
         cluster_labels: List[Optional[int]] = [None] * len(embeddings)
 
         if not full_token_indices:
@@ -1998,7 +2436,9 @@ class TextClassifier(TextMetricsMixin):
             rng = np.random.default_rng(random_seed)
             embedding_std = float(np.std(full_token_embeddings))
             jitter_scale = max(1e-8, embedding_std * 1e-4)
-            jitter = rng.normal(0.0, jitter_scale, size=full_token_embeddings.shape).astype(np.float32)
+            jitter = rng.normal(
+                0.0, jitter_scale, size=full_token_embeddings.shape
+            ).astype(np.float32)
             clustering_input = full_token_embeddings + jitter
         except Exception:
             clustering_input = full_token_embeddings
@@ -2008,14 +2448,18 @@ class TextClassifier(TextMetricsMixin):
                 labels = SklearnHDBSCAN(
                     min_cluster_size=min_cluster_size,
                     min_samples=min_samples,
-                    metric='euclidean'
+                    metric='euclidean',
                 ).fit_predict(clustering_input)
         except Exception:
             labels = None
 
         if labels is None or np.all(labels == -1):
             fallback_clusters = max(2, min(14, int(np.sqrt(len(full_token_indices)))))
-            labels = KMeans(n_clusters=fallback_clusters, random_state=random_seed, n_init=10).fit_predict(clustering_input)
+            labels = KMeans(
+                n_clusters=fallback_clusters,
+                random_state=random_seed,
+                n_init=10,
+            ).fit_predict(clustering_input)
 
         for idx, text_index in enumerate(full_token_indices):
             cluster_labels[text_index] = int(labels[idx])
@@ -2040,14 +2484,21 @@ class TextClassifier(TextMetricsMixin):
 
         if not LEIDEN_AVAILABLE:
             print("    Warning: leidenalg/igraph not available — falling back to HDBSCAN")
-            return self._cluster_embeddings_default(embeddings, full_token_indices, random_seed=random_seed)
+            return self._cluster_embeddings_default(
+                embeddings, full_token_indices, random_seed=random_seed
+            )
 
         try:
             from sklearn.decomposition import PCA
             from sklearn.neighbors import kneighbors_graph
         except ImportError as exc:
-            print(f"    Warning: sklearn dependency missing for Leiden ({exc}) — falling back to HDBSCAN")
-            return self._cluster_embeddings_default(embeddings, full_token_indices, random_seed=random_seed)
+            print(
+                f"    Warning: sklearn dependency missing for Leiden ({exc}) "
+                f"— falling back to HDBSCAN"
+            )
+            return self._cluster_embeddings_default(
+                embeddings, full_token_indices, random_seed=random_seed
+            )
 
         X = embeddings[full_token_indices].astype(np.float32)
         n = X.shape[0]
@@ -2066,6 +2517,7 @@ class TextClassifier(TextMetricsMixin):
 
         k_eff = max(2, min(int(self.leiden_k_neighbors), n - 1))
         A = None
+
         for metric_name in ('cosine', 'euclidean'):
             try:
                 A = kneighbors_graph(
@@ -2077,16 +2529,21 @@ class TextClassifier(TextMetricsMixin):
             except Exception as exc:
                 print(f"    Warning: k-NN graph with metric={metric_name} failed ({exc})")
                 A = None
+
         if A is None:
             print("    Warning: could not build k-NN graph — falling back to HDBSCAN")
-            return self._cluster_embeddings_default(embeddings, full_token_indices, random_seed=random_seed)
+            return self._cluster_embeddings_default(
+                embeddings, full_token_indices, random_seed=random_seed
+            )
 
         try:
             sources, targets = A.nonzero()
             edges = [(int(s), int(t)) for s, t in zip(sources, targets) if s < t]
             if not edges:
                 print("    Warning: k-NN graph produced no edges — falling back to HDBSCAN")
-                return self._cluster_embeddings_default(embeddings, full_token_indices, random_seed=random_seed)
+                return self._cluster_embeddings_default(
+                    embeddings, full_token_indices, random_seed=random_seed
+                )
 
             g = ig.Graph(n=n, edges=edges, directed=False)
             partition = la.find_partition(
@@ -2098,7 +2555,9 @@ class TextClassifier(TextMetricsMixin):
             labels = np.asarray(partition.membership, dtype=int)
         except Exception as exc:
             print(f"    Warning: Leiden failed ({exc}) — falling back to HDBSCAN")
-            return self._cluster_embeddings_default(embeddings, full_token_indices, random_seed=random_seed)
+            return self._cluster_embeddings_default(
+                embeddings, full_token_indices, random_seed=random_seed
+            )
 
         for idx, text_index in enumerate(full_token_indices):
             cluster_labels[text_index] = int(labels[idx])
@@ -2125,9 +2584,7 @@ class TextClassifier(TextMetricsMixin):
             metric_key = 'cluster' if variant_index == 0 else f'cluster_{variant_index + 1}'
             seed = base_seed + variant_index
             variants[metric_key] = self._cluster_embeddings_default(
-                embeddings,
-                full_token_indices,
-                random_seed=seed,
+                embeddings, full_token_indices, random_seed=seed
             )
 
         return variants
@@ -2195,22 +2652,32 @@ class TextClassifier(TextMetricsMixin):
 
                 row = [text]
                 for j in range(n):
-                    row.extend([closest[j][0], _format_trimmed_decimal(closest[j][1], 4)] if j < len(closest) else ['', ''])
+                    if j < len(closest):
+                        row.extend([closest[j][0], _format_trimmed_decimal(closest[j][1], 4)])
+                    else:
+                        row.extend(['', ''])
                 for j in range(n):
-                    row.extend([farthest[j][0], _format_trimmed_decimal(farthest[j][1], 4)] if j < len(farthest) else ['', ''])
+                    if j < len(farthest):
+                        row.extend([farthest[j][0], _format_trimmed_decimal(farthest[j][1], 4)])
+                    else:
+                        row.extend(['', ''])
                 writer.writerow(row)
 
         print(f"  Exported: {output_path.absolute()}")
 
-    def visualize(self, reduced: np.ndarray, texts: List[str],
-                metrics_data: Dict[str, np.ndarray],
-                active_metric: Optional[str] = None,
-                output_html: str = ".html",
-                low_token_texts: Optional[set] = None,
-                enable_annotations: bool = False,
-                focus_text: Optional[str] = None,
-                semantic_embeddings: Optional[List[List[float]]] = None,
-                burrows_similarity: Optional[List[List[float]]] = None):
+    def visualize(
+        self,
+        reduced: np.ndarray,
+        texts: List[str],
+        metrics_data: Dict[str, np.ndarray],
+        active_metric: Optional[str] = None,
+        output_html: str = ".html",
+        low_token_texts: Optional[set] = None,
+        enable_annotations: bool = False,
+        focus_text: Optional[str] = None,
+        semantic_embeddings: Optional[List[List[float]]] = None,
+        burrows_similarity: Optional[List[List[float]]] = None,
+    ):
         if low_token_texts is None:
             low_token_texts = set()
         if focus_text is None:
@@ -2221,18 +2688,25 @@ class TextClassifier(TextMetricsMixin):
             burrows_similarity = []
 
         exclude_from_hover = {
-            'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio', 'imperative_exclamation_density', 'academic_word_density',
-            'article_count_raw', 'conjunction_count_raw', 'vulnerability', 'family_exclamations', 'pronoun_article_ratio',
-            'imperative_exclamation_density', 'deictic_spatial_temporal', 'elaboration_explanation_ratio', 'narration_continuation_ratio',
+            'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
+            'imperative_exclamation_count', 'academic_word_density',
+            'article_count_raw', 'conjunction_count_raw', 'vulnerability',
+            'family_exclamations', 'pronoun_article_ratio',
+            'deictic_spatial_temporal', 'elaboration_explanation_ratio',
+            'narration_continuation_ratio',
             'insult', 'bodily_humor', 'dis_ratio',
             'word_burstiness', 'semantic_disparity', 'guppa', 'pronoun_switching',
-            'compression', 'moving_lzma_cr', 'normalized_compression_ratio', 'window_normalized_lzma_cr',
-            'vader_positivity', 'vader_volatility', 'vader_positivity_centroid', 'vader_volatility_centroid',
+            'compression', 'moving_lzma_cr', 'normalized_compression_ratio',
+            'window_normalized_lzma_cr',
+            'vader_positivity', 'vader_volatility',
+            'vader_positivity_centroid', 'vader_volatility_centroid',
             'fighting_words_floor_z1000', 'fighting_words_floor_z1000_centroid',
         }
         exclude_from_hover.update({
             metric_name for metric_name in MetricConfig.METRICS
-            if metric_name.endswith('_count') or metric_name.endswith('_density') or metric_name.startswith('mallet_topic_')
+            if metric_name.endswith('_count')
+            or metric_name.endswith('_density')
+            or metric_name.startswith('mallet_topic_')
         })
 
         def wrap_long_lines(text: str, max_length: int = 75) -> str:
@@ -2268,7 +2742,12 @@ class TextClassifier(TextMetricsMixin):
         for i, text in enumerate(texts):
             tag = ''
             try:
-                tag_path = self.processor.base_dir / "data/input" / sanitize_filename(text) / "tag.txt"
+                tag_path = (
+                    self.processor.base_dir
+                    / "data/input"
+                    / sanitize_filename(text)
+                    / "tag.txt"
+                )
                 if tag_path.exists():
                     tag = tag_path.read_text(encoding='utf-8').strip()
             except (OSError, UnicodeError):
@@ -2285,20 +2764,35 @@ class TextClassifier(TextMetricsMixin):
             is_low_token = text in low_token_texts
             if not is_low_token:
                 for metric_name, metric_values in metrics_data.items():
-                    if metric_values is not None and metric_name not in exclude_from_hover and not metric_name.startswith('cluster'):
+                    if (
+                        metric_values is not None
+                        and metric_name not in exclude_from_hover
+                        and not metric_name.startswith('cluster')
+                    ):
                         per_text_value = metric_values[i]
                         if per_text_value is None or np.isnan(per_text_value):
                             continue
-                        display_name = MetricConfig.METRICS.get(metric_name, {}).get('name', metric_name)
+
+                        display_name = MetricConfig.METRICS.get(
+                            metric_name, {}
+                        ).get('name', metric_name)
+
                         if metric_name in [
                             'MTLD', 'TTR', 'MATTR', 'yules_k',
                             'lexical_density', 'hapax_ratio',
-                            'avg_word_length', 'semantic_disparity', 'burrows_cosine_disagreement',
+                            'avg_word_length', 'semantic_disparity',
+                            'burrows_cosine_disagreement',
                             'MTLD_centroid', 'MATTR_centroid',
                         ]:
-                            stats_column += f"{display_name}: {_format_trimmed_decimal(metric_values[i], 4)}<br>"
+                            stats_column += (
+                                f"{display_name}: "
+                                f"{_format_trimmed_decimal(metric_values[i], 4)}<br>"
+                            )
                         elif metric_name in ['ngram_entropy_2', 'ngram_entropy_3']:
-                            stats_column += f"{display_name}: {_format_trimmed_decimal(metric_values[i], 4)}<br>"
+                            stats_column += (
+                                f"{display_name}: "
+                                f"{_format_trimmed_decimal(metric_values[i], 4)}<br>"
+                            )
                         elif metric_name in ['perplexity', 'tfidf_distinctiveness']:
                             stats_column += f"{display_name}: {metric_values[i]:.2f}<br>"
                         elif metric_name == 'flesch_kincaid':
@@ -2314,7 +2808,12 @@ class TextClassifier(TextMetricsMixin):
                     tx_dir = base_dir / "data/input" / safe_text
                     message = None
 
-                    for fname in ["additional_message.txt", "hover_message.txt", "message.txt", "note.txt"]:
+                    for fname in [
+                        "additional_message.txt",
+                        "hover_message.txt",
+                        "message.txt",
+                        "note.txt",
+                    ]:
                         if not fname.endswith('.txt'):
                             continue
                         fpath = tx_dir / fname
@@ -2329,9 +2828,19 @@ class TextClassifier(TextMetricsMixin):
                             try:
                                 with open(meta_path, 'r', encoding='utf-8') as mf:
                                     meta = json.load(mf)
+
                                 if isinstance(meta, dict):
-                                    for key in ["additional_message", "hover_message", "message", "note"]:
-                                        if key in meta and isinstance(meta[key], str) and meta[key].strip():
+                                    for key in [
+                                        "additional_message",
+                                        "hover_message",
+                                        "message",
+                                        "note",
+                                    ]:
+                                        if (
+                                            key in meta
+                                            and isinstance(meta[key], str)
+                                            and meta[key].strip()
+                                        ):
                                             message = meta[key].strip()
                                             break
                                 elif isinstance(meta, list):
@@ -2339,15 +2848,33 @@ class TextClassifier(TextMetricsMixin):
                                         if not isinstance(item, dict):
                                             continue
                                         if item.get("type") == "text" or item.get("id") == "text":
-                                            for key in ["additional_message", "hover_message", "message", "note"]:
-                                                if key in item and isinstance(item[key], str) and item[key].strip():
+                                            for key in [
+                                                "additional_message",
+                                                "hover_message",
+                                                "message",
+                                                "note",
+                                            ]:
+                                                if (
+                                                    key in item
+                                                    and isinstance(item[key], str)
+                                                    and item[key].strip()
+                                                ):
                                                     message = item[key].strip()
                                                     break
                                             if message:
                                                 break
                                         if item.get("scope") == "text":
-                                            for key in ["additional_message", "hover_message", "message", "note"]:
-                                                if key in item and isinstance(item[key], str) and item[key].strip():
+                                            for key in [
+                                                "additional_message",
+                                                "hover_message",
+                                                "message",
+                                                "note",
+                                            ]:
+                                                if (
+                                                    key in item
+                                                    and isinstance(item[key], str)
+                                                    and item[key].strip()
+                                                ):
                                                     message = item[key].strip()
                                                     break
                                             if message:
@@ -2357,7 +2884,11 @@ class TextClassifier(TextMetricsMixin):
 
                     if message:
                         programmer_notes[text] = message
-                        text_content = f"{stats_column}<span style='font-weight: bold;'>Click dot for Annotation</span>"
+                        text_content = (
+                            f"{stats_column}"
+                            f"<span style='font-weight: bold;'>"
+                            f"Click dot for Annotation</span>"
+                        )
                     else:
                         text_content = stats_column
                 except Exception:
@@ -2375,17 +2906,31 @@ class TextClassifier(TextMetricsMixin):
             key for key in metrics_data.keys()
             if key == 'cluster' or key.startswith('cluster_')
         ]
-        cluster_metric_keys.sort(key=lambda key: 1 if key == 'cluster' else int(key.split('_')[1]))
+        cluster_metric_keys.sort(
+            key=lambda key: 1 if key == 'cluster' else int(key.split('_')[1])
+        )
 
-        if active_metric and active_metric in MetricConfig.METRICS and active_metric in metrics_data and metrics_data[active_metric] is not None:
+        if (
+            active_metric
+            and active_metric in MetricConfig.METRICS
+            and active_metric in metrics_data
+            and metrics_data[active_metric] is not None
+        ):
             metric_config = MetricConfig.METRICS[active_metric]
             metric_values = metrics_data[active_metric]
-            full_token_values = [metric_values[i] for i in full_token_indices] if full_token_indices else metric_values
+            full_token_values = (
+                [metric_values[i] for i in full_token_indices]
+                if full_token_indices
+                else metric_values
+            )
             color_label = metric_config.get('name', active_metric)
             color_scale = metric_config.get('colorscale', UNIFIED_COLORSCALE)
             title_suffix = metric_config.get('title_suffix', color_label)
             title = f"Text Semantic Map colored by {title_suffix}"
-            color_data = [float(metric_values[i]) if i in full_token_indices else float('nan') for i in range(len(texts))]
+            color_data = [
+                float(metric_values[i]) if i in full_token_indices else float('nan')
+                for i in range(len(texts))
+            ]
         else:
             default_cluster_key = cluster_metric_keys[0] if cluster_metric_keys else 'cluster'
             precomputed_clusters = metrics_data.get(default_cluster_key)
@@ -2425,9 +2970,13 @@ class TextClassifier(TextMetricsMixin):
         fig = go.Figure()
 
         fig.add_trace(go.Scatter(
-            x=reduced[:, 0], y=reduced[:, 1],
-            mode='markers+text', text=texts, textposition="middle center",
-            hovertext=hover_texts, hoverinfo="text",
+            x=reduced[:, 0],
+            y=reduced[:, 1],
+            mode='markers+text',
+            text=texts,
+            textposition="middle center",
+            hovertext=hover_texts,
+            hoverinfo="text",
             marker=dict(
                 size=15,
                 color=color_data,
@@ -2435,19 +2984,21 @@ class TextClassifier(TextMetricsMixin):
                 showscale=True,
                 cmin=explicit_min,
                 cmax=explicit_max,
-                colorbar=dict(
-                    title=color_label
-                ),
-                line=dict(width=1, color='black')
+                colorbar=dict(title=color_label),
+                line=dict(width=1, color='black'),
             ),
-            textfont=dict(size=7, color='black')
+            textfont=dict(size=7, color='black'),
         ))
 
         fig.update_layout(
             title=dict(text=title, x=0.5, xanchor='center'),
-            xaxis_title="UMAP Component 1", yaxis_title="UMAP Component 2",
-            hovermode='closest', showlegend=False, height=800, width=1200,
-            font=dict(family='Arial, sans-serif')
+            xaxis_title="UMAP Component 1",
+            yaxis_title="UMAP Component 2",
+            hovermode='closest',
+            showlegend=False,
+            height=800,
+            width=1200,
+            font=dict(family='Arial, sans-serif'),
         )
 
         fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
@@ -2474,11 +3025,14 @@ class TextClassifier(TextMetricsMixin):
                     if not np.isnan(value):
                         cluster_labels[i] = int(value)
                 metrics_json[cluster_metric_key] = cluster_labels
+
             if cluster_metric_key in self.cluster_metric_labels:
                 cluster_title_suffix = self.cluster_metric_labels[cluster_metric_key]
             else:
                 cluster_title_suffix = cluster_metric_key.replace('_', ' ').title()
-            titles_json[cluster_metric_key] = f'Text Semantic Clusters ({cluster_title_suffix})'
+            titles_json[cluster_metric_key] = (
+                f'Text Semantic Clusters ({cluster_title_suffix})'
+            )
 
         metric_names_dict = {}
         metric_colorscale_dict = {}
@@ -2503,28 +3057,38 @@ class TextClassifier(TextMetricsMixin):
 
         for metric_name, metric_config in non_contextual_metric_items:
             metric_names_dict[metric_name] = metric_config.get('name', metric_name)
-            metric_colorscale_dict[metric_name] = metric_config.get('colorscale', UNIFIED_COLORSCALE)
+            metric_colorscale_dict[metric_name] = metric_config.get(
+                'colorscale', UNIFIED_COLORSCALE
+            )
             metric_keys_list.append(metric_name)
 
         for metric_name, metric_values in metrics_data.items():
             if metric_values is not None:
                 if metric_name == 'cluster' or metric_name.startswith('cluster_'):
                     continue
-                metric_list = [float(metric_values[i]) if i in full_token_indices else None for i in range(len(texts))]
+                metric_list = [
+                    float(metric_values[i]) if i in full_token_indices else None
+                    for i in range(len(texts))
+                ]
                 metrics_json[metric_name] = metric_list
                 metric_config = MetricConfig.METRICS.get(metric_name, {})
-                titles_json[metric_name] = f"Text Semantic Clusters colored by {metric_config.get('title_suffix', metric_name)}"
+                titles_json[metric_name] = (
+                    f"Text Semantic Clusters colored by "
+                    f"{metric_config.get('title_suffix', metric_name)}"
+                )
 
         metrics_json_str = safe_json_dumps(metrics_json)
         titles_json_str = safe_json_dumps(titles_json)
-
         texts_json = safe_json_dumps(texts)
 
-        programmer_notes_json = safe_json_dumps({tx: note for tx, note in programmer_notes.items()})
+        programmer_notes_json = safe_json_dumps(
+            {tx: note for tx, note in programmer_notes.items()}
+        )
         annotations_enabled_json = safe_json_dumps(bool(enable_annotations))
 
         template_path = Path(__file__).with_name("atlas_template.html")
         template = template_path.read_text(encoding="utf-8")
+
         template_values = {
             "__FOCUS_TEXT__": json.dumps(focus_text),
             "__METRICS_JSON__": metrics_json_str,
@@ -2537,9 +3101,12 @@ class TextClassifier(TextMetricsMixin):
             "__ANNOTATIONS_ENABLED_JSON__": annotations_enabled_json,
             "__SEMANTIC_EMBEDDINGS_JSON__": safe_json_dumps(semantic_embeddings),
             "__BURROWS_SIMILARITY_JSON__": safe_json_dumps(burrows_similarity),
-            "__LOW_TOKEN_TEXTS_JSON__": json.dumps([tx for tx in texts if tx in low_token_texts]),
+            "__LOW_TOKEN_TEXTS_JSON__": json.dumps(
+                [tx for tx in texts if tx in low_token_texts]
+            ),
             "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
         }
+
         custom_style_and_script = template
         for placeholder, value in template_values.items():
             custom_style_and_script = custom_style_and_script.replace(placeholder, value)
@@ -2558,7 +3125,6 @@ class TextClassifier(TextMetricsMixin):
         print(f"\nExported interactive visualization to: {output_path}")
         print(f"Opening in browser...")
 
-        import time
         time.sleep(0.1)
 
         try:
@@ -2567,7 +3133,14 @@ class TextClassifier(TextMetricsMixin):
             print(f"Could not automatically open browser: {e}")
             print(f"Please manually open: {output_path}")
 
-    def run(self, texts: List[str], output_csv: str, output_html: str, ignore_ids: Optional[set] = None, **filter_kwargs):
+    def run(
+        self,
+        texts: List[str],
+        output_csv: str,
+        output_html: str,
+        ignore_ids: Optional[set] = None,
+        **filter_kwargs,
+    ):
         if ignore_ids is None:
             ignore_ids = set()
 
@@ -2601,8 +3174,10 @@ class TextClassifier(TextMetricsMixin):
                         fallback_filters = dict(filter_kwargs)
                         fallback_filters['ignore_ids'] = ignore_ids
                         style_profile = self._load_burrows_rate_profile(tx, fallback_filters)
+
                     if style_profile is not None:
                         style_profiles[tx] = style_profile
+
                     for metric_name in metric_names:
                         if metric_name in result:
                             metrics_storage[metric_name][tx] = result[metric_name]
@@ -2617,13 +3192,12 @@ class TextClassifier(TextMetricsMixin):
 
         if self.mallet_num_topics > 0 and successful:
             try:
-                self._train_mallet_topics(
-                    successful,
-                    ignore_ids,
-                    filter_kwargs,
-                )
+                self._train_mallet_topics(successful, ignore_ids, filter_kwargs)
             except Exception as exc:
-                print(f"  Warning: MALLET topic modeling failed ({exc}); continuing without topics")
+                print(
+                    f"  Warning: MALLET topic modeling failed ({exc}); "
+                    f"continuing without topics"
+                )
 
         if self.compute_fighting_words:
             fighting_word_texts = successful
@@ -2634,6 +3208,7 @@ class TextClassifier(TextMetricsMixin):
             floor_values = self._compute_fighting_words_values(
                 fighting_word_texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=False
             )
+
             for metric_name, values in (
                 (FIGHTING_WORDS_PEAK_METRIC, peak_values),
                 (FIGHTING_WORDS_FLOOR_METRIC, floor_values),
@@ -2642,8 +3217,10 @@ class TextClassifier(TextMetricsMixin):
                     metrics_storage[metric_name][tx] = values.get(tx)
 
             any_separate_centroid = any(
-                not self._centroid_equals_stat.get(tx, True) for tx in fighting_word_texts
+                not self._centroid_equals_stat.get(tx, True)
+                for tx in fighting_word_texts
             )
+
             if any_separate_centroid:
                 peak_values_c = self._compute_fighting_words_values(
                     fighting_word_texts, FIGHTING_WORDS_PEAK_RANK, use_centroid=True
@@ -2660,28 +3237,34 @@ class TextClassifier(TextMetricsMixin):
 
             print(
                 f"  Fighting-words metrics: peak computed "
-                f"{sum(value is not None for value in peak_values.values())}/{len(fighting_word_texts)} "
+                f"{sum(v is not None for v in peak_values.values())}/{len(fighting_word_texts)} "
                 f"(rank={FIGHTING_WORDS_PEAK_RANK}); floor computed "
-                f"{sum(value is not None for value in floor_values.values())}/{len(fighting_word_texts)} "
+                f"{sum(v is not None for v in floor_values.values())}/{len(fighting_word_texts)} "
                 f"(rank={FIGHTING_WORDS_FLOOR_RANK}, min_count={FIGHTING_WORDS_FLOOR_MIN_COUNT})"
             )
 
-        emb_matrix = np.vstack([self.embeddings[tx] for tx in successful]).astype(np.float32)
+        emb_matrix = np.vstack(
+            [self.embeddings[tx] for tx in successful]
+        ).astype(np.float32)
 
         cluster_indices = list(range(len(successful)))
         requested_cluster_variants = filter_kwargs.get('cluster_variants')
+
         if requested_cluster_variants is None:
             cluster_variant_count = 1 if len(successful) > 2000 else 11
         else:
             cluster_variant_count = max(1, int(requested_cluster_variants))
+
         if self.cluster_method == 'leiden':
             print(
                 f"  Clustering method: Leiden | k={self.leiden_k_neighbors} | "
-                f"resolutions={self.leiden_resolution_min:.2f}-{self.leiden_resolution_max:.2f} | "
+                f"resolutions={self.leiden_resolution_min:.2f}-"
+                f"{self.leiden_resolution_max:.2f} | "
                 f"variants={cluster_variant_count} | whiten={self.leiden_whiten}"
             )
         else:
             print(f"  Clustering method: HDBSCAN | variants={cluster_variant_count}")
+
         cluster_variant_labels = self._cluster_embeddings_variants(
             emb_matrix,
             cluster_indices,
@@ -2703,19 +3286,23 @@ class TextClassifier(TextMetricsMixin):
         for metric_key, labels in cluster_variant_labels.items():
             metrics_data[metric_key] = np.array(
                 [float(label) if label is not None else np.nan for label in labels],
-                dtype=float
+                dtype=float,
             )
 
         self.similarity_matrix = cosine_similarity(emb_matrix)
 
         if not self.no_metrics:
-            disagreement = self._burrows_cosine_scores(style_profiles, emb_matrix, successful)
+            disagreement = self._burrows_cosine_scores(
+                style_profiles, emb_matrix, successful
+            )
             metrics_data['burrows_cosine_disagreement'] = np.array(
                 [disagreement.get(text, 0.0) for text in successful],
                 dtype=float,
             )
 
-            burrows_distances, burrows_valid = self._burrows_distance_matrix(style_profiles, successful)
+            burrows_distances, burrows_valid = self._burrows_distance_matrix(
+                style_profiles, successful
+            )
         else:
             burrows_distances, burrows_valid = None, []
 
@@ -2745,12 +3332,15 @@ class TextClassifier(TextMetricsMixin):
                 }
                 attached += 1
             if attached:
-                print(f"  Attached {attached} MALLET topic metrics to visualization")
+                print(
+                    f"  Attached {attached} MALLET topic metrics to visualization"
+                )
 
         n_success = len(successful)
         burrows_similarity_matrix = np.zeros((n_success, n_success), dtype=np.float32)
         for i in range(n_success):
             burrows_similarity_matrix[i, i] = 1.0
+
         if burrows_distances is not None and burrows_valid:
             for row_pos, row_text_idx in enumerate(burrows_valid):
                 for col_pos, col_text_idx in enumerate(burrows_valid):
@@ -2761,6 +3351,7 @@ class TextClassifier(TextMetricsMixin):
 
         reduced = self.reduce_dimensions(emb_matrix, len(successful))
         focus_text = filter_kwargs.get('focus_text', '')
+
         self.visualize(
             reduced,
             successful,
@@ -2791,125 +3382,208 @@ Examples:
   python atlas.py --cluster-method leiden --cluster-variants 8
 
 Available metrics for --color-by:
-  """ + ", ".join(MetricConfig.get_metric_names())
+  """ + ", ".join(MetricConfig.get_metric_names()),
     )
 
     parser.add_argument('texts', nargs='*', help='Text folder names to process')
 
     source_group = parser.add_mutually_exclusive_group()
-    source_group.add_argument('--nltk-corpus', metavar='NAME',
-                              help='Compare every text in an installed NLTK corpus (for example: gutenberg or reuters)')
-    source_group.add_argument('--txt-directory', metavar='PATH',
-                              help='Compare every .txt file under a directory')
-    parser.add_argument('--txt-depth', type=int, default=3,
-                        help='Maximum number of subdirectory levels to scan with --txt-directory (default: 3)')
+    source_group.add_argument(
+        '--nltk-corpus', metavar='NAME',
+        help='Compare every text in an installed NLTK corpus (for example: gutenberg or reuters)',
+    )
+    source_group.add_argument(
+        '--txt-directory', metavar='PATH',
+        help='Compare every .txt file under a directory',
+    )
+    parser.add_argument(
+        '--txt-depth', type=int, default=3,
+        help='Maximum number of subdirectory levels to scan with --txt-directory (default: 3)',
+    )
 
     parser.add_argument('--date-from', help='Include only videos from this date onwards (YYYYMMDD)')
     parser.add_argument('--date-to', help='Include only videos up to this date (YYYYMMDD)')
     parser.add_argument('--duration-from', help='Minimum video duration (HH:MM:SS)')
     parser.add_argument('--duration-to', help='Maximum video duration (HH:MM:SS)')
     parser.add_argument('--exclude-live', action='store_true', help='Exclude livestream videos')
-    parser.add_argument('--min-tokens-per-file', type=int,
-                       help='Skip individual transcript files with fewer than N tokens')
-    parser.add_argument('--min-tokens-total', '--min-words', type=int, dest='min_tokens_total',
-                       help='Skip texts with fewer than N total tokens')
-    parser.add_argument('--embeddings-only-low-token', action='store_true', dest='embeddings_only_low_token',
-                       help='Generate embeddings for texts below min-tokens-total, but skip metric calculations')
-    parser.add_argument('--annotations', action='store_true',
-                       help='Enable annotation loading and click-to-view notes in the HTML output')
-    parser.add_argument('--token-limit', type=int,
-                       help='Use only the newest N tokens per text')
-    parser.add_argument('--text-token-limit', type=int, dest='text_token_limit',
-                       help='Use only the first N tokens per text')
-    parser.add_argument('--per-video-token-limit', type=int, dest='per_video_token_limit',
-                       help='Use only the first N tokens per video before truncating each file')
-    parser.add_argument('--ignore-urls', type=str, dest='ignore_urls',
-                       help='Path to txt file with YouTube URLs or video IDs to ignore (one per line)')
+    parser.add_argument(
+        '--min-tokens-per-file', type=int,
+        help='Skip individual transcript files with fewer than N tokens',
+    )
+    parser.add_argument(
+        '--min-tokens-total', '--min-words', type=int, dest='min_tokens_total',
+        help='Skip texts with fewer than N total tokens',
+    )
+    parser.add_argument(
+        '--embeddings-only-low-token', action='store_true', dest='embeddings_only_low_token',
+        help='Generate embeddings for texts below min-tokens-total, but skip metric calculations',
+    )
+    parser.add_argument(
+        '--annotations', action='store_true',
+        help='Enable annotation loading and click-to-view notes in the HTML output',
+    )
+    parser.add_argument('--token-limit', type=int, help='Use only the newest N tokens per text')
+    parser.add_argument(
+        '--text-token-limit', type=int, dest='text_token_limit',
+        help='Use only the first N tokens per text',
+    )
+    parser.add_argument(
+        '--per-video-token-limit', type=int, dest='per_video_token_limit',
+        help='Use only the first N tokens per video before truncating each file',
+    )
+    parser.add_argument(
+        '--ignore-urls', type=str, dest='ignore_urls',
+        help='Path to txt file with YouTube URLs or video IDs to ignore (one per line)',
+    )
 
-    parser.add_argument('--output-csv', default='data/input/text_similarities.csv',
-                       help='Output CSV file path')
-    parser.add_argument('--output-html', default='data/input/SBERTClustersHD.html',
-                       help='Output HTML visualization file path')
+    parser.add_argument(
+        '--output-csv', default='data/input/text_similarities.csv',
+        help='Output CSV file path',
+    )
+    parser.add_argument(
+        '--output-html', default='data/input/SBERTClustersHD.html',
+        help='Output HTML visualization file path',
+    )
     parser.add_argument('--no-cache', action='store_true', help='Disable embedding cache')
-    parser.add_argument('--force-latest-cache', action='store_true',
-                       help='Bypass cache freshness checks and use newest cache file per text immediately')
-    parser.add_argument('--clear-cache', nargs='?', const='all', metavar='TEXT',
-                       help='Clear cache for specific text or all texts')
+    parser.add_argument(
+        '--force-latest-cache', action='store_true',
+        help='Bypass cache freshness checks and use newest cache file per text immediately',
+    )
+    parser.add_argument(
+        '--clear-cache', nargs='?', const='all', metavar='TEXT',
+        help='Clear cache for specific text or all texts',
+    )
 
-    parser.add_argument('--color-by', choices=None,
-                       help='Metric to use for coloring the visualization')
-    parser.add_argument('--calculate-perplexity', action='store_true',
-                       help='Enable perplexity calculation (slower, loads language model)')
-    parser.add_argument('--enable-spacy', action='store_true',
-                       help='Enable spaCy-dependent metrics such as lexical_density (slower, loads 40MB model)')
-    parser.add_argument('--compute-ngram-entropy', action='store_true',
-                       help='Enable n-gram cross-entropy metrics (slower for large token counts)')
-    parser.add_argument('--fast-mode', action='store_true',
-                       help='Skip expensive metrics (fastest mode)')
-    parser.add_argument('--word-counts-only', action='store_true',
-                       help='Compute/cache only count-style and regex-pattern metrics')
-    parser.add_argument('--no-metrics', action='store_true',
-                       help='Skip all metric calculations and only run embeddings/clustering/UMAP')
-    parser.add_argument('--umap-neighbors', type=int,
-                       help='UMAP neighborhood size; defaults to 5 for datasets up to 30 items, otherwise 50')
-    parser.add_argument('--umap-min-dist', type=float, default=0.1,
-                       help='Minimum distance between points in UMAP space (default: 0.1; use 0 for tighter groups)')
-    parser.add_argument('--umap-epochs', type=int, default=50,
-                       help='Number of UMAP optimization epochs (default: 50)')
-    parser.add_argument('--cluster-variants', type=int, default=None,
-                       help='Number of clustering variants to generate (minimum: 1). Defaults to 11 '
-                           'for datasets up to 1,500 items and 1 for larger datasets. For HDBSCAN '
-                           'these are seed variations; for Leiden these are resolution steps between '
-                           '--leiden-resolution-min and --leiden-resolution-max.')
+    parser.add_argument(
+        '--color-by', choices=None,
+        help='Metric to use for coloring the visualization',
+    )
+    parser.add_argument(
+        '--calculate-perplexity', action='store_true',
+        help='Enable perplexity calculation (slower, loads language model)',
+    )
+    parser.add_argument(
+        '--enable-spacy', action='store_true',
+        help='Enable spaCy-dependent metrics such as lexical_density (slower, loads 40MB model)',
+    )
+    parser.add_argument(
+        '--compute-ngram-entropy', action='store_true',
+        help='Enable n-gram cross-entropy metrics (slower for large token counts)',
+    )
+    parser.add_argument('--fast-mode', action='store_true', help='Skip expensive metrics (fastest mode)')
+    parser.add_argument(
+        '--word-counts-only', action='store_true',
+        help='Compute/cache only count-style and regex-pattern metrics',
+    )
+    parser.add_argument(
+        '--no-metrics', action='store_true',
+        help='Skip all metric calculations and only run embeddings/clustering/UMAP',
+    )
+    parser.add_argument(
+        '--umap-neighbors', type=int,
+        help='UMAP neighborhood size; defaults to 5 for datasets up to 30 items, otherwise 50',
+    )
+    parser.add_argument(
+        '--umap-min-dist', type=float, default=0.1,
+        help='Minimum distance between points in UMAP space (default: 0.1; use 0 for tighter groups)',
+    )
+    parser.add_argument(
+        '--umap-epochs', type=int, default=50,
+        help='Number of UMAP optimization epochs (default: 50)',
+    )
+    parser.add_argument(
+        '--cluster-variants', type=int, default=None,
+        help='Number of clustering variants to generate (minimum: 1). Defaults to 11 '
+             'for datasets up to 1,500 items and 1 for larger datasets. For HDBSCAN '
+             'these are seed variations; for Leiden these are resolution steps between '
+             '--leiden-resolution-min and --leiden-resolution-max.',
+    )
 
-    parser.add_argument('--cluster-method', choices=['hdbscan', 'leiden'], default='hdbscan',
-                       help='Clustering algorithm to use (default: hdbscan). '
-                            '"leiden" runs community detection on a k-NN graph built from '
-                            '(optionally whitened) embeddings and produces a resolution sweep. '
-                            'Great for large datasets (1500+ items) with many small clusters. ')
-    parser.add_argument('--leiden-resolution-min', type=float, default=1.15,
-                       help='Minimum Leiden resolution parameter (default: 1.15)')
-    parser.add_argument('--leiden-resolution-max', type=float, default=3.0,
-                       help='Maximum Leiden resolution parameter (default: 3.0)')
-    parser.add_argument('--leiden-k-neighbors', type=int, default=20,
-                       help='Number of nearest neighbors for the Leiden k-NN graph (default: 20)')
-    parser.add_argument('--no-leiden-whiten', action='store_true', dest='no_leiden_whiten',
-                       help='Disable PCA whitening before k-NN graph construction '
-                       '(use in large (1500+ item) homogenous datasets like gaming corpus for best results)')
+    parser.add_argument(
+        '--cluster-method', choices=['hdbscan', 'leiden'], default='hdbscan',
+        help='Clustering algorithm to use (default: hdbscan). '
+             '"leiden" runs community detection on a k-NN graph built from '
+             '(optionally whitened) embeddings and produces a resolution sweep. '
+             'Great for large datasets (1500+ items) with many small clusters. ',
+    )
+    parser.add_argument(
+        '--leiden-resolution-min', type=float, default=1.15,
+        help='Minimum Leiden resolution parameter (default: 1.15)',
+    )
+    parser.add_argument(
+        '--leiden-resolution-max', type=float, default=3.0,
+        help='Maximum Leiden resolution parameter (default: 3.0)',
+    )
+    parser.add_argument(
+        '--leiden-k-neighbors', type=int, default=20,
+        help='Number of nearest neighbors for the Leiden k-NN graph (default: 20)',
+    )
+    parser.add_argument(
+        '--no-leiden-whiten', action='store_true', dest='no_leiden_whiten',
+        help='Disable PCA whitening before k-NN graph construction '
+             '(use in large (1500+ item) homogenous datasets like gaming corpus for best results)',
+    )
 
-    parser.add_argument('--embedding-model', default=SBERT_MODEL,
-                       help='Embedding model name (e.g., all-MiniLM-L12-v2, all-mpnet-base-v2, Alibaba-NLP/gte-modernbert-base, thenlper/gte-small)')
-    parser.add_argument('--embedding-chunk-size', type=int,
-                       help='Override embedding chunk size (in model tokens)')
-    parser.add_argument('--embedding-min-chunk', type=int,
-                       help='Override minimum embedding chunk size (in model tokens)')
-    parser.add_argument('--embedding-batch-size', type=int,
-                       help='Override embedding batch size for SentenceTransformer encode()')
-    parser.add_argument('--trained-model-path', type=str, dest='trained_model_path',
-                       help='Path to a custom fine-tuned SBERT model (e.g., my_finetuned_sbert). If provided, this overrides --embedding-model')
-    parser.add_argument('--compute-fighting-words', '--compute-fighting-words-floor',
-                       dest='compute_fighting_words', action='store_true',
-                       help='Enable fighting-words peak (rank 1) and floor (rank 1000) metrics')
-    parser.add_argument('--centroid-mode', choices=['video', 'word'],
-                       help='Use centroids for text representation (video or word)')
-    parser.add_argument('--centroid-videos', type=int, default=10,
-                       help='Number of videos to use for video centroid computation (default: 10)')
-    parser.add_argument('--centroid-words', type=int, default=1000000,
-                       help='Number of words to use for word centroid computation (default: 1,000,000)')
-    parser.add_argument('--stat-word-count', type=int, default=None,
-                       help='Number of words to use for statistical metrics when using video centroids '
-                            '(defaults to --token-limit if set, else 1,000,000)')
-    parser.add_argument('--focus-text', type=str, dest='focus_text',
-                       help='Focus text for similarity mapping')
+    parser.add_argument(
+        '--embedding-model', default=SBERT_MODEL,
+        help='Embedding model name (e.g., all-MiniLM-L12-v2, all-mpnet-base-v2, '
+             'Alibaba-NLP/gte-modernbert-base, thenlper/gte-small)',
+    )
+    parser.add_argument(
+        '--embedding-chunk-size', type=int,
+        help='Override embedding chunk size (in model tokens)',
+    )
+    parser.add_argument(
+        '--embedding-min-chunk', type=int,
+        help='Override minimum embedding chunk size (in model tokens)',
+    )
+    parser.add_argument(
+        '--embedding-batch-size', type=int,
+        help='Override embedding batch size for SentenceTransformer encode()',
+    )
+    parser.add_argument(
+        '--trained-model-path', type=str, dest='trained_model_path',
+        help='Path to a custom fine-tuned SBERT model (e.g., my_finetuned_sbert). '
+             'If provided, this overrides --embedding-model',
+    )
+    parser.add_argument(
+        '--compute-fighting-words', '--compute-fighting-words-floor',
+        dest='compute_fighting_words', action='store_true',
+        help='Enable fighting-words peak (rank 1) and floor (rank 1000) metrics',
+    )
+    parser.add_argument(
+        '--centroid-mode', choices=['video', 'word'],
+        help='Use centroids for text representation (video or word)',
+    )
+    parser.add_argument(
+        '--centroid-videos', type=int, default=10,
+        help='Number of videos to use for video centroid computation (default: 10)',
+    )
+    parser.add_argument(
+        '--centroid-words', type=int, default=1000000,
+        help='Number of words to use for word centroid computation (default: 1,000,000)',
+    )
+    parser.add_argument(
+        '--stat-word-count', type=int, default=None,
+        help='Number of words to use for statistical metrics when using video centroids '
+             '(defaults to --token-limit if set, else 1,000,000)',
+    )
+    parser.add_argument(
+        '--focus-text', type=str, dest='focus_text',
+        help='Focus text for similarity mapping',
+    )
 
-    parser.add_argument('--mallet-topics', type=int, default=0,
-                       help='Train a MALLET LDA model with this many topics '
-                            '(requires MALLET installed; 0 disables). '
-                            'Set MALLET_MEMORY env var (e.g. 12g) for large corpora.')
+    parser.add_argument(
+        '--mallet-topics', type=int, default=0,
+        help='Train a MALLET LDA model with this many topics '
+             '(requires MALLET installed; 0 disables). '
+             'Set MALLET_MEMORY env var (e.g. 12g) for large corpora.',
+    )
 
-    parser.add_argument('--niche-words', action='append', default=None,
-                        metavar='NICHE',
-                        help='Enable niche word-count metric sets (repeatable).')
+    parser.add_argument(
+        '--niche-words', action='append', default=None, metavar='NICHE',
+        help='Enable niche word-count metric sets (repeatable).',
+    )
 
     args = parser.parse_args()
 
@@ -2942,20 +3616,27 @@ Available metrics for --color-by:
             fileids = list(corpus_reader.fileids())
         except (ImportError, AttributeError, LookupError) as exc:
             parser.error(f"could not load NLTK corpus '{args.nltk_corpus}': {exc}")
+
         for index, fileid in enumerate(fileids):
             try:
                 text_content = corpus_reader.raw(fileid)
             except Exception as exc:
                 print(f"Warning: skipped NLTK document {fileid!r}: {exc}")
                 continue
+
             label = document_label(
                 f"nltk_{args.nltk_corpus}_{fileid}".replace('/', '__').replace('\\', '__'),
                 index,
             )
             if label in external_documents:
                 label = f"{label}_{index}"
+
             source_id = hashlib.sha256(text_content.encode('utf-8')).hexdigest()
-            external_documents[label] = (text_content, f"nltk:{args.nltk_corpus}:{fileid}:{source_id}")
+            external_documents[label] = (
+                text_content,
+                f"nltk:{args.nltk_corpus}:{fileid}:{source_id}",
+            )
+
         if not external_documents:
             parser.error(f"NLTK corpus '{args.nltk_corpus}' contains no readable documents")
 
@@ -2963,23 +3644,32 @@ Available metrics for --color-by:
         input_root = Path(args.txt_directory).expanduser().resolve()
         if not input_root.is_dir():
             parser.error(f"text directory does not exist: {input_root}")
+
         for filepath in sorted(input_root.rglob('*.txt')):
             if not filepath.is_file():
                 continue
+
             relative_path = filepath.relative_to(input_root)
             if len(relative_path.parts) - 1 > args.txt_depth:
                 continue
+
             try:
                 text_content = filepath.read_text(encoding='utf-8')
                 stat = filepath.stat()
             except (OSError, UnicodeDecodeError) as exc:
                 print(f"Warning: skipped {filepath}: {exc}")
                 continue
-            label = document_label(f"txt_{relative_path.as_posix()}".replace('/', '__'), len(external_documents))
+
+            label = document_label(
+                f"txt_{relative_path.as_posix()}".replace('/', '__'),
+                len(external_documents),
+            )
             if label in external_documents:
                 label = f"{label}_{len(external_documents)}"
+
             source_id = f"file:{filepath}:{stat.st_mtime_ns}:{stat.st_size}"
             external_documents[label] = (text_content, source_id)
+
         if not external_documents:
             parser.error(f"no readable .txt files found within {args.txt_depth} levels of {input_root}")
 
@@ -3000,9 +3690,7 @@ Available metrics for --color-by:
 
     valid_metric_names = set(MetricConfig.get_metric_names())
     if args.color_by is not None and args.color_by not in valid_metric_names:
-        parser.error(
-            f"--color-by '{args.color_by}' is not a registered metric"
-        )
+        parser.error(f"--color-by '{args.color_by}' is not a registered metric")
 
     if args.cluster_method == 'leiden' and not LEIDEN_AVAILABLE:
         parser.error(
@@ -3012,7 +3700,9 @@ Available metrics for --color-by:
 
     if args.clear_cache:
         cache_dir = Path(__file__).resolve().parents[1] / "cache" / "metrics"
-        SimpleCache(cache_dir).clear(None if args.clear_cache == 'all' else args.clear_cache)
+        SimpleCache(cache_dir).clear(
+            None if args.clear_cache == 'all' else args.clear_cache
+        )
         if not args.texts:
             return
 
@@ -3023,14 +3713,22 @@ Available metrics for --color-by:
         input_dir = Path(__file__).resolve().parents[1] / "data" / "input"
 
         if input_dir.exists():
-            args.texts = [d.name for d in input_dir.iterdir() if d.is_dir() and not d.name.startswith('.')]
+            args.texts = [
+                d.name for d in input_dir.iterdir()
+                if d.is_dir() and not d.name.startswith('.')
+            ]
             if args.texts:
                 print(f"Auto-discovered {len(args.texts)} texts from {input_dir}")
             else:
-                parser.error(f"No texts found in {input_dir}. Use --help for usage information.")
+                parser.error(
+                    f"No texts found in {input_dir}. Use --help for usage information."
+                )
                 return
         else:
-            parser.error("No texts specified and data/input directory not found in expected locations. Use --help for usage information.")
+            parser.error(
+                "No texts specified and data/input directory not found in expected "
+                "locations. Use --help for usage information."
+            )
             return
 
     active_metric = args.color_by
@@ -3038,19 +3736,44 @@ Available metrics for --color-by:
     if args.no_metrics and active_metric:
         parser.error("--no-metrics cannot be used with --color-by")
 
-    if args.word_counts_only and active_metric and active_metric not in TextClassifier.get_word_count_metric_names():
-        parser.error("--word-counts-only only supports --color-by metrics in the count/regex subset")
+    if (
+        args.word_counts_only
+        and active_metric
+        and active_metric not in TextClassifier.get_word_count_metric_names()
+    ):
+        parser.error(
+            "--word-counts-only only supports --color-by metrics in the count/regex subset"
+        )
 
-    if active_metric in (FIGHTING_WORDS_PEAK_METRIC, FIGHTING_WORDS_FLOOR_METRIC,
-                          FIGHTING_WORDS_PEAK_CENTROID_METRIC, FIGHTING_WORDS_FLOOR_CENTROID_METRIC) \
-            and not args.compute_fighting_words:
+    if (
+        active_metric in (
+            FIGHTING_WORDS_PEAK_METRIC, FIGHTING_WORDS_FLOOR_METRIC,
+            FIGHTING_WORDS_PEAK_CENTROID_METRIC, FIGHTING_WORDS_FLOOR_CENTROID_METRIC,
+        )
+        and not args.compute_fighting_words
+    ):
         parser.error(f"--color-by {active_metric} requires --compute-fighting-words")
 
-    needs_perplexity = (not args.no_metrics) and (args.calculate_perplexity or (active_metric == 'perplexity'))
+    needs_perplexity = (
+        (not args.no_metrics)
+        and (args.calculate_perplexity or (active_metric == 'perplexity'))
+    )
 
-    enable_spacy = (not args.no_metrics) and (args.enable_spacy or (active_metric and MetricConfig.requires_spacy_model(active_metric)))
+    enable_spacy = (
+        (not args.no_metrics)
+        and (
+            args.enable_spacy
+            or (active_metric and MetricConfig.requires_spacy_model(active_metric))
+        )
+    )
 
-    enable_ngram_entropy = (not args.no_metrics) and (args.compute_ngram_entropy or (active_metric and MetricConfig.requires_ngram_entropy(active_metric)))
+    enable_ngram_entropy = (
+        (not args.no_metrics)
+        and (
+            args.compute_ngram_entropy
+            or (active_metric and MetricConfig.requires_ngram_entropy(active_metric))
+        )
+    )
 
     embedding_model = args.embedding_model
     if args.trained_model_path:
@@ -3112,7 +3835,7 @@ Available metrics for --color-by:
         embeddings_only_low_token=args.embeddings_only_low_token,
         cluster_variants=args.cluster_variants,
         annotations=args.annotations,
-        focus_text=args.focus_text
+        focus_text=args.focus_text,
     )
 
 

@@ -1,15 +1,45 @@
+import json
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
+
 from atlas_config import *  # noqa
+from atlas_config import (
+    TOKEN_REGEX,
+    _install_spacy_model,
+    extract_video_id,
+    hms_to_seconds,
+    perplexity_model,
+    perplexity_tokenizer,
+    sanitize_filename,
+    vader_analyzer,
+)
+import atlas_config as cfg
 
 
 class TextProcessor:
 
     @staticmethod
     def _is_live(meta: Dict) -> bool:
-        return str(meta.get('was_live')) == 'True' or str(meta.get('is_live')) == 'True'
+        return (
+            str(meta.get('was_live')) == 'True'
+            or str(meta.get('is_live')) == 'True'
+        )
 
-    def __init__(self, base_dir: Path, chunk_size: Optional[int] = None, min_chunk: Optional[int] = None,
-                 needs_perplexity_model: bool = False, model_name: str = "DistilGPT2",
-                 enable_spacy: bool = False, model_tokenizer=None, model_context_window: Optional[int] = None):
+    def __init__(
+        self,
+        base_dir: Path,
+        chunk_size: Optional[int] = None,
+        min_chunk: Optional[int] = None,
+        needs_perplexity_model: bool = False,
+        model_name: str = "DistilGPT2",
+        enable_spacy: bool = False,
+        model_tokenizer=None,
+        model_context_window: Optional[int] = None,
+    ):
         self.base_dir = base_dir
         self.external_documents: Dict[str, Tuple[str, str]] = {}
         self.model_tokenizer = model_tokenizer
@@ -26,11 +56,13 @@ class TextProcessor:
 
         inferred_chunk_size = chunk_size
         inferred_min_chunk = min_chunk
+
         if inferred_chunk_size is None:
             if self.model_context_window and self.model_context_window > 16:
                 inferred_chunk_size = max(16, int(self.model_context_window * 0.85))
             else:
                 inferred_chunk_size = 256
+
         if inferred_min_chunk is None:
             inferred_min_chunk = max(16, int(inferred_chunk_size * 0.65))
 
@@ -52,31 +84,37 @@ class TextProcessor:
         return text in self.external_documents
 
     def _initialize_spacy_model(self):
-        if cfg.spacy_nlp is None:
-            try:
-                import spacy
-                print("Loading spaCy model...")
-                cfg.spacy_nlp = spacy.load('en_core_web_sm')
-            except ImportError:
-                print("spaCy not installed. Attempting to install...")
-                _install_spacy_model()
-            except OSError:
-                print("spaCy model not found. Attempting to download...")
-                _install_spacy_model()
-            except Exception as e:
-                print(f"Warning: Could not load spaCy model: {e}")
-                cfg.spacy_nlp = None
+        if cfg.spacy_nlp is not None:
+            return
+
+        try:
+            import spacy
+            print("Loading spaCy model...")
+            cfg.spacy_nlp = spacy.load('en_core_web_sm')
+        except ImportError:
+            print("spaCy not installed. Attempting to install...")
+            _install_spacy_model()
+        except OSError:
+            print("spaCy model not found. Attempting to download...")
+            _install_spacy_model()
+        except Exception as e:
+            print(f"Warning: Could not load spaCy model: {e}")
+            cfg.spacy_nlp = None
 
     def _initialize_perplexity_model(self, model_name: str):
         global perplexity_model, perplexity_tokenizer
-        if perplexity_model is None:
-            print("Loading perplexity model...")
-            perplexity_tokenizer = AutoTokenizer.from_pretrained(model_name)
-            perplexity_model = AutoModelForCausalLM.from_pretrained(model_name)
-            perplexity_model.eval()
-            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-            perplexity_model.to(device)
-            print(f"Perplexity model loaded on {device}")
+
+        if perplexity_model is not None:
+            return
+
+        print("Loading perplexity model...")
+        perplexity_tokenizer = AutoTokenizer.from_pretrained(model_name)
+        perplexity_model = AutoModelForCausalLM.from_pretrained(model_name)
+        perplexity_model.eval()
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        perplexity_model.to(device)
+        print(f"Perplexity model loaded on {device}")
 
     def tokenize(self, text: str) -> List[str]:
         text = TOKEN_REGEX.sub(' ', text)
@@ -88,6 +126,7 @@ class TextProcessor:
             file_sig = [int(stat.st_mtime), int(stat.st_size)]
         except OSError:
             file_sig = None
+
         return {
             'model': self.embedding_model_name_for_cache or '',
             'chunk_size': int(self.chunk_size),
@@ -102,23 +141,31 @@ class TextProcessor:
             self.video_centroid_cache_dir / f"{safe}.json",
         )
 
-    def _load_video_centroid_from_cache(self, video_id: str, txt_path: Path) -> Optional[np.ndarray]:
+    def _load_video_centroid_from_cache(
+        self, video_id: str, txt_path: Path
+    ) -> Optional[np.ndarray]:
         npy_path, meta_path = self._video_centroid_cache_paths(video_id)
+
         if not npy_path.exists() or not meta_path.exists():
             return None
+
         try:
             with open(meta_path, 'r', encoding='utf-8') as f:
                 saved_sig = json.load(f)
+
             if saved_sig != self._video_centroid_signature(txt_path):
                 return None
+
             emb = np.load(npy_path, allow_pickle=False)
             return emb.astype(np.float32, copy=False)
         except Exception:
             return None
 
-    def _save_video_centroid_to_cache(self, video_id: str, txt_path: Path,
-                                      embedding: np.ndarray) -> None:
+    def _save_video_centroid_to_cache(
+        self, video_id: str, txt_path: Path, embedding: np.ndarray
+    ) -> None:
         npy_path, meta_path = self._video_centroid_cache_paths(video_id)
+
         try:
             tmp_npy = npy_path.with_name(npy_path.name + '.tmp')
             with open(tmp_npy, 'wb') as f:
@@ -134,9 +181,12 @@ class TextProcessor:
                 print(f"    Warning: video centroid cache write failed: {e}")
                 self._warned_cache_write = True
 
-    def _get_filtered_files(self, text: str, filters: Dict,
-                            ignore_ids: Optional[set] = None
-                            ) -> Optional[List[Tuple[str, Path]]]:
+    def _get_filtered_files(
+        self,
+        text: str,
+        filters: Dict,
+        ignore_ids: Optional[set] = None,
+    ) -> Optional[List[Tuple[str, Path]]]:
         if ignore_ids is None:
             ignore_ids = set()
 
@@ -148,13 +198,17 @@ class TextProcessor:
         metadata = self.load_metadata(text)
         min_dur = hms_to_seconds(filters.get('duration_from', ''))
         max_dur = hms_to_seconds(filters.get('duration_to', ''))
-        date_filter_active = bool(filters.get('date_from') or filters.get('date_to'))
+        date_filter_active = bool(
+            filters.get('date_from') or filters.get('date_to')
+        )
 
         files_with_dates: List[Tuple[str, Path]] = []
+
         for f in txt_dir.glob("*.txt"):
             vid = extract_video_id(f.name)
             if vid in ignore_ids:
                 continue
+
             meta = metadata.get(vid, {})
 
             upload = meta.get('upload_date')
@@ -172,6 +226,7 @@ class TextProcessor:
                 continue
             if filters.get('exclude_live') and self._is_live(meta):
                 continue
+
             files_with_dates.append((upload, f))
 
         if not files_with_dates:
@@ -180,15 +235,19 @@ class TextProcessor:
         files_with_dates.sort()
         return files_with_dates
 
-    def load_video_centroids(self, text: str, n_videos: int, filters: Dict,
-                            ignore_ids: Optional[set] = None,
-                            max_accumulated_tokens: Optional[int] = None,
-                            use_video_cache: bool = True,
-                            precomputed_files: Optional[List[Tuple[str, Path]]] = None,
-                            need_embeddings: bool = True,
-                            need_stat_corpus: bool = True,
-                            need_centroid_tokens: bool = True,
-                            ) -> Optional[Tuple[List[str], List[np.ndarray], List[str], List[str], float]]:
+    def load_video_centroids(
+        self,
+        text: str,
+        n_videos: int,
+        filters: Dict,
+        ignore_ids: Optional[set] = None,
+        max_accumulated_tokens: Optional[int] = None,
+        use_video_cache: bool = True,
+        precomputed_files: Optional[List[Tuple[str, Path]]] = None,
+        need_embeddings: bool = True,
+        need_stat_corpus: bool = True,
+        need_centroid_tokens: bool = True,
+    ) -> Optional[Tuple[List[str], List[np.ndarray], List[str], List[str], float]]:
         if ignore_ids is None:
             ignore_ids = set()
 
@@ -219,18 +278,22 @@ class TextProcessor:
         if need_embeddings:
             model = getattr(self, '_model', None)
             encode_fn = getattr(self, '_encode_fn', None)
+
             if model is None or encode_fn is None:
                 print(f"    Warning: No embedding model available")
                 return None
 
             if centroid_files:
-                (video_ids,
-                 video_embeddings,
-                 centroid_tokens_by_path) = self._load_video_centroids_pass(
+                (
+                    video_ids,
+                    video_embeddings,
+                    centroid_tokens_by_path,
+                ) = self._load_video_centroids_pass(
                     centroid_files,
                     use_video_cache=use_video_cache,
                     retain_tokens=retain_tokens_pass1,
                 )
+
         elif need_centroid_tokens and centroid_files:
             for _, filepath in centroid_files:
                 try:
@@ -241,17 +304,20 @@ class TextProcessor:
                 except Exception as e:
                     print(f"    Warning: {filepath.name}: {e}")
                     continue
+
                 if tokens:
                     centroid_tokens_by_path[filepath] = tokens
 
         centroid_tokens: List[str] = []
         centroid_word_counts: List[int] = []
+
         if need_centroid_tokens and centroid_files:
             for _, filepath in centroid_files:
                 tkns = centroid_tokens_by_path.get(filepath)
                 if tkns:
                     centroid_tokens.extend(tkns)
                     centroid_word_counts.append(len(tkns))
+
         avg_words_per_video = (
             float(sum(centroid_word_counts) / len(centroid_word_counts))
             if centroid_word_counts
@@ -274,7 +340,13 @@ class TextProcessor:
         if not video_ids:
             return None
 
-        return video_ids, video_embeddings, all_tokens, centroid_tokens, avg_words_per_video
+        return (
+            video_ids,
+            video_embeddings,
+            all_tokens,
+            centroid_tokens,
+            avg_words_per_video,
+        )
 
     def _batch_token_lengths(self, tokens: List[str]) -> None:
         if self.model_tokenizer is None or not tokens:
@@ -290,13 +362,21 @@ class TextProcessor:
             return
 
         batch_size = 1024
+
         for start in range(0, len(missing), batch_size):
             batch = missing[start:start + batch_size]
+
             try:
                 encoded = self.model_tokenizer(
-                    batch, add_special_tokens=False, padding=False
+                    batch,
+                    add_special_tokens=False,
+                    padding=False,
                 )
-                input_ids = encoded.get('input_ids') if isinstance(encoded, dict) else None
+                input_ids = (
+                    encoded.get('input_ids')
+                    if isinstance(encoded, dict)
+                    else None
+                )
                 if input_ids is None:
                     input_ids = getattr(encoded, 'input_ids', None)
 
@@ -389,6 +469,7 @@ class TextProcessor:
             groups: List[List[Tuple[int, List[str], Path]]] = []
             current_group: List[Tuple[int, List[str], Path]] = []
             current_chunks = 0
+
             for entry in pending_batches:
                 entry_chunks = len(entry[1])
                 if current_group and current_chunks + entry_chunks > MAX_CHUNKS_PER_GROUP:
@@ -397,12 +478,14 @@ class TextProcessor:
                     current_chunks = 0
                 current_group.append(entry)
                 current_chunks += entry_chunks
+
             if current_group:
                 groups.append(current_group)
 
             for group in groups:
                 all_chunks: List[str] = []
                 boundaries: List[Tuple[int, int, int, Path]] = []
+
                 for position, chunks, filepath in group:
                     start = len(all_chunks)
                     all_chunks.extend(chunks)
@@ -410,6 +493,7 @@ class TextProcessor:
 
                 try:
                     all_embs = np.asarray(encode_fn(all_chunks), dtype=np.float32)
+
                     for position, start, end, filepath in boundaries:
                         if end <= start:
                             continue
@@ -419,9 +503,13 @@ class TextProcessor:
                             self._save_video_centroid_to_cache(
                                 video_ids[position], filepath, video_emb
                             )
+
                     del all_embs
                 except RuntimeError as e:
-                    print(f"    Warning: batched encode failed ({e}); falling back to per-video")
+                    print(
+                        f"    Warning: batched encode failed ({e}); "
+                        f"falling back to per-video"
+                    )
                     for position, chunks, filepath in group:
                         try:
                             chunk_embs = np.asarray(encode_fn(chunks), dtype=np.float32)
@@ -433,17 +521,23 @@ class TextProcessor:
                                 )
                             del chunk_embs
                         except Exception as inner_e:
-                            print(f"    Warning: per-video encode failed for {filepath.name}: {inner_e}")
+                            print(
+                                f"    Warning: per-video encode failed for "
+                                f"{filepath.name}: {inner_e}"
+                            )
 
         if cache_hits or cache_misses:
             print(f"    Video centroids: {cache_hits} cached, {cache_misses} computed")
 
         valid_pairs = [
-            (vid, emb) for vid, emb in zip(video_ids, video_embeddings)
+            (vid, emb)
+            for vid, emb in zip(video_ids, video_embeddings)
             if emb is not None
         ]
+
         if not valid_pairs:
             return [], [], tokens_by_path
+
         return (
             [vid for vid, _ in valid_pairs],
             [emb for _, emb in valid_pairs],
@@ -467,6 +561,7 @@ class TextProcessor:
                 break
 
             tokens = reused_tokens_by_path.pop(filepath, None)
+
             if tokens is None:
                 try:
                     with open(filepath, 'r', encoding='utf-8') as f:
@@ -499,12 +594,15 @@ class TextProcessor:
             return []
 
         if self.model_tokenizer is None:
-            return [' '.join(tokens[i:i + self.chunk_size])
-                    for i in range(0, len(tokens), self.chunk_size)
-                    if len(tokens[i:i + self.chunk_size]) > 0]
+            return [
+                ' '.join(tokens[i:i + self.chunk_size])
+                for i in range(0, len(tokens), self.chunk_size)
+                if len(tokens[i:i + self.chunk_size]) > 0
+            ]
 
         max_model_tokens = max(8, int(self.chunk_size))
         min_model_tokens = max(1, int(self.min_chunk))
+
         chunks: List[str] = []
         current_words: List[str] = []
         current_piece_count = 0
@@ -543,24 +641,19 @@ class TextProcessor:
     def load_metadata(self, text: str) -> Dict:
         safe_text = sanitize_filename(text)
         meta_file = self.base_dir / "data/input" / safe_text / "metadata.json"
+
         try:
             with open(meta_file, 'r', encoding='utf-8') as f:
                 return {v['id']: v for v in json.load(f) if 'id' in v}
-        except:
+        except Exception:
             return {}
 
-    def compute_insult_density(self, tokens: List[str]) -> float:
-        if not tokens:
-            return 0.0
-
-        insult_count = 0
-        text = ' '.join(tokens)
-        for pattern in INSULT_PATTERNS:
-            insult_count += len(pattern.findall(text))
-
-        return float(insult_count)
-
-    def calculate_perplexity(self, text_or_chunks: Any, max_length: int = 1024, sample_chunks: int = 6) -> Optional[float]:
+    def calculate_perplexity(
+        self,
+        text_or_chunks: Any,
+        max_length: int = 1024,
+        sample_chunks: int = 6,
+    ) -> Optional[float]:
         if not self.needs_perplexity_model:
             return None
 
@@ -577,6 +670,7 @@ class TextProcessor:
                 for sample_idx in range(sample_chunks):
                     idx = int(round(sample_idx * last_idx / max(1, sample_chunks - 1)))
                     selected_chunks.append(chunks[idx])
+
             text = ' '.join(selected_chunks)
         else:
             text = str(text_or_chunks or '')
@@ -588,7 +682,12 @@ class TextProcessor:
             return float('inf')
 
         try:
-            encodings = perplexity_tokenizer(text, return_tensors="pt", truncation=True, max_length=max_length)
+            encodings = perplexity_tokenizer(
+                text,
+                return_tensors="pt",
+                truncation=True,
+                max_length=max_length,
+            )
             input_ids = encodings.input_ids.to(perplexity_model.device)
 
             with torch.no_grad():
@@ -628,31 +727,18 @@ class TextProcessor:
 
         return compound_mean, positivity_ratio, sentiment_volatility
 
-    def get_tokens(self, text: str, filters: Dict, ignore_ids: Optional[set] = None) -> Optional[Tuple[List[str], Path, int, List[str]]]:
+    def get_tokens(
+        self,
+        text: str,
+        filters: Dict,
+        ignore_ids: Optional[set] = None,
+    ) -> Optional[Tuple[List[str], Path, int, List[str]]]:
         if ignore_ids is None:
             ignore_ids = set()
 
         external = self.external_documents.get(text)
         if external is not None:
-            text_content, source_id = external
-            file_tokens = self.tokenize(text_content)
-            min_tokens_per_file = filters.get('min_tokens_per_file', 0)
-            if len(file_tokens) < min_tokens_per_file:
-                print(f"  Skipped: {text} (below {min_tokens_per_file} tokens)")
-                return None
-            per_video_token_limit = filters.get('per_video_token_limit')
-            if per_video_token_limit and per_video_token_limit > 0:
-                file_tokens = file_tokens[:per_video_token_limit]
-            text_token_limit = filters.get('text_token_limit')
-            if text_token_limit and text_token_limit > 0:
-                file_tokens = file_tokens[:text_token_limit]
-            token_limit = filters.get('token_limit')
-            if token_limit and token_limit > 0:
-                file_tokens = file_tokens[-token_limit:]
-            if not file_tokens:
-                print(f"  Skipped: {text} (no tokens after filtering)")
-                return None
-            return file_tokens, self.base_dir, 1, [source_id]
+            return self._get_tokens_from_external(text, filters, external)
 
         safe_text = sanitize_filename(text)
         txt_dir = self.base_dir / "data/input" / safe_text / "txt_files"
@@ -665,13 +751,68 @@ class TextProcessor:
             print(f"  Skipped: {text} (no transcript files)")
             return None
 
+        files_with_dates = self._filter_txt_files(
+            txt_files, text, filters, ignore_ids
+        )
+        if not files_with_dates:
+            print(f"  Skipped: {text} (no files after video-level filters)")
+            return None
+
+        files_with_dates.sort()
+
+        return self._collect_tokens_from_files(
+            text, txt_dir, files_with_dates, filters
+        )
+
+    def _get_tokens_from_external(
+        self,
+        text: str,
+        filters: Dict,
+        external: Tuple[str, str],
+    ) -> Optional[Tuple[List[str], Path, int, List[str]]]:
+        text_content, source_id = external
+        file_tokens = self.tokenize(text_content)
+
+        min_tokens_per_file = filters.get('min_tokens_per_file', 0)
+        if len(file_tokens) < min_tokens_per_file:
+            print(f"  Skipped: {text} (below {min_tokens_per_file} tokens)")
+            return None
+
+        per_video_token_limit = filters.get('per_video_token_limit')
+        if per_video_token_limit and per_video_token_limit > 0:
+            file_tokens = file_tokens[:per_video_token_limit]
+
+        text_token_limit = filters.get('text_token_limit')
+        if text_token_limit and text_token_limit > 0:
+            file_tokens = file_tokens[:text_token_limit]
+
+        token_limit = filters.get('token_limit')
+        if token_limit and token_limit > 0:
+            file_tokens = file_tokens[-token_limit:]
+
+        if not file_tokens:
+            print(f"  Skipped: {text} (no tokens after filtering)")
+            return None
+
+        return file_tokens, self.base_dir, 1, [source_id]
+
+    def _filter_txt_files(
+        self,
+        txt_files: List[Path],
+        text: str,
+        filters: Dict,
+        ignore_ids: set,
+    ) -> List[Tuple[str, Path]]:
         metadata = self.load_metadata(text)
         min_dur = hms_to_seconds(filters.get('duration_from', ''))
         max_dur = hms_to_seconds(filters.get('duration_to', ''))
-        date_filter_active = bool(filters.get('date_from') or filters.get('date_to'))
+        date_filter_active = bool(
+            filters.get('date_from') or filters.get('date_to')
+        )
 
-        files_with_dates = []
+        files_with_dates: List[Tuple[str, Path]] = []
         files_ignored = 0
+
         for f in txt_files:
             vid_id = extract_video_id(f.name)
 
@@ -702,16 +843,20 @@ class TextProcessor:
         if files_ignored > 0:
             print(f"    Ignored {files_ignored} file(s) in ignore list")
 
-        if not files_with_dates:
-            print(f"  Skipped: {text} (no files after video-level filters)")
-            return None
+        return files_with_dates
 
-        files_with_dates.sort()
-
+    def _collect_tokens_from_files(
+        self,
+        text: str,
+        txt_dir: Path,
+        files_with_dates: List[Tuple[str, Path]],
+        filters: Dict,
+    ) -> Optional[Tuple[List[str], Path, int, List[str]]]:
         min_tokens_per_file = filters.get('min_tokens_per_file', 0)
         per_video_token_limit = filters.get('per_video_token_limit')
         text_token_limit = filters.get('text_token_limit')
-        all_tokens = []
+
+        all_tokens: List[str] = []
         video_token_spans: List[Tuple[str, int, int]] = []
         files_processed = 0
         files_skipped = 0
@@ -723,7 +868,11 @@ class TextProcessor:
                     text_content = f.read()
                 file_tokens = self.tokenize(text_content)
 
-                if per_video_token_limit and per_video_token_limit > 0 and len(file_tokens) > per_video_token_limit:
+                if (
+                    per_video_token_limit
+                    and per_video_token_limit > 0
+                    and len(file_tokens) > per_video_token_limit
+                ):
                     file_tokens = file_tokens[:per_video_token_limit]
 
                 if len(file_tokens) < min_tokens_per_file:
@@ -737,7 +886,11 @@ class TextProcessor:
                 video_token_spans.append((video_id, start_idx, end_idx))
                 files_processed += 1
 
-                if text_token_limit and text_token_limit > 0 and len(all_tokens) >= text_token_limit:
+                if (
+                    text_token_limit
+                    and text_token_limit > 0
+                    and len(all_tokens) >= text_token_limit
+                ):
                     all_tokens = all_tokens[:text_token_limit]
                     text_limit_applied = True
                     break
@@ -745,7 +898,10 @@ class TextProcessor:
                 print(f"    Warning: {filepath.name}: {e}")
 
         if files_skipped > 0:
-            print(f"    Skipped {files_skipped} file(s) below {min_tokens_per_file} tokens")
+            print(
+                f"    Skipped {files_skipped} file(s) below "
+                f"{min_tokens_per_file} tokens"
+            )
 
         if not all_tokens:
             print(f"  Skipped: {text} (no tokens after per-file filtering)")
@@ -756,7 +912,12 @@ class TextProcessor:
         selected_end_idx = total_tokens_before_limit
 
         token_limit = filters.get('token_limit')
-        if text_token_limit and text_token_limit > 0 and len(all_tokens) > text_token_limit:
+
+        if (
+            text_token_limit
+            and text_token_limit > 0
+            and len(all_tokens) > text_token_limit
+        ):
             all_tokens = all_tokens[:text_token_limit]
             text_limit_applied = True
             selected_end_idx = len(all_tokens)
@@ -772,6 +933,9 @@ class TextProcessor:
         ]
 
         if text_limit_applied:
-            print(f"    Applied text token limit: kept first {text_token_limit:,} tokens")
+            print(
+                f"    Applied text token limit: kept first "
+                f"{text_token_limit:,} tokens"
+            )
 
         return all_tokens, txt_dir, files_processed, selected_video_ids

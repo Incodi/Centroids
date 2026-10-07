@@ -1,15 +1,15 @@
 # Centroids
 
-An advanced text analysis and visualization tool for comparing linguistic features across large text corpora. Built with YouTube channel analysis in mind, but supports NLTK corpora and custom text directories. 
+An advanced text analysis and visualization tool for comparing linguistic features across large text corpora. Built with YouTube channel analysis in mind, but supports NLTK corpora and custom text directories.
 
-## README is in WIP 
+## README is a work in progress
 
-This README is in boilerplate mode now. It will be updated soon, currently have an AI generated version of it.
+Currently a mix of hand-written notes and AI-assisted drafts. Being cleaned up.
 
 ## Key Features
 
 - **Interactive HTML Visualization**: Plotly-based interactive scatter plots for exploring text similarities
-- **Extensive Linguistic Metrics**: 50+ metrics including sentiment analysis, lexical diversity, discourse markers, and stylometric features
+- **Extensive Linguistic Metrics**: 120+ metrics including sentiment analysis, lexical diversity, discourse markers, and stylometric features
 - **Advanced Topic Modeling**: MALLET LDA integration for topic discovery
 - **Stylistic Analysis**: Burrows Delta method for function-word based authorship/style analysis
 - **Semantic Embeddings**: SBERT (Sentence-BERT) for semantic similarity mapping
@@ -22,13 +22,35 @@ This README is in boilerplate mode now. It will be updated soon, currently have 
 ## Installation
 
 ```bash
-pip install sentence-transformers sklearn umap-learn plotly torch transformers vaderSentiment lexicalrichness orjson
+pip install sentence-transformers scikit-learn umap-learn plotly torch transformers vaderSentiment lexicalrichness orjson
 pip install spacy && python -m spacy download en_core_web_sm  # Optional, for lexical_density metric
 pip install pyenchant  # Optional, for OOV word metrics
 pip install python-igraph leidenalg  # Optional, for Leiden clustering
 ```
 
 For MALLET topic modeling, download and install [MALLET](http://mallet.cs.umass.edu/). Set the `MALLET_HOME` environment variable or ensure `mallet` binary is in your PATH.
+
+## Data layout
+
+For YouTube-style input, the tool expects one directory per "text" (channel, book, document), containing a `txt_files/` subfolder of `.txt` files (one per video or chapter):
+
+```
+data/input/
+  my_channel/
+    txt_files/
+      video1.txt
+      video2.txt
+      ...
+    metadata.json       (optional — YouTube-style fields)
+    tag.txt             (optional — short text shown under the channel name in hover)
+  another_channel/
+    txt_files/
+      ...
+```
+
+Each `.txt` file is treated as one document. In video-centroid mode, the N most recent documents become the text's centroid; in word-centroid mode, the last N words across all documents do.
+
+For non-YouTube use, `--txt-directory` and `--nltk-corpus` accept alternative sources without this layout.
 
 ## CLI Usage
 
@@ -65,7 +87,7 @@ texts                    Text folder names to process (default: YouTube channels
 --text-token-limit N     Use only the first N tokens per text
 --per-video-token-limit N Use only the first N tokens per video
 --min-tokens-per-file N  Skip files with fewer than N tokens
---min-tokens-total N     Skip texts with fewer than N total tokens
+--min-tokens-total N     Skip texts with fewer than N total tokens (alias: --min-words)
 --embeddings-only-low-token Generate embeddings for low-token texts, skip metrics
 ```
 
@@ -102,7 +124,7 @@ Centroid modes control how text embeddings are computed from multiple documents:
   hdbscan: Density-based clustering (default)
   leiden:  Community detection on k-NN graph (great for large datasets)
 
---cluster-variants N      Number of clustering variants (default: 11 for <1500 items)
+--cluster-variants N      Number of clustering variants (default: 11 for ≤2000 items, else 1)
 --umap-neighbors N       UMAP neighborhood size (auto: 5 for ≤30 items, else 50)
 --umap-min-dist FLOAT     Minimum distance between points (default: 0.1; use 0 for tight groups)
 --umap-epochs N          UMAP optimization epochs (default: 50)
@@ -233,7 +255,7 @@ MALLET (MAchine Learning for LanguagE Toolkit) LDA (Latent Dirichlet Allocation)
 Burrows Delta is a stylometric method that analyzes function word usage to identify authorship or stylistic differences.
 
 **Key Features**:
-- Uses 150+ function words (pronouns, articles, prepositions, auxiliary verbs)
+- Uses a curated list of function words (pronouns, articles, prepositions, auxiliary verbs, fillers)
 - Expands contractions (e.g., "I'm" → "I am")
 - Computes normalized frequency profiles for each text
 - Calculates stylistic distance matrices
@@ -381,5 +403,12 @@ Interactive Plotly visualization with:
 - **spaCy not found**: Run `pip install spacy && python -m spacy download en_core_web_sm`
 - **MALLET not found**: Install MALLET and set `MALLET_HOME` or add to PATH
 - **Low token counts**: Use `--embeddings-only-low-token` to skip metrics
-- **Large datasets**: Use Leiden clustering with `--no-leiden-whiten` for homogeneous corpora 
+- **Large datasets**: Use Leiden clustering with `--no-leiden-whiten` for homogeneous corpora
 
+## TODOs
+
+Doctor file to help users download packages before running the program.
+
+Demo file to help users test the program with a small dataset and test the features.
+
+Guide for understanding the structure of data needed to use the YouTube channel part of the program.

@@ -8,6 +8,7 @@ import numpy as np
 from typing import List, Optional
 from collections import Counter
 from lexicalrichness import LexicalRichness
+from typing import Dict, List, Optional, Tuple
 
 
 class TextMetricsMixin:
@@ -479,7 +480,7 @@ class TextMetricsMixin:
         article_count = self._compute_article_count(tokens)
         return float(pronoun_count / (article_count + 1))
 
-    def _compute_imperative_exclamation_density(self, tokens: List[str]) -> float:
+    def _compute_imperative_exclamation_count(self, tokens: List[str]) -> float:
         if not tokens:
             return 0.0
         try:

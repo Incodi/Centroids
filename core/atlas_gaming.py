@@ -1,7 +1,7 @@
 """atlas_gaming.py
 
-!Purposely informal 
-gaming-specific word count metrics.
+!Purposely informal!
+Gaming-specific word count metrics.
 
 These metrics are only registered into ``MetricConfig.METRICS`` when the
 user runs with ``--niche-words gaming``.  Future niche files (educational,
@@ -27,7 +27,7 @@ Design notes
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 UNBELIEVABLY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bunbelievably\b']]
 FART_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bfart\w*\b', r'\bflatul\w*\b', r'\btoot(?:s|ed|ing)?\b']]
