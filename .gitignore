@@ -1,7 +1,14 @@
 .DS_Store
+README copy.md
+__pycache__/
+*.py[cod]
 data/
 cache/
-__pycache__
 SBERTClustersHD.html
 core/SBERTClustersHD.html
 core/data/output/
+temp/
+testing/
+bugfixesiwant.txt
+croob.png
+coconuts/

@@ -1,4 +1,5 @@
-""" atlas_educational.py
+"""atlas_educational.py
+
 Broad educational / knowledge-domain word-count metrics.
 
 This is an educational counterpart to the original niche-specific metric module.
@@ -10,8 +11,9 @@ Designed to follow the same registration pattern as the original niche module:
 
     register_educational_metrics(metric_config, classifier_cls)
 
-The supplied ChannelClassifier is expected to provide the same shared helpers
+The supplied classifier class is expected to provide the same shared helpers
 used by the original module, especially:
+
     _get_runtime_text_lower(tokens)
     _compute_pattern_count(tokens, patterns)
 
@@ -28,14 +30,14 @@ subject. Domain terms can be polysemous and should be interpreted in context.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, List, Optional
 
 
 # ============================================================================
 # LARGE EDUCATIONAL / ACADEMIC LEXICONS
 # ============================================================================
 
-EDUCATIONAL_LEXICONS: Dict[str, set[str]] = {
+EDUCATIONAL_LEXICONS: Dict[str, set] = {
 
     # ------------------------------------------------------------------------
     # GENERAL EDUCATION
@@ -908,7 +910,6 @@ for _phrase_group in PHRASE_PATTERNS:
         "category": "Educational Discourse",
     }
 
-# Useful broad meta-metrics.
 EDUCATIONAL_METRIC_CONFIGS.update({
     "academic_domain_breadth": {
         "name": "Academic Domain Breadth",
@@ -947,8 +948,7 @@ class EducationalMetricsMixin:
     def _educational_runtime_words(self, tokens) -> List[str]:
         if tokens is None:
             return []
-        # Prefer the classifier's runtime text helper when available because
-        # the original project may normalize transcript text there.
+
         try:
             text = self._get_runtime_text_lower(tokens)
             if isinstance(text, str):
@@ -962,12 +962,16 @@ class EducationalMetricsMixin:
             words.extend(re.findall(r"[a-zA-ZÀ-ÿ]+", token))
         return words
 
-    def _compute_educational_lexicon(self, tokens, lexicon_key: str = None) -> float:
+    def _compute_educational_lexicon(
+        self, tokens, lexicon_key: Optional[str] = None
+    ) -> float:
         words = self._educational_runtime_words(tokens)
         lexicon = EDUCATIONAL_LEXICONS.get(lexicon_key or "", set())
         return float(sum(1 for word in words if word in lexicon))
 
-    def _compute_educational_phrase(self, tokens, phrase_key: str = None) -> float:
+    def _compute_educational_phrase(
+        self, tokens, phrase_key: Optional[str] = None
+    ) -> float:
         try:
             text = self._get_runtime_text_lower(tokens)
         except Exception:
@@ -978,8 +982,10 @@ class EducationalMetricsMixin:
 
     def _compute_domain_breadth(self, tokens) -> float:
         words = set(self._educational_runtime_words(tokens))
-        return float(sum(1 for lexicon in EDUCATIONAL_LEXICONS.values()
-                         if words.intersection(lexicon)))
+        return float(sum(
+            1 for lexicon in EDUCATIONAL_LEXICONS.values()
+            if words.intersection(lexicon)
+        ))
 
     def _compute_stem_density(self, tokens) -> float:
         stem_fields = (
@@ -1031,7 +1037,10 @@ def register_educational_metrics(metric_config: Any, classifier_cls: Any) -> Non
     metric_config.METRICS.update(EDUCATIONAL_METRIC_CONFIGS)
 
     for method_name, method in EducationalMetricsMixin.__dict__.items():
-        if method_name == "_educational_runtime_words" or method_name.startswith("_compute_"):
+        if (
+            method_name == "_educational_runtime_words"
+            or method_name.startswith("_compute_")
+        ):
             setattr(classifier_cls, method_name, method)
 
 
@@ -1039,7 +1048,7 @@ def register_educational_metrics(metric_config: Any, classifier_cls: Any) -> Non
 # OPTIONAL STANDALONE ACCESS
 # ============================================================================
 
-def get_educational_lexicons() -> Dict[str, set[str]]:
+def get_educational_lexicons() -> Dict[str, set]:
     """Return the domain lexicons for inspection or external tooling."""
     return EDUCATIONAL_LEXICONS
 

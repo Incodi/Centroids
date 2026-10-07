@@ -1,10 +1,12 @@
-import os
 import json
-import re
-import hashlib
-import inspect
 import logging
-import time
+import os
+import re
+import subprocess
+import sys
+import warnings
+from pathlib import Path
+from typing import Dict, List, Optional
 
 os.environ.setdefault('TOKENIZERS_PARALLELISM', 'false')
 logging.getLogger('torch.distributed.elastic.multiprocessing.redirects').setLevel(logging.ERROR)
@@ -20,26 +22,9 @@ except ImportError:
     json_dumps = json.dumps
     JSON_LIB = 'json'
 
-import numpy as np
-import csv
-import webbrowser
-import math
 import html
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
-from collections import Counter, defaultdict, deque
-from sentence_transformers import SentenceTransformer
-from sklearn.cluster import KMeans
-from sklearn.preprocessing import StandardScaler
-from sklearn.metrics.pairwise import cosine_similarity
-import plotly.graph_objects as go
-import argparse
-import warnings
-import lzma
-from lexicalrichness import LexicalRichness
-import umap
-import torch
-from transformers import AutoTokenizer, AutoModelForCausalLM
+
+import numpy as np
 from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
 
 try:
@@ -54,12 +39,18 @@ except ImportError:
     SklearnHDBSCAN = None
 
 warnings.filterwarnings('ignore')
-os.environ.update({'OPENBLAS_NUM_THREADS': '1', 'MKL_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'})
+os.environ.update({
+    'OPENBLAS_NUM_THREADS': '1',
+    'MKL_NUM_THREADS': '1',
+    'OMP_NUM_THREADS': '1',
+})
+
 
 def sanitize_filename(name: str) -> str:
     name = name.replace('..', '').replace('/', '').replace('\\', '')
     name = name.replace('\0', '')
     return ''.join(c for c in name if c.isalnum() or c in (' ', '-', '_', '.')).strip()
+
 
 def validate_text_name(text: str) -> bool:
     if not text or len(text) > 255:
@@ -70,18 +61,22 @@ def validate_text_name(text: str) -> bool:
         return False
     return True
 
+
 def escape_html_attribute(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
     return html.escape(text, quote=True)
+
 
 def escape_for_javascript(text: str) -> str:
     if not isinstance(text, str):
         text = str(text)
     return json.dumps(text)
 
+
 def safe_json_dumps(obj) -> str:
     return json.dumps(obj, ensure_ascii=True)
+
 
 CACHE_FILTER_KEYS = {
     'date_from', 'date_to',
@@ -115,15 +110,27 @@ MODEL_NAME_ALIASES: Dict[str, str] = {
     'gte_small': 'thenlper/gte-small',
 }
 
+
 def resolve_embedding_model_name(model_name: Optional[str]) -> str:
     requested = (model_name or SBERT_MODEL).strip()
     return MODEL_NAME_ALIASES.get(requested, requested)
+
 
 def get_embedding_model_profile(model_name: str) -> Dict[str, int]:
     profile = EMBEDDING_MODEL_PROFILES.get(model_name)
     if profile is not None:
         return profile
-    return {'context_window': 512, 'chunk_target': 384, 'min_chunk': 256, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 1024}
+
+    return {
+        'context_window': 512,
+        'chunk_target': 384,
+        'min_chunk': 256,
+        'batch_size': 128,
+        'practical_max_tokens_cpu': 384,
+        'practical_max_tokens_mps': 512,
+        'practical_max_tokens_cuda': 1024,
+    }
+
 
 perplexity_model = None
 perplexity_tokenizer = None
@@ -135,15 +142,6 @@ spacy_embedding_cache = {}
 sbert_token_embedding_cache = {}
 
 TOKEN_REGEX = re.compile(r"([^\w\s']|(?<!\w)'|'(?!\w)|\s+|'+\s)")
-
-INSULT_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
-    r'\bstupid\w*\b', r'\bdumb\w*\b', r'\bidiot\w*\b', r'\bnerd\w*\b', r'\bdork\w*\b', r'\bdummy\w*\b',
-    r'\bjerks?\b', r'\bdingle\w*\b', r'\bdoofus\w*\b', r'\bcoward\w*\b', r'\bdummies\w*\b',
-    r'\bbuffoon\w*\b', r'\blame\w*\b', r'\bgoofball\w*\b', r'\bnoob\w*\b', r'\b(?:these|this|that|another|a|the)\s+fools?\b',
-    r'\bnincompoop\w*\b', r'\bcretin\w*\b', r'\bmoron\w*\b', r'\b(?<!the )loser\w*\b', r'\brascal\w*\b', r'\bhooligan\w*\b',
-    r"\byou(?:\s+\w+)?\s+fool\b", r"\byou(?:\s+\w+)?\s+prick\b", r'\bskank\w*\b', r'\bugly\b',
-    r'\b(?<!cyber)(?<!cyber\s)(?<!cm)(?<!cm\s)punk(?:s)?\b(?!\s+(?:music|rock|disc|discs|record|album|band|song|genre))'
-]]
 
 DEV_SPECIALTY_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [r'\bthis\s+is\s+a\b']]
 CUSTOM_MARKER_PATTERNS = [re.compile(p, re.IGNORECASE) for p in [
@@ -328,10 +326,13 @@ DYNAMIC_TOKEN_SET_METRIC_MAP.update(AUXILIARY_GROUP_FORM_MAP)
 DYNAMIC_TOKEN_SET_METRIC_MAP['conjunction_total_count'] = set().union(*CONJUNCTION_FORM_MAP.values())
 DYNAMIC_TOKEN_SET_METRIC_MAP['pronoun_total_count'] = set().union(*PRONOUN_GROUP_FORM_MAP.values())
 DYNAMIC_TOKEN_SET_METRIC_MAP['pronoun_third_person_count'] = (
-    PRONOUN_GROUP_FORM_MAP['pronoun_he_count'] | PRONOUN_GROUP_FORM_MAP['pronoun_she_count'] | PRONOUN_GROUP_FORM_MAP['pronoun_they_count']
+    PRONOUN_GROUP_FORM_MAP['pronoun_he_count']
+    | PRONOUN_GROUP_FORM_MAP['pronoun_she_count']
+    | PRONOUN_GROUP_FORM_MAP['pronoun_they_count']
 )
 DYNAMIC_TOKEN_SET_METRIC_MAP['auxiliary_total_count'] = set().union(*AUXILIARY_GROUP_FORM_MAP.values())
 DYNAMIC_COUNT_FALLBACK_METHODS: Dict[str, str] = {}
+
 
 def _format_trimmed_decimal(value: float, decimals: int = 4) -> str:
     try:
@@ -339,6 +340,7 @@ def _format_trimmed_decimal(value: float, decimals: int = 4) -> str:
         return '0' if formatted in ('-0', '-0.0', '') else formatted
     except Exception:
         return str(value)
+
 
 def _is_word_count_metric_config(metric_name: str, metric_config: Dict) -> bool:
     if not metric_name.endswith('_count'):
@@ -351,6 +353,7 @@ def _is_word_count_metric_config(metric_name: str, metric_config: Dict) -> bool:
     if compute_method in ('_compute_dynamic_token_count', '_compute_letter_count'):
         return False
     return True
+
 
 DYNAMIC_METRIC_CONFIGS = {
     'unique_words_count': ('Unique Words Count', 'Count of unique normalized word tokens', 'Lexical Diversity'),
@@ -366,34 +369,59 @@ DYNAMIC_METRIC_CONFIGS = {
 
 for metric_key in SIMPLE_COLOR_PATTERN_MAP:
     color_name = metric_key.replace('color_', '').replace('_count', '').capitalize()
-    DYNAMIC_METRIC_CONFIGS[metric_key] = (f'{color_name} Count', f'Count of {color_name.lower()} color terms and simple variants', 'Discourse Markers')
+    DYNAMIC_METRIC_CONFIGS[metric_key] = (
+        f'{color_name} Count',
+        f'Count of {color_name.lower()} color terms and simple variants',
+        'Discourse Markers',
+    )
 for metric_key in INTERROGATIVE_FORM_MAP:
     label = metric_key.replace('_count', '').capitalize()
-    DYNAMIC_METRIC_CONFIGS[metric_key] = (f'{label} Count', f'Count of interrogative "{label.lower()}" and variants', 'Discourse Markers')
+    DYNAMIC_METRIC_CONFIGS[metric_key] = (
+        f'{label} Count',
+        f'Count of interrogative "{label.lower()}" and variants',
+        'Discourse Markers',
+    )
 for metric_key in CONJUNCTION_FORM_MAP:
     conj = metric_key.replace('conjunction_', '').replace('_count', '')
-    DYNAMIC_METRIC_CONFIGS[metric_key] = (f'Conjunction {conj.upper()} Count', f'Count of conjunction "{conj}"', 'Discourse Markers')
+    DYNAMIC_METRIC_CONFIGS[metric_key] = (
+        f'Conjunction {conj.upper()} Count',
+        f'Count of conjunction "{conj}"',
+        'Discourse Markers',
+    )
 for metric_key in PRONOUN_GROUP_FORM_MAP:
     pron = metric_key.replace('pronoun_', '').replace('_count', '')
-    DYNAMIC_METRIC_CONFIGS[metric_key] = (f'Pronoun {pron.capitalize()} Count', f'Count of pronoun group "{pron}" and variants', 'Discourse Markers')
+    DYNAMIC_METRIC_CONFIGS[metric_key] = (
+        f'Pronoun {pron.capitalize()} Count',
+        f'Count of pronoun group "{pron}" and variants',
+        'Discourse Markers',
+    )
 for metric_key in AUXILIARY_GROUP_FORM_MAP:
     aux = metric_key.replace('auxiliary_', '').replace('_count', '')
-    DYNAMIC_METRIC_CONFIGS[metric_key] = (f'Auxiliary {aux.capitalize()} Count', f'Count of auxiliary "{aux}" group and variants', 'Discourse Markers')
+    DYNAMIC_METRIC_CONFIGS[metric_key] = (
+        f'Auxiliary {aux.capitalize()} Count',
+        f'Count of auxiliary "{aux}" group and variants',
+        'Discourse Markers',
+    )
+
 
 def _install_spacy_model(model_name: str = "en_core_web_sm"):
     try:
-        import subprocess, sys
         print(f"Installing spacy and {model_name} model...")
         subprocess.check_call([sys.executable, "-m", "pip", "install", "-q", "spacy"])
         print(f"Downloading {model_name} model...")
         subprocess.check_call([sys.executable, "-m", "spacy", "download", model_name, "-q"])
         print("spaCy installation complete!")
+
         global spacy_nlp
         import spacy
         spacy_nlp = spacy.load(model_name)
     except Exception as e:
         print(f"Failed to install spaCy: {e}")
-        print(f"You can manually install with: pip install spacy && python -m spacy download {model_name}")
+        print(
+            f"You can manually install with: "
+            f"pip install spacy && python -m spacy download {model_name}"
+        )
+
 
 METRICS_VERSION = 3
 FIGHTING_WORDS_PEAK_METRIC = 'fighting_words_peak_z1'
@@ -421,6 +449,7 @@ CENTROID_ONLY_METRIC_NAMES = frozenset({
 })
 
 CENTROID_METRIC_NAMES = CENTROID_DUPLICATE_METRIC_NAMES | CENTROID_ONLY_METRIC_NAMES
+
 
 class MetricConfig:
     METRICS = {
@@ -472,8 +501,6 @@ class MetricConfig:
         'coordinate_clause_count': {'name': 'Coordinate Clause Count', 'title_suffix': 'Coordinating Conjunctions', 'compute_method': '_compute_coordinate_clause_count', 'category': 'Syntactic Patterns'},
         'latinate_word_ratio': {'name': 'Latinate Word Ratio', 'title_suffix': 'Latinate/Greek Morphology Ratio', 'compute_method': '_compute_latinate_word_ratio', 'category': 'Syntactic Patterns'},
 
-        'insult': {'name': '"Good" Insult Count', 'title_suffix': 'Insult Words (stupid, idiot, fool, punk, etc.)', 'compute_method': 'compute_insult_density', 'category': 'Profanity & Insults'},
-
         'family_exclamations': {'name': 'Family Exclamation Count', 'title_suffix': 'Family-Friendly Exclamation Count', 'compute_method': '_compute_family_exclamations', 'category': 'Discourse Markers'},
         'vulnerability': {'name': 'Vulnerability Count', 'title_suffix': 'Vulnerability Words/Phrases Count', 'compute_method': '_compute_vulnerability_count', 'category': 'Discourse Markers'},
         'simile_count': {'name': 'Simile Count', 'title_suffix': 'Simile and Comparative Expression Count', 'compute_method': '_compute_simile_count', 'category': 'Discourse Markers'},
@@ -486,7 +513,7 @@ class MetricConfig:
         'quantifier_count': {'name': 'Quantifier Count', 'title_suffix': 'Quantifier Count (some, many, few, several, etc.)', 'compute_method': '_compute_quantifier_count', 'category': 'Discourse Markers'},
         'gerund_count': {'name': 'Gerund Count', 'title_suffix': 'Gerund/Present Participle Count (spaCy VBG)', 'compute_method': '_compute_gerund_count', 'category': 'Discourse Markers'},
         'pronoun_article_ratio': {'name': 'Pronoun-to-Article Ratio', 'title_suffix': 'Pronoun/Article Ratio', 'compute_method': '_compute_pronoun_article_ratio', 'category': 'Discourse Markers'},
-        'imperative_exclamation_density': {'name': 'Imperative/Exclamations', 'title_suffix': 'Direct Commands & Emotional Outbursts Count', 'compute_method': '_compute_imperative_exclamation_density', 'requires_spacy_model': True, 'category': 'Discourse Markers'},
+        'imperative_exclamation_count': {'name': 'Imperative/Exclamations', 'title_suffix': 'Direct Commands & Emotional Outbursts Count', 'compute_method': '_compute_imperative_exclamation_count', 'requires_spacy_model': True, 'category': 'Discourse Markers'},
         'deictic_spatial_temporal': {'name': 'Spatial/Temporal', 'title_suffix': 'Explicit Pointing Language (per 1000 words)', 'compute_method': '_compute_deictic_spatial_temporal', 'category': 'Discourse Markers'},
         'elaboration_explanation_ratio': {'name': 'Elaboration & Explanation Ratio', 'title_suffix': 'Elaboration & Explanation (Narrative Structure)', 'compute_method': '_compute_elaboration_explanation_ratio', 'category': 'Discourse Markers'},
         'narration_continuation_ratio': {'name': 'Narration & Continuation Ratio', 'title_suffix': 'Narration & Continuation (Action-Based)', 'compute_method': '_compute_narration_continuation_ratio', 'category': 'Discourse Markers'},
@@ -499,11 +526,25 @@ class MetricConfig:
     for metric_key, metric_cfg in list(METRICS.items()):
         if not _is_word_count_metric_config(metric_key, metric_cfg):
             continue
-        DYNAMIC_METRIC_CONFIGS.setdefault(metric_key, (metric_cfg.get('name', metric_key), metric_cfg.get('title_suffix', metric_key), metric_cfg.get('category', 'Silly & Fun Counts')))
-        DYNAMIC_COUNT_FALLBACK_METHODS.setdefault(metric_key, metric_cfg.get('compute_method', ''))
+        DYNAMIC_METRIC_CONFIGS.setdefault(
+            metric_key,
+            (
+                metric_cfg.get('name', metric_key),
+                metric_cfg.get('title_suffix', metric_key),
+                metric_cfg.get('category', 'Silly & Fun Counts'),
+            ),
+        )
+        DYNAMIC_COUNT_FALLBACK_METHODS.setdefault(
+            metric_key, metric_cfg.get('compute_method', '')
+        )
 
     for metric_key, (metric_name, title_suffix, category) in DYNAMIC_METRIC_CONFIGS.items():
-        METRICS[metric_key] = {'name': metric_name, 'title_suffix': title_suffix, 'compute_method': '_compute_dynamic_token_count', 'category': category}
+        METRICS[metric_key] = {
+            'name': metric_name,
+            'title_suffix': title_suffix,
+            'compute_method': '_compute_dynamic_token_count',
+            'category': category,
+        }
 
     del metric_key, metric_cfg, metric_name, title_suffix, category
 
@@ -542,10 +583,19 @@ class MetricConfig:
     FAST_MODE_EXCLUDED = {'ngram_entropy_2', 'ngram_entropy_3'}
 
     @classmethod
-    def is_metric_eligible(cls, metric_name: str, enable_spacy: bool, needs_perplexity_model: bool, enable_ngram_entropy: bool, fast_mode: bool) -> bool:
+    def is_metric_eligible(
+        cls,
+        metric_name: str,
+        enable_spacy: bool,
+        needs_perplexity_model: bool,
+        enable_ngram_entropy: bool,
+        fast_mode: bool,
+    ) -> bool:
         if metric_name not in cls.METRICS:
             return False
+
         cfg = cls.METRICS[metric_name]
+
         if cfg.get('requires_spacy_model') and not enable_spacy:
             return False
         if cfg.get('requires_perplexity_model') and not needs_perplexity_model:
@@ -554,7 +604,9 @@ class MetricConfig:
             return False
         if fast_mode and metric_name in cls.FAST_MODE_EXCLUDED:
             return False
+
         return True
+
 
 def hms_to_seconds(hms: str) -> float:
     if not hms:
@@ -563,26 +615,36 @@ def hms_to_seconds(hms: str) -> float:
     multipliers = [1, 60, 3600]
     return sum(p * multipliers[len(parts) - 1 - i] for i, p in enumerate(parts))
 
+
 def extract_video_id(filename: str) -> str:
     match = re.search(r'\[([A-Za-z0-9_-]{11})\]', filename)
     return match.group(1) if match else filename.replace('.txt', '').split('.')[-1]
 
+
 def load_ignore_urls(ignore_file: Optional[str]) -> set:
     if not ignore_file:
         return set()
+
     ignore_path = Path(ignore_file)
     if not ignore_path.exists():
         print(f"Warning: Ignore file not found: {ignore_file}")
         return set()
+
     ignore_ids = set()
+
     try:
         with open(ignore_path, 'r', encoding='utf-8') as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith('#'):
                     continue
+
                 if 'youtu' in line.lower():
-                    match = re.search(r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/v/)([a-zA-Z0-9_-]{11})', line)
+                    match = re.search(
+                        r'(?:youtube\.com/watch\?v=|youtu\.be/|youtube\.com/embed/|youtube\.com/v/)'
+                        r'([a-zA-Z0-9_-]{11})',
+                        line,
+                    )
                     if match:
                         ignore_ids.add(match.group(1))
                 else:
@@ -591,6 +653,8 @@ def load_ignore_urls(ignore_file: Optional[str]) -> set:
                         ignore_ids.add(vid_id)
     except Exception as e:
         print(f"Warning: Error reading ignore file: {e}")
+
     if ignore_ids:
         print(f"Loaded {len(ignore_ids)} video IDs to ignore")
+
     return ignore_ids
