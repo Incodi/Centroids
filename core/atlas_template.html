@@ -2,7 +2,16 @@
     * {
         font-family: Arial, sans-serif;
     }
-    body, html, div, span, input, button, select, option, textarea {
+
+    body,
+    html,
+    div,
+    span,
+    input,
+    button,
+    select,
+    option,
+    textarea {
         font-family: Arial, sans-serif;
     }
 
@@ -13,7 +22,8 @@
     }
 
     @supports (paint-order: stroke) {
-        .plotly-stroke-text, .correlationStrokeText {
+        .plotly-stroke-text,
+        .correlationStrokeText {
             stroke: white;
             stroke-width: 1.5;
             stroke-opacity: 1;
@@ -35,8 +45,9 @@
         top: 0;
         width: 100%;
         height: 100%;
-        background-color: rgba(0,0,0,0.5);
+        background-color: rgba(0, 0, 0, 0.5);
     }
+
     #noteModalContent {
         background-color: white;
         margin: 50px auto;
@@ -46,11 +57,13 @@
         max-height: 70vh;
         overflow-y: auto;
     }
+
     #noteModalClose {
         float: right;
         font-size: 20px;
         cursor: pointer;
     }
+
     #noteModalBody {
         white-space: pre-wrap;
         word-wrap: break-word;
@@ -61,52 +74,61 @@
         margin-right: auto;
         transform: translate(-60px, 5px);
     }
+
     .js-plotly-plot:not(#correlationPlot) {
         margin-left: auto;
         margin-right: auto;
     }
 
-    /* --- Text panel / leaderboard: proper flex layout so resize fills list --- */
     #textPanel {
         display: flex;
         flex-direction: column;
     }
+
     #textPanel .panelDragHandle {
         flex: 0 0 auto;
     }
+
     #textPanel .panelBody {
         flex: 1 1 auto;
         min-height: 0;
         display: flex;
         flex-direction: column;
     }
+
     #textList {
         flex: 1 1 auto;
         min-height: 0;
         overflow-y: auto;
         box-sizing: border-box;
     }
+
     #textList div {
         padding: 2px;
         cursor: pointer;
         font-size: 11px;
     }
+
     #textList div:hover {
         background-color: #ddd;
     }
+
     #textList div.focusedTextItem {
         background-color: #ffeb3b;
         font-weight: bold;
     }
+
     #textList div.focusedTextItem:hover {
         background-color: #ffe066;
     }
+
     .searchableMetricInput {
         width: 100%;
         box-sizing: border-box;
         margin: 4px 0;
         font-size: 11px;
     }
+
     .searchableMetricSelect {
         width: 100%;
         font-size: 11px;
@@ -115,11 +137,13 @@
     #correlationContainer {
         display: none;
     }
+
     #correlationPlot .modebar {
         left: 50%;
         right: auto;
         transform: translateX(-50%);
     }
+
     #correlationControls {
         position: fixed;
         left: 10px;
@@ -130,12 +154,15 @@
         z-index: 9999;
         font-size: 12px;
     }
+
     #correlationControls button {
         margin-top: 5px;
     }
+
     #correlationControls select {
         font-size: 11px;
     }
+
     #correlationStats {
         position: fixed;
         right: 10px;
@@ -148,1095 +175,1407 @@
         font-size: 10px;
         line-height: 1.4;
     }
+
     #correlationStats strong {
         font-size: 11px;
         display: block;
         margin-bottom: 8px;
         padding-bottom: 4px;
     }
-    </style>
+</style>
 
-    <script>
-        const CONFIG = {
-            highlightSize: 80,
-            normalSize: 15,
-            focusStarSize: 40,
-            dimmedOpacity: 0.2,
-            highlightDuration: 2000,
-            textOutlineDelay: 100,
-            pointFontSize: 7,
-            colorScaleZoomRatio: 0.25,
-            regressionLinePoints: 100,
-            defaultColorScale: 'rdbu_r',
-            defaultFocusText: __FOCUS_TEXT__
-        };
+<script>
+    const CONFIG = {
+        highlightSize: 80,
+        normalSize: 15,
+        focusStarSize: 40,
+        dimmedOpacity: 0.2,
+        highlightDuration: 2000,
+        textOutlineDelay: 100,
+        pointFontSize: 7,
+        colorScaleZoomRatio: 0.25,
+        regressionLinePoints: 100,
+        defaultColorScale: 'rdbu_r',
+        defaultFocusText: __FOCUS_TEXT__
+    };
 
-        const metricsData = __METRICS_JSON__;
-        const chartTitles = __TITLES_JSON__;
-        const textNames = __TEXTS_JSON__;
-        const metricDisplayNames = __METRIC_NAMES_JSON__;
-        const metricColorScales = __METRIC_COLORScales_JSON__;
-        const CLUSTER_TURBO_COLORSCALE = [
-            [0.0, '#30123b'],
-            [0.08, '#4145ab'],
-            [0.16, '#4675ed'],
-            [0.24, '#39a2fc'],
-            [0.32, '#1bcfd4'],
-            [0.40, '#24eca6'],
-            [0.48, '#61fc6c'],
-            [0.56, '#a4fc3b'],
-            [0.64, '#d1e834'],
-            [0.72, '#f3c63a'],
-            [0.80, '#fe9b2d'],
-            [0.88, '#f36315'],
-            [0.96, '#d93806'],
-            [1.0, '#7a0403']
-        ];
-        const metricKeys = __METRIC_KEYS_JSON__;
-        const textAnnotations = __PROGRAMMER_NOTES_JSON__;
-        const annotationsEnabled = __ANNOTATIONS_ENABLED_JSON__;
-        const semanticEmbeddings = __SEMANTIC_EMBEDDINGS_JSON__;
-        const burrowsSimilarity = __BURROWS_SIMILARITY_JSON__;
-        const lowTokenTexts = __LOW_TOKEN_TEXTS_JSON__;
-        const FOCUS_OVERLAY_META = 'focusOverlay';
-        const CORR_FOCUS_OVERLAY_META = 'corrFocusOverlay';
+    const metricsData = __METRICS_JSON__;
+    const chartTitles = __TITLES_JSON__;
+    const textNames = __TEXTS_JSON__;
+    const metricDisplayNames = __METRIC_NAMES_JSON__;
+    const metricColorScales = __METRIC_COLORScales_JSON__;
 
-        let currentMetric = __ACTIVE_METRIC_JSON__;
-        let viewMode = 'umap';
-        let correlationXMetric = metricKeys[0];
-        let correlationYMetric = metricKeys.length > 1 ? metricKeys[1] : metricKeys[0];
-        let umapLabelsVisible = true;
-        let correlationLabelsVisible = true;
-        let hideGrayPoints = false;
-        let currentColorDataForPlot = [];
-        let currentColorscale = CLUSTER_TURBO_COLORSCALE;
-        let currentCmin = 0;
-        let currentCmax = 1;
-        let focusedTextName = null;
-        let focusedTextIndex = -1;
-        let semanticLineModeEnabled = false;
-        let semanticLineCount = 10;
-        let mainSemanticRefreshToken = 0;
-        let correlationSemanticRefreshToken = 0;
-        const clusterMetricKeys = metricKeys.filter(key => key === 'cluster' || key.startsWith('cluster_'));
-        let focusClusterOnly = false;
-        let focusClusterMetric = clusterMetricKeys.includes('cluster')
-            ? 'cluster'
-            : (clusterMetricKeys.length ? clusterMetricKeys[0] : null);
-        let focusSimilarityMode = 'cosine';
-        const textNameLookup = new Map(
-            textNames.map((name, index) => [name.toLowerCase(), { name, index }])
+    const CLUSTER_TURBO_COLORSCALE = [
+        [0.0, '#30123b'],
+        [0.08, '#4145ab'],
+        [0.16, '#4675ed'],
+        [0.24, '#39a2fc'],
+        [0.32, '#1bcfd4'],
+        [0.40, '#24eca6'],
+        [0.48, '#61fc6c'],
+        [0.56, '#a4fc3b'],
+        [0.64, '#d1e834'],
+        [0.72, '#f3c63a'],
+        [0.80, '#fe9b2d'],
+        [0.88, '#f36315'],
+        [0.96, '#d93806'],
+        [1.0, '#7a0403']
+    ];
+
+    const metricKeys = __METRIC_KEYS_JSON__;
+    const textAnnotations = __PROGRAMMER_NOTES_JSON__;
+    const annotationsEnabled = __ANNOTATIONS_ENABLED_JSON__;
+    const semanticEmbeddings = __SEMANTIC_EMBEDDINGS_JSON__;
+    const burrowsSimilarity = __BURROWS_SIMILARITY_JSON__;
+    const lowTokenTexts = __LOW_TOKEN_TEXTS_JSON__;
+
+    const FOCUS_OVERLAY_META = 'focusOverlay';
+    const CORR_FOCUS_OVERLAY_META = 'corrFocusOverlay';
+
+    let currentMetric = __ACTIVE_METRIC_JSON__;
+    let viewMode = 'umap';
+    let correlationXMetric = metricKeys[0];
+    let correlationYMetric = metricKeys.length > 1 ? metricKeys[1] : metricKeys[0];
+    let umapLabelsVisible = true;
+    let correlationLabelsVisible = true;
+    let hideGrayPoints = false;
+    let currentColorDataForPlot = [];
+    let currentColorscale = CLUSTER_TURBO_COLORSCALE;
+    let currentCmin = 0;
+    let currentCmax = 1;
+    let focusedTextName = null;
+    let focusedTextIndex = -1;
+    let semanticLineModeEnabled = false;
+    let semanticLineCount = 10;
+    let mainSemanticRefreshToken = 0;
+    let correlationSemanticRefreshToken = 0;
+
+    const clusterMetricKeys = metricKeys.filter(
+        key => key === 'cluster' || key.startsWith('cluster_')
+    );
+
+    let focusClusterOnly = false;
+    let focusClusterMetric = clusterMetricKeys.includes('cluster')
+        ? 'cluster'
+        : (clusterMetricKeys.length ? clusterMetricKeys[0] : null);
+    let focusSimilarityMode = 'cosine';
+
+    const textNameLookup = new Map(
+        textNames.map((name, index) => [name.toLowerCase(), { name, index }])
+    );
+
+    function addTextOutlines(selector, className) {
+        selector = selector || '.scatterlayer .textpoint text';
+        className = className || 'plotly-stroke-text';
+
+        const textElements = document.querySelectorAll(selector);
+        textElements.forEach(element => element.classList.add(className));
+    }
+
+    function showAnnotationModal(textName) {
+        if (!annotationsEnabled || !textAnnotations[textName]) {
+            return;
+        }
+
+        const modal = document.getElementById('noteModal');
+        const body = document.getElementById('noteModalBody');
+
+        while (body.firstChild) {
+            body.removeChild(body.firstChild);
+        }
+
+        const title = document.createElement('strong');
+        title.textContent = `${textName} annotation:`;
+        body.appendChild(title);
+        body.appendChild(document.createElement('hr'));
+
+        const content = document.createElement('div');
+        content.style.whiteSpace = 'pre-wrap';
+        content.textContent = textAnnotations[textName];
+        body.appendChild(content);
+        modal.style.display = 'block';
+    }
+
+    function calculateMetricRange(metricArray) {
+        let min = Infinity;
+        let max = -Infinity;
+        let hasValid = false;
+
+        for (let i = 0; i < metricArray.length; i++) {
+            const value = metricArray[i];
+            if (value !== null && value !== undefined && !isNaN(value)) {
+                if (value < min) min = value;
+                if (value > max) max = value;
+                hasValid = true;
+            }
+        }
+
+        return hasValid ? { min, max } : null;
+    }
+
+    function makeDraggable(panel) {
+        const handle = panel.querySelector('.panelDragHandle');
+        if (!handle) return;
+
+        let dragging = false;
+        let startX = 0;
+        let startY = 0;
+        let startLeft = 0;
+        let startTop = 0;
+
+        function onMove(e) {
+            if (!dragging) return;
+
+            const dx = e.clientX - startX;
+            const dy = e.clientY - startY;
+
+            panel.style.left = (startLeft + dx) + 'px';
+            panel.style.top = (startTop + dy) + 'px';
+        }
+
+        function onUp() {
+            if (!dragging) return;
+
+            dragging = false;
+            document.removeEventListener('mousemove', onMove);
+            document.removeEventListener('mouseup', onUp);
+        }
+
+        handle.addEventListener('mousedown', (e) => {
+            const tag = (e.target.tagName || '').toUpperCase();
+
+            if (
+                tag === 'INPUT' ||
+                tag === 'SELECT' ||
+                tag === 'BUTTON' ||
+                tag === 'TEXTAREA' ||
+                tag === 'A'
+            ) {
+                return;
+            }
+
+            e.preventDefault();
+            e.stopPropagation();
+
+            const rect = panel.getBoundingClientRect();
+
+            panel.style.left = rect.left + 'px';
+            panel.style.top = rect.top + 'px';
+            panel.style.right = 'auto';
+            panel.style.bottom = 'auto';
+
+            startX = e.clientX;
+            startY = e.clientY;
+            startLeft = rect.left;
+            startTop = rect.top;
+            dragging = true;
+
+            document.addEventListener('mousemove', onMove);
+            document.addEventListener('mouseup', onUp);
+        });
+    }
+
+    function createControlPanel(id, position, borderStyle, content, options) {
+        options = options || {};
+
+        const panel = document.createElement('div');
+        panel.id = id;
+
+        const { display, ...pos } = position;
+
+        const draggable = options.draggable !== false;
+        const resizable = options.resizable !== false;
+        const zIndex = options.zIndex || 9999;
+
+        Object.assign(panel.style, {
+            position: 'fixed',
+            background: 'white',
+            padding: '5px',
+            border: borderStyle || '0.5px solid black',
+            zIndex: String(zIndex),
+            resize: resizable ? 'both' : 'none',
+            overflow: resizable ? 'auto' : 'visible',
+            minWidth: options.minWidth || '120px',
+            minHeight: options.minHeight || '30px',
+            boxSizing: 'border-box',
+            maxHeight: '90vh',
+            ...pos
+        });
+
+        if (draggable) {
+            const handle = document.createElement('div');
+            handle.className = 'panelDragHandle';
+            handle.textContent = options.dragLabel || '⋮⋮';
+            handle.style.cssText = [
+                'margin: -5px -5px 5px -5px',
+                'padding: 1px 5px',
+                'background: #f0f0f0',
+                'border-bottom: 0.5px solid #ccc',
+                'font-size: 9px',
+                'color: #555',
+                'text-align: center',
+                'letter-spacing: 2px',
+                'line-height: 1'
+            ].join(';');
+
+            panel.appendChild(handle);
+        }
+
+        const body = document.createElement('div');
+        body.className = 'panelBody';
+
+        if (content) {
+            body.innerHTML = content;
+        }
+
+        panel.appendChild(body);
+
+        if (display) {
+            panel.style.display = display;
+        }
+
+        document.body.appendChild(panel);
+
+        if (draggable) {
+            makeDraggable(panel);
+        }
+
+        return panel;
+    }
+
+    document.addEventListener('DOMContentLoaded', function() {
+        const mainPlot = document.querySelector('.plotly-graph-div');
+        if (!mainPlot) {
+            return;
+        }
+
+        setTimeout(() => addTextOutlines(), CONFIG.textOutlineDelay);
+
+        if (annotationsEnabled) {
+            const modal = document.createElement('div');
+            modal.id = 'noteModal';
+            modal.innerHTML =
+                '<div id="noteModalContent">' +
+                '<span id="noteModalClose">&times;</span>' +
+                '<div id="noteModalBody"></div>' +
+                '</div>';
+
+            document.body.appendChild(modal);
+
+            document.getElementById('noteModalClose').onclick = () => {
+                modal.style.display = 'none';
+            };
+
+            window.addEventListener('click', (event) => {
+                if (event.target === modal) {
+                    modal.style.display = 'none';
+                }
+            });
+
+            mainPlot.on('plotly_click', (data) => {
+                if (data.points && data.points[0]) {
+                    const textName = textNames[data.points[0].pointIndex];
+                    showAnnotationModal(textName);
+                }
+            });
+        }
+
+        const plotObserver = new MutationObserver(() => {
+            addTextOutlines();
+        });
+
+        plotObserver.observe(mainPlot, { childList: true, subtree: true });
+
+        const toggleViewPanel = createControlPanel(
+            'toggleViewPanel',
+            { left: '10px', top: '5px', zIndex: 10001 },
+            '0.5px solid darkblue',
+            '<button id="toggleViewBtn" style="font-weight: bold;">Switch to Correlation View</button>',
+            { resizable: false, zIndex: 10001, dragLabel: 'view' }
         );
 
-        function addTextOutlines(selector, className) {
-            selector = selector || '.scatterlayer .textpoint text';
-            className = className || 'plotly-stroke-text';
-            const textElements = document.querySelectorAll(selector);
-            textElements.forEach(element => element.classList.add(className));
-        }
+        createControlPanel(
+            'metricPanel',
+            { left: '10px', top: '45px' },
+            '0.5px solid black',
+            '<b>Color Metric</b><br/>' +
+            '<input id="metricSearchInput" class="searchableMetricInput" type="text" placeholder="Search metrics..."><br/>' +
+            '<select id="metricSelect" class="searchableMetricSelect"></select><br/>' +
+            '<button id="toggleLabelsBtn" style="margin-top: 5px; font-size: 10px; padding: 2px 6px;">Hide Labels</button><br/>' +
+            '<button id="toggleGrayPointsBtn" style="margin-top: 5px; font-size: 10px; padding: 2px 6px;">Hide Gray Points</button>',
+            { zIndex: 9999, minWidth: '220px', dragLabel: 'color metric' }
+        );
 
-        function showAnnotationModal(textName) {
-            if (!annotationsEnabled || !textAnnotations[textName]) {
-                return;
-            }
+        const focusButtonPanel = createControlPanel(
+            'focusButtonPanel',
+            { left: '260px', top: '5px', zIndex: 10050 },
+            '0.5px solid black',
+            '<button id="openFocusPanelBtn">Focus Text</button>' +
+            '<span id="focusMetricPercentile" style="margin-left: 8px; font-size: 10px; font-weight: 500;"></span>',
+            { resizable: false, zIndex: 10050, dragLabel: 'focus' }
+        );
 
-            const modal = document.getElementById('noteModal');
-            const body = document.getElementById('noteModalBody');
+        const focusPanel = createControlPanel(
+            'focusPanel',
+            { left: '260px', top: '39px', display: 'none', zIndex: 10050 },
+            '0.5px solid black',
+            '<b>Focus Text</b><br/>' +
+            '<input id="focusTextInput" type="text" size="20" placeholder="Enter text name"><br/>' +
+            '<label style="font-size: 10px;">Similarity: <select id="focusSimilarityModeSelect" style="font-size: 10px;">' +
+            '<option value="cosine">Cosine</option>' +
+            '<option value="burrows">Burrows</option>' +
+            '</select></label><br/>' +
+            '<label style="font-size: 10px;"><input id="focusClusterOnlyCheckbox" type="checkbox"> Hide texts outside focused text cluster</label><br/>' +
+            '<label style="font-size: 10px;">Clustering: <select id="focusClusterMetricSelect" style="font-size: 10px;"></select></label><br/>' +
+            '<label style="font-size: 10px;"><input id="semanticLinesCheckbox" type="checkbox"> Show semantic connections</label><br/>' +
+            '<label style="font-size: 10px;">Connections: <input id="semanticLinesSlider" type="range" min="1" max="50" value="10"> <span id="semanticLinesValue">10</span></label><br/>' +
+            '<button id="applyFocusBtn" style="margin-top: 5px;">Apply</button> ' +
+            '<button id="clearFocusBtn" style="margin-top: 5px;">Clear</button>',
+            { zIndex: 10050, minWidth: '240px', dragLabel: 'focus text' }
+        );
 
-            while (body.firstChild) {
-                body.removeChild(body.firstChild);
-            }
+        const toggleRect = toggleViewPanel.getBoundingClientRect();
+        const horizontalGap = 8;
+        const focusButtonLeft = toggleRect.left + toggleRect.width + horizontalGap;
 
-            const title = document.createElement('strong');
-            title.textContent = `${textName} annotation:`;
-            body.appendChild(title);
-            body.appendChild(document.createElement('hr'));
+        focusButtonPanel.style.left = `${focusButtonLeft}px`;
+        focusButtonPanel.style.top = `${toggleRect.top}px`;
 
-            const content = document.createElement('div');
-            content.style.whiteSpace = 'pre-wrap';
-            content.textContent = textAnnotations[textName];
-            body.appendChild(content);
-            modal.style.display = 'block';
-        }
+        focusPanel.style.left = `${focusButtonLeft}px`;
+        focusPanel.style.top = `${toggleRect.top + toggleRect.height + 6}px`;
 
-        function calculateMetricRange(metricArray) {
-            let min = Infinity;
-            let max = -Infinity;
-            let hasValid = false;
-            for (let i = 0; i < metricArray.length; i++) {
-                const value = metricArray[i];
-                if (value !== null && value !== undefined && !isNaN(value)) {
-                    if (value < min) min = value;
-                    if (value > max) max = value;
-                    hasValid = true;
-                }
-            }
-            return hasValid ? { min, max } : null;
-        }
+        createControlPanel(
+            'colorPanel',
+            { right: '10px', top: '5px' },
+            '0.5px solid black',
+            '<b>Color Scale</b><br/>' +
+            'Min: <input id="colorMin" type="number" step="any" size="8"><br/>' +
+            'Max: <input id="colorMax" type="number" step="any" size="8"><br/>' +
+            '<button id="applyColorBtn">Apply</button> ' +
+            '<button id="resetColorBtn">Reset</button><br/>' +
+            '<button id="zoomInColorBtn">Zoom In</button> ' +
+            '<button id="zoomOutColorBtn">Zoom Out</button>',
+            { zIndex: 9999, minWidth: '160px', dragLabel: 'color scale' }
+        );
 
-        function makeDraggable(panel) {
-            const handle = panel.querySelector('.panelDragHandle');
-            if (!handle) return;
+        createControlPanel(
+            'textPanel',
+            { right: '10px', top: '135px', width: '180px' },
+            '0.5px solid black',
+            '<div style="flex: 0 0 auto;">' +
+            '<b id="textListHeading">Texts</b><br/>' +
+            '<select id="textSortOrder">' +
+            '<option value="alpha-asc">A-Z</option>' +
+            '<option value="alpha-desc">Z-A</option>' +
+            '<option value="metric-asc">Low to High</option>' +
+            '<option value="metric-desc" selected>High to Low</option>' +
+            '</select>' +
+            '</div>' +
+            '<div id="textList"></div>',
+            { zIndex: 9999, minWidth: '180px', dragLabel: 'texts' }
+        );
 
-            let dragging = false;
-            let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+        const metricSelect = document.getElementById('metricSelect');
+        const metricSearchInput = document.getElementById('metricSearchInput');
 
-            function onMove(e) {
-                if (!dragging) return;
-                const dx = e.clientX - startX;
-                const dy = e.clientY - startY;
-                panel.style.left = (startLeft + dx) + 'px';
-                panel.style.top = (startTop + dy) + 'px';
-            }
+        let xMetricSearchInput = null;
+        let yMetricSearchInput = null;
 
-            function onUp() {
-                if (!dragging) return;
-                dragging = false;
-                document.removeEventListener('mousemove', onMove);
-                document.removeEventListener('mouseup', onUp);
-            }
-
-            handle.addEventListener('mousedown', (e) => {
-                const tag = (e.target.tagName || '').toUpperCase();
-                if (tag === 'INPUT' || tag === 'SELECT' || tag === 'BUTTON' ||
-                    tag === 'TEXTAREA' || tag === 'A') {
-                    return;
-                }
-                e.preventDefault();
-                e.stopPropagation();
-
-                const rect = panel.getBoundingClientRect();
-                panel.style.left = rect.left + 'px';
-                panel.style.top = rect.top + 'px';
-                panel.style.right = 'auto';
-                panel.style.bottom = 'auto';
-
-                startX = e.clientX;
-                startY = e.clientY;
-                startLeft = rect.left;
-                startTop = rect.top;
-                dragging = true;
-
-                document.addEventListener('mousemove', onMove);
-                document.addEventListener('mouseup', onUp);
-            });
-        }
-
-        function createControlPanel(id, position, borderStyle, content, options) {
-            options = options || {};
-            const panel = document.createElement('div');
-            panel.id = id;
-            const {display, ...pos} = position;
-
-            const draggable = options.draggable !== false;
-            const resizable = options.resizable !== false;
-            const zIndex = options.zIndex || 9999;
-
-            Object.assign(panel.style, {
-                position: 'fixed',
-                background: 'white',
-                padding: '5px',
-                border: borderStyle || '0.5px solid black',
-                zIndex: String(zIndex),
-                resize: resizable ? 'both' : 'none',
-                overflow: resizable ? 'auto' : 'visible',
-                minWidth: options.minWidth || '120px',
-                minHeight: options.minHeight || '30px',
-                boxSizing: 'border-box',
-                maxHeight: '90vh',
-                ...pos
-            });
-
-            if (draggable) {
-                const handle = document.createElement('div');
-                handle.className = 'panelDragHandle';
-                handle.textContent = options.dragLabel || '⋮⋮';
-                handle.style.cssText = [
-                    'margin: -5px -5px 5px -5px',
-                    'padding: 1px 5px',
-                    'background: #f0f0f0',
-                    'border-bottom: 0.5px solid #ccc',
-                    'font-size: 9px',
-                    'color: #555',
-                    'text-align: center',
-                    'letter-spacing: 2px',
-                    'line-height: 1'
-                ].join(';');
-                panel.appendChild(handle);
-            }
-
-            const body = document.createElement('div');
-            body.className = 'panelBody';
-            if (content) {
-                body.innerHTML = content;
-            }
-            panel.appendChild(body);
-
-            if (display) {
-                panel.style.display = display;
-            }
-            document.body.appendChild(panel);
-
-            if (draggable) {
-                makeDraggable(panel);
-            }
-
-            return panel;
-        }
-
-        document.addEventListener('DOMContentLoaded', function() {
-            const mainPlot = document.querySelector('.plotly-graph-div');
-            if (!mainPlot) {
-                return;
-            }
-
-            setTimeout(() => addTextOutlines(), CONFIG.textOutlineDelay);
-
-            if (annotationsEnabled) {
-                const modal = document.createElement('div');
-                modal.id = 'noteModal';
-                modal.innerHTML = '<div id="noteModalContent">' +
-                    '<span id="noteModalClose">&times;</span>' +
-                    '<div id="noteModalBody"></div>' +
-                    '</div>';
-                document.body.appendChild(modal);
-
-                document.getElementById('noteModalClose').onclick = () => {
-                    modal.style.display = 'none';
+        const metricOptionCatalog = metricKeys
+            .filter(key => key in metricsData && metricsData[key] !== null)
+            .map(key => {
+                const displayLabel = metricDisplayNames[key] || key;
+                return {
+                    key,
+                    hasData: true,
+                    displayLabel,
+                    searchBlob: `${key} ${displayLabel}`.toLowerCase()
                 };
-
-                window.addEventListener('click', (event) => {
-                    if (event.target === modal) {
-                        modal.style.display = 'none';
-                    }
-                });
-
-                mainPlot.on('plotly_click', (data) => {
-                    if (data.points && data.points[0]) {
-                        const textName = textNames[data.points[0].pointIndex];
-                        showAnnotationModal(textName);
-                    }
-                });
-            }
-
-            const plotObserver = new MutationObserver(() => {
-                addTextOutlines();
             });
-            plotObserver.observe(mainPlot, { childList: true, subtree: true });
 
-            const toggleViewPanel = createControlPanel('toggleViewPanel',
-                { left: '10px', top: '5px', zIndex: 10001 },
-                '0.5px solid darkblue',
-                '<button id="toggleViewBtn" style="font-weight: bold;">Switch to Correlation View</button>',
-                { resizable: false, zIndex: 10001, dragLabel: 'view' }
+        function repopulateMetricSelect(selectEl, selectedValue, filterText) {
+            if (!selectEl) return;
+
+            const normalizedFilter = (filterText || '').trim().toLowerCase();
+            const previousValue = selectedValue || selectEl.value;
+
+            const filtered = metricOptionCatalog.filter(item =>
+                !normalizedFilter || item.searchBlob.includes(normalizedFilter)
             );
 
-            createControlPanel('metricPanel',
-                { left: '10px', top: '45px' },
-                '0.5px solid black',
-                '<b>Color Metric</b><br/>' +
-                '<input id="metricSearchInput" class="searchableMetricInput" type="text" placeholder="Search metrics..."><br/>' +
-                '<select id="metricSelect" class="searchableMetricSelect"></select><br/>' +
-                '<button id="toggleLabelsBtn" style="margin-top: 5px; font-size: 10px; padding: 2px 6px;">Hide Labels</button><br/>' +
-                '<button id="toggleGrayPointsBtn" style="margin-top: 5px; font-size: 10px; padding: 2px 6px;">Hide Gray Points</button>',
-                { zIndex: 9999, minWidth: '220px', dragLabel: 'color metric' }
+            selectEl.innerHTML = '';
+
+            filtered.forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.key;
+                option.text = item.displayLabel;
+                option.disabled = !item.hasData;
+                selectEl.appendChild(option);
+            });
+
+            if (filtered.length === 0) {
+                const noResults = document.createElement('option');
+                noResults.value = '';
+                noResults.text = 'No matching metrics';
+                noResults.disabled = true;
+                noResults.selected = true;
+                selectEl.appendChild(noResults);
+                return;
+            }
+
+            const hasPrevious = filtered.some(
+                item => item.key === previousValue && item.hasData
             );
 
-            const focusButtonPanel = createControlPanel('focusButtonPanel',
-                { left: '260px', top: '5px', zIndex: 10050 },
-                '0.5px solid black',
-                '<button id="openFocusPanelBtn">Focus Text</button>' +
-                '<span id="focusMetricPercentile" style="margin-left: 8px; font-size: 10px; font-weight: 500;"></span>',
-                { resizable: false, zIndex: 10050, dragLabel: 'focus' }
-            );
-            const focusPanel = createControlPanel('focusPanel',
-                { left: '260px', top: '39px', display: 'none', zIndex: 10050 },
-                '0.5px solid black',
-                '<b>Focus Text</b><br/>' +
-                '<input id="focusTextInput" type="text" size="20" placeholder="Enter text name"><br/>' +
-                '<label style="font-size: 10px;">Similarity: <select id="focusSimilarityModeSelect" style="font-size: 10px;">' +
-                    '<option value="cosine">Cosine</option>' +
-                    '<option value="burrows">Burrows</option>' +
-                '</select></label><br/>' +
-                '<label style="font-size: 10px;"><input id="focusClusterOnlyCheckbox" type="checkbox"> Hide texts outside focused text cluster</label><br/>' +
-                '<label style="font-size: 10px;">Clustering: <select id="focusClusterMetricSelect" style="font-size: 10px;"></select></label><br/>' +
-                '<label style="font-size: 10px;"><input id="semanticLinesCheckbox" type="checkbox"> Show semantic connections</label><br/>' +
-                '<label style="font-size: 10px;">Connections: <input id="semanticLinesSlider" type="range" min="1" max="50" value="10"> <span id="semanticLinesValue">10</span></label><br/>' +
-                '<button id="applyFocusBtn" style="margin-top: 5px;">Apply</button> ' +
-                '<button id="clearFocusBtn" style="margin-top: 5px;">Clear</button>',
-                { zIndex: 10050, minWidth: '240px', dragLabel: 'focus text' }
-            );
-
-            const toggleRect = toggleViewPanel.getBoundingClientRect();
-            const horizontalGap = 8;
-            const focusButtonLeft = toggleRect.left + toggleRect.width + horizontalGap;
-            focusButtonPanel.style.left = `${focusButtonLeft}px`;
-            focusButtonPanel.style.top = `${toggleRect.top}px`;
-
-            focusPanel.style.left = `${focusButtonLeft}px`;
-            focusPanel.style.top = `${toggleRect.top + toggleRect.height + 6}px`;
-
-            createControlPanel('colorPanel',
-                { right: '10px', top: '5px' },
-                '0.5px solid black',
-                '<b>Color Scale</b><br/>' +
-                'Min: <input id="colorMin" type="number" step="any" size="8"><br/>' +
-                'Max: <input id="colorMax" type="number" step="any" size="8"><br/>' +
-                '<button id="applyColorBtn">Apply</button> ' +
-                '<button id="resetColorBtn">Reset</button><br/>' +
-                '<button id="zoomInColorBtn">Zoom In</button> ' +
-                '<button id="zoomOutColorBtn">Zoom Out</button>',
-                { zIndex: 9999, minWidth: '160px', dragLabel: 'color scale' }
-            );
-
-            createControlPanel('textPanel',
-                { right: '10px', top: '135px', width: '180px' },
-                '0.5px solid black',
-                '<div style="flex: 0 0 auto;">' +
-                '<b id="textListHeading">Texts</b><br/>' +
-                '<select id="textSortOrder">' +
-                '<option value="alpha-asc">A-Z</option>' +
-                '<option value="alpha-desc">Z-A</option>' +
-                '<option value="metric-asc">Low to High</option>' +
-                '<option value="metric-desc" selected>High to Low</option>' +
-                '</select>' +
-                '</div>' +
-                '<div id="textList"></div>',
-                { zIndex: 9999, minWidth: '180px', dragLabel: 'texts' }
-            );
-
-            const metricSelect = document.getElementById('metricSelect');
-            const metricSearchInput = document.getElementById('metricSearchInput');
-            let xMetricSearchInput = null;
-            let yMetricSearchInput = null;
-
-            const metricOptionCatalog = metricKeys
-                .filter(key => key in metricsData && metricsData[key] !== null)
-                .map(key => {
-                    const displayLabel = metricDisplayNames[key] || key;
-                    return {
-                        key,
-                        hasData: true,
-                        displayLabel,
-                        searchBlob: `${key} ${displayLabel}`.toLowerCase()
-                    };
-                });
-
-            function repopulateMetricSelect(selectEl, selectedValue, filterText) {
-                if (!selectEl) return;
-                const normalizedFilter = (filterText || '').trim().toLowerCase();
-                const previousValue = selectedValue || selectEl.value;
-                const filtered = metricOptionCatalog.filter(item =>
-                    !normalizedFilter || item.searchBlob.includes(normalizedFilter)
-                );
-
-                selectEl.innerHTML = '';
-                filtered.forEach(item => {
-                    const option = document.createElement('option');
-                    option.value = item.key;
-                    option.text = item.displayLabel;
-                    option.disabled = !item.hasData;
-                    selectEl.appendChild(option);
-                });
-
-                if (filtered.length === 0) {
-                    const noResults = document.createElement('option');
-                    noResults.value = '';
-                    noResults.text = 'No matching metrics';
-                    noResults.disabled = true;
-                    noResults.selected = true;
-                    selectEl.appendChild(noResults);
-                    return;
+            if (hasPrevious) {
+                selectEl.value = previousValue;
+            } else {
+                const firstEnabled = filtered.find(item => item.hasData);
+                if (firstEnabled) {
+                    selectEl.value = firstEnabled.key;
                 }
+            }
+        }
 
-                const hasPrevious = filtered.some(item => item.key === previousValue && item.hasData);
-                if (hasPrevious) {
-                    selectEl.value = previousValue;
-                } else {
-                    const firstEnabled = filtered.find(item => item.hasData);
-                    if (firstEnabled) {
-                        selectEl.value = firstEnabled.key;
+        repopulateMetricSelect(metricSelect, currentMetric, '');
+
+        if (metricSelect.value) {
+            currentMetric = metricSelect.value;
+        }
+
+        const metricRangeCache = {};
+
+        function buildMarkerSizes() {
+            return new Array(textNames.length).fill(CONFIG.normalSize);
+        }
+
+        function buildMarkerOpacities() {
+            let focusedClusterValue = null;
+            let selectedClusterData = null;
+
+            if (focusClusterOnly && focusClusterMetric && focusedTextIndex >= 0) {
+                selectedClusterData = metricsData[focusClusterMetric] || null;
+
+                if (selectedClusterData && focusedTextIndex < selectedClusterData.length) {
+                    const value = selectedClusterData[focusedTextIndex];
+
+                    if (value !== null && value !== undefined && !Number.isNaN(value)) {
+                        focusedClusterValue = value;
                     }
                 }
             }
 
-            repopulateMetricSelect(metricSelect, currentMetric, '');
-            if (metricSelect.value) {
-                currentMetric = metricSelect.value;
-            }
-
-            const metricRangeCache = {};
-
-            function buildMarkerSizes() {
-                return new Array(textNames.length).fill(CONFIG.normalSize);
-            }
-
-            function buildMarkerOpacities() {
-                let focusedClusterValue = null;
-                let selectedClusterData = null;
-
-                if (focusClusterOnly && focusClusterMetric && focusedTextIndex >= 0) {
-                    selectedClusterData = metricsData[focusClusterMetric] || null;
-                    if (selectedClusterData && focusedTextIndex < selectedClusterData.length) {
-                        const value = selectedClusterData[focusedTextIndex];
-                        if (value !== null && value !== undefined && !Number.isNaN(value)) {
-                            focusedClusterValue = value;
-                        }
-                    }
+            return textNames.map((_, index) => {
+                if (index === focusedTextIndex) {
+                    return 1.0;
                 }
 
-                return textNames.map((_, index) => {
-                    if (index === focusedTextIndex) {
-                        return 1.0;
-                    }
+                const value = currentColorDataForPlot[index];
+                const isGrayPoint =
+                    value === null || value === undefined || Number.isNaN(value);
 
-                    const value = currentColorDataForPlot[index];
-                    const isGrayPoint = value === null || value === undefined || Number.isNaN(value);
-                    if (hideGrayPoints && isGrayPoint) {
+                if (hideGrayPoints && isGrayPoint) {
+                    return 0.0;
+                }
+
+                if (focusedClusterValue !== null && selectedClusterData) {
+                    const clusterValue = selectedClusterData[index];
+                    const isInFocusedCluster =
+                        clusterValue !== null &&
+                        clusterValue !== undefined &&
+                        !Number.isNaN(clusterValue) &&
+                        clusterValue === focusedClusterValue;
+
+                    if (!isInFocusedCluster) {
                         return 0.0;
                     }
-
-                    if (focusedClusterValue !== null && selectedClusterData) {
-                        const clusterValue = selectedClusterData[index];
-                        const isInFocusedCluster = clusterValue !== null && clusterValue !== undefined && !Number.isNaN(clusterValue) && clusterValue === focusedClusterValue;
-                        if (!isInFocusedCluster) {
-                            return 0.0;
-                        }
-                    }
-
-                    return 1.0;
-                });
-            }
-
-            function buildMainFocusOverlayTrace() {
-                return {
-                    x: [], y: [],
-                    mode: 'markers+text',
-                    type: 'scatter',
-                    meta: FOCUS_OVERLAY_META,
-                    hoverinfo: 'skip',
-                    showlegend: false,
-                    text: [],
-                    textposition: 'middle center',
-                    textfont: { size: 9, color: '#000' },
-                    marker: {
-                        symbol: 'star',
-                        size: CONFIG.focusStarSize,
-                        color: '#ffd400',
-                        line: { color: '#111', width: 2 }
-                    }
-                };
-            }
-
-            function ensureMainFocusOverlay() {
-                if (!mainPlot.data.some(t => t.meta === FOCUS_OVERLAY_META)) {
-                    return Plotly.addTraces(mainPlot, buildMainFocusOverlayTrace());
-                }
-                return Promise.resolve();
-            }
-
-            function bringMainFocusOverlayToFront() {
-                const idx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
-                if (idx >= 0 && idx !== mainPlot.data.length - 1) {
-                    return Plotly.moveTraces(mainPlot, [idx], [mainPlot.data.length - 1]);
-                }
-                return Promise.resolve();
-            }
-
-            function readBaseColor(plotObj, index) {
-                const base = plotObj._fullData && plotObj._fullData[0];
-                if (!base) return null;
-                const colors = base.marker && base.marker.color;
-                if (Array.isArray(colors) || (colors && ArrayBuffer.isView(colors))) {
-                    if (index >= 0 && index < colors.length) return colors[index];
-                } else if (typeof colors === 'string') {
-                    return colors;
-                }
-                return null;
-            }
-
-            function updateMainFocusOverlay() {
-                const idx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
-                if (idx < 0) return Promise.resolve();
-
-                if (focusedTextIndex < 0 || !focusedTextName) {
-                    return Plotly.restyle(mainPlot, {
-                        x: [[]], y: [[]], text: [[]]
-                    }, [idx]);
                 }
 
-                const xv = getPlotCoordinate(mainPlot, 0, 'x', focusedTextIndex);
-                const yv = getPlotCoordinate(mainPlot, 0, 'y', focusedTextIndex);
+                return 1.0;
+            });
+        }
 
-                const resolved = readBaseColor(mainPlot, focusedTextIndex);
+        function buildMainFocusOverlayTrace() {
+            return {
+                x: [],
+                y: [],
+                mode: 'markers+text',
+                type: 'scatter',
+                meta: FOCUS_OVERLAY_META,
+                hoverinfo: 'skip',
+                showlegend: false,
+                text: [],
+                textposition: 'middle center',
+                textfont: { size: 9, color: '#000' },
+                marker: {
+                    symbol: 'star',
+                    size: CONFIG.focusStarSize,
+                    color: '#ffd400',
+                    line: { color: '#111', width: 2 }
+                }
+            };
+        }
 
-                if (resolved && typeof resolved === 'string') {
-                    return Plotly.restyle(mainPlot, {
+        function ensureMainFocusOverlay() {
+            if (!mainPlot.data.some(t => t.meta === FOCUS_OVERLAY_META)) {
+                return Plotly.addTraces(mainPlot, buildMainFocusOverlayTrace());
+            }
+
+            return Promise.resolve();
+        }
+
+        function bringMainFocusOverlayToFront() {
+            const idx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
+
+            if (idx >= 0 && idx !== mainPlot.data.length - 1) {
+                return Plotly.moveTraces(
+                    mainPlot,
+                    [idx],
+                    [mainPlot.data.length - 1]
+                );
+            }
+
+            return Promise.resolve();
+        }
+
+        function readBaseColor(plotObj, index) {
+            const base = plotObj._fullData && plotObj._fullData[0];
+            if (!base) return null;
+
+            const colors = base.marker && base.marker.color;
+
+            if (Array.isArray(colors) || (colors && ArrayBuffer.isView(colors))) {
+                if (index >= 0 && index < colors.length) {
+                    return colors[index];
+                }
+            } else if (typeof colors === 'string') {
+                return colors;
+            }
+
+            return null;
+        }
+
+        function updateMainFocusOverlay() {
+            const idx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
+            if (idx < 0) return Promise.resolve();
+
+            if (focusedTextIndex < 0 || !focusedTextName) {
+                return Plotly.restyle(
+                    mainPlot,
+                    {
+                        x: [[]],
+                        y: [[]],
+                        text: [[]]
+                    },
+                    [idx]
+                );
+            }
+
+            const xv = getPlotCoordinate(mainPlot, 0, 'x', focusedTextIndex);
+            const yv = getPlotCoordinate(mainPlot, 0, 'y', focusedTextIndex);
+            const resolved = readBaseColor(mainPlot, focusedTextIndex);
+
+            if (resolved && typeof resolved === 'string') {
+                return Plotly.restyle(
+                    mainPlot,
+                    {
                         x: [[xv]],
                         y: [[yv]],
                         text: [[focusedTextName]],
                         'marker.color': [[resolved]]
-                    }, [idx]);
-                }
+                    },
+                    [idx]
+                );
+            }
 
-                const focusValue = currentColorDataForPlot[focusedTextIndex];
-                const isEmpty = focusValue === null || focusValue === undefined || Number.isNaN(focusValue);
-                if (isEmpty) {
-                    return Plotly.restyle(mainPlot, {
-                        x: [[xv]], y: [[yv]], text: [[focusedTextName]],
+            const focusValue = currentColorDataForPlot[focusedTextIndex];
+            const isEmpty =
+                focusValue === null ||
+                focusValue === undefined ||
+                Number.isNaN(focusValue);
+
+            if (isEmpty) {
+                return Plotly.restyle(
+                    mainPlot,
+                    {
+                        x: [[xv]],
+                        y: [[yv]],
+                        text: [[focusedTextName]],
                         'marker.color': [['#808080']]
-                    }, [idx]);
-                }
-                return Plotly.restyle(mainPlot, {
-                    x: [[xv]], y: [[yv]], text: [[focusedTextName]],
+                    },
+                    [idx]
+                );
+            }
+
+            return Plotly.restyle(
+                mainPlot,
+                {
+                    x: [[xv]],
+                    y: [[yv]],
+                    text: [[focusedTextName]],
                     'marker.color': [[focusValue]],
                     'marker.colorscale': [currentColorscale],
                     'marker.cmin': [currentCmin],
                     'marker.cmax': [currentCmax]
-                }, [idx]);
-            }
+                },
+                [idx]
+            );
+        }
 
-            function refreshFocusedTextMarker() {
-                Plotly.restyle(mainPlot, {
+        function refreshFocusedTextMarker() {
+            Plotly.restyle(
+                mainPlot,
+                {
                     'marker.opacity': [buildMarkerOpacities()]
-                }, [0]);
+                },
+                [0]
+            );
 
-                ensureMainFocusOverlay()
-                    .then(() => updateMainFocusOverlay())
-                    .then(() => bringMainFocusOverlayToFront())
-                    .then(() => {
-                        const overlayIdx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
-                        if (overlayIdx >= 0) {
-                            return Plotly.restyle(mainPlot, {
+            ensureMainFocusOverlay()
+                .then(() => updateMainFocusOverlay())
+                .then(() => bringMainFocusOverlayToFront())
+                .then(() => {
+                    const overlayIdx = mainPlot.data.findIndex(
+                        t => t.meta === FOCUS_OVERLAY_META
+                    );
+
+                    if (overlayIdx >= 0) {
+                        return Plotly.restyle(
+                            mainPlot,
+                            {
                                 'marker.size': [CONFIG.focusStarSize]
-                            }, [overlayIdx]);
-                        }
-                    })
-                    .then(() => refreshSemanticConnections());
+                            },
+                            [overlayIdx]
+                        );
+                    }
+                })
+                .then(() => refreshSemanticConnections());
+        }
+
+        function populateFocusClusterMetricSelect() {
+            const select = document.getElementById('focusClusterMetricSelect');
+            if (!select) return;
+
+            select.innerHTML = '';
+
+            clusterMetricKeys.forEach(metricKey => {
+                const option = document.createElement('option');
+                option.value = metricKey;
+                option.text = metricDisplayNames[metricKey] || metricKey;
+                select.appendChild(option);
+            });
+
+            if (focusClusterMetric && clusterMetricKeys.includes(focusClusterMetric)) {
+                select.value = focusClusterMetric;
+            } else if (clusterMetricKeys.length > 0) {
+                focusClusterMetric = clusterMetricKeys[0];
+                select.value = focusClusterMetric;
+            }
+        }
+
+        function getPlotCoordinate(plot, traceIndex, axis, pointIndex) {
+            const fullTrace = plot._fullData && plot._fullData[traceIndex];
+            const dataTrace = plot.data && plot.data[traceIndex];
+
+            const values =
+                (fullTrace && fullTrace[axis]) ||
+                (dataTrace && dataTrace[axis]);
+
+            return values ? values[pointIndex] : undefined;
+        }
+
+        function semanticConnectionColor(rank, total) {
+            const ratio = total <= 1 ? 0 : rank / (total - 1);
+
+            const red = Math.round(235 * (1 - ratio) + 70 * ratio);
+            const green = Math.round(35 * (1 - ratio) + 55 * ratio);
+            const blue = Math.round(45 * (1 - ratio) + 150 * ratio);
+
+            return `rgb(${red}, ${green}, ${blue})`;
+        }
+
+        function getCosineNeighbors(focusIndex) {
+            if (focusIndex < 0 || focusIndex >= semanticEmbeddings.length) {
+                return [];
             }
 
-            function populateFocusClusterMetricSelect() {
-                const select = document.getElementById('focusClusterMetricSelect');
-                if (!select) {
-                    return;
+            const focusEmbedding = semanticEmbeddings[focusIndex];
+
+            return textNames
+                .map((text, index) => {
+                    if (index === focusIndex || !semanticEmbeddings[index]) {
+                        return null;
+                    }
+
+                    const embedding = semanticEmbeddings[index];
+                    let similarity = 0;
+
+                    const length = Math.min(
+                        focusEmbedding.length,
+                        embedding.length
+                    );
+
+                    for (let dimension = 0; dimension < length; dimension++) {
+                        similarity += focusEmbedding[dimension] * embedding[dimension];
+                    }
+
+                    return { text, index, similarity };
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.similarity - a.similarity);
+        }
+
+        function getBurrowsNeighbors(focusIndex) {
+            if (focusIndex < 0 || focusIndex >= burrowsSimilarity.length) {
+                return [];
+            }
+
+            const row = burrowsSimilarity[focusIndex];
+            if (!row) return [];
+
+            return textNames
+                .map((text, index) => {
+                    if (index === focusIndex) {
+                        return null;
+                    }
+
+                    const similarity = row[index];
+
+                    if (
+                        similarity === null ||
+                        similarity === undefined ||
+                        Number.isNaN(similarity)
+                    ) {
+                        return null;
+                    }
+
+                    return { text, index, similarity };
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.similarity - a.similarity);
+        }
+
+        function getFocusNeighbors(focusIndex) {
+            if (focusSimilarityMode === 'burrows') {
+                return getBurrowsNeighbors(focusIndex);
+            }
+
+            return getCosineNeighbors(focusIndex);
+        }
+
+        function removeSemanticConnectionTraces(plot) {
+            const indices = [];
+
+            plot.data.forEach((trace, index) => {
+                if (trace.meta === 'semanticConnection') {
+                    indices.push(index);
                 }
+            });
 
-                select.innerHTML = '';
-                clusterMetricKeys.forEach(metricKey => {
-                    const option = document.createElement('option');
-                    option.value = metricKey;
-                    option.text = metricDisplayNames[metricKey] || metricKey;
-                    select.appendChild(option);
-                });
-
-                if (focusClusterMetric && clusterMetricKeys.includes(focusClusterMetric)) {
-                    select.value = focusClusterMetric;
-                } else if (clusterMetricKeys.length > 0) {
-                    focusClusterMetric = clusterMetricKeys[0];
-                    select.value = focusClusterMetric;
-                }
+            if (indices.length) {
+                return Plotly.deleteTraces(plot, indices.reverse());
             }
 
-            function getPlotCoordinate(plot, traceIndex, axis, pointIndex) {
-                const fullTrace = plot._fullData && plot._fullData[traceIndex];
-                const dataTrace = plot.data && plot.data[traceIndex];
-                const values = (fullTrace && fullTrace[axis]) || (dataTrace && dataTrace[axis]);
-                return values ? values[pointIndex] : undefined;
-            }
+            return Promise.resolve();
+        }
 
-            function semanticConnectionColor(rank, total) {
-                const ratio = total <= 1 ? 0 : rank / (total - 1);
-                const red = Math.round(235 * (1 - ratio) + 70 * ratio);
-                const green = Math.round(35 * (1 - ratio) + 55 * ratio);
-                const blue = Math.round(45 * (1 - ratio) + 150 * ratio);
-                return `rgb(${red}, ${green}, ${blue})`;
-            }
+        async function refreshSemanticConnections() {
+            const refreshToken = ++mainSemanticRefreshToken;
 
-            function getCosineNeighbors(focusIndex) {
-                if (focusIndex < 0 || focusIndex >= semanticEmbeddings.length) return [];
-                const focusEmbedding = semanticEmbeddings[focusIndex];
-                return textNames
-                    .map((text, index) => {
-                        if (index === focusIndex || !semanticEmbeddings[index]) return null;
-                        const embedding = semanticEmbeddings[index];
-                        let similarity = 0;
-                        const length = Math.min(focusEmbedding.length, embedding.length);
-                        for (let dimension = 0; dimension < length; dimension++) {
-                            similarity += focusEmbedding[dimension] * embedding[dimension];
-                        }
-                        return { text, index, similarity };
-                    })
-                    .filter(Boolean)
-                    .sort((a, b) => b.similarity - a.similarity);
-            }
+            await removeSemanticConnectionTraces(mainPlot);
+            if (refreshToken !== mainSemanticRefreshToken) return;
 
-            function getBurrowsNeighbors(focusIndex) {
-                if (focusIndex < 0 || focusIndex >= burrowsSimilarity.length) return [];
-                const row = burrowsSimilarity[focusIndex];
-                if (!row) return [];
-                return textNames
-                    .map((text, index) => {
-                        if (index === focusIndex) return null;
-                        const similarity = row[index];
-                        if (similarity === null || similarity === undefined || Number.isNaN(similarity)) return null;
-                        return { text, index, similarity };
-                    })
-                    .filter(Boolean)
-                    .sort((a, b) => b.similarity - a.similarity);
-            }
-
-            function getFocusNeighbors(focusIndex) {
-                if (focusSimilarityMode === 'burrows') {
-                    return getBurrowsNeighbors(focusIndex);
-                }
-                return getCosineNeighbors(focusIndex);
-            }
-
-            function removeSemanticConnectionTraces(plot) {
-                const indices = [];
-                plot.data.forEach((trace, index) => {
-                    if (trace.meta === 'semanticConnection') indices.push(index);
-                });
-                if (indices.length) return Plotly.deleteTraces(plot, indices.reverse());
-                return Promise.resolve();
-            }
-
-            async function refreshSemanticConnections() {
-                const refreshToken = ++mainSemanticRefreshToken;
-                await removeSemanticConnectionTraces(mainPlot);
-                if (refreshToken !== mainSemanticRefreshToken) return;
-                if (!semanticLineModeEnabled || focusedTextIndex < 0 || !focusedTextName) {
-                    await bringMainFocusOverlayToFront();
-                    return;
-                }
-                const neighbors = getFocusNeighbors(focusedTextIndex).slice(0, semanticLineCount);
-                const traces = neighbors.map((item, rank) => {
-                    return { x: [getPlotCoordinate(mainPlot, 0, 'x', focusedTextIndex), getPlotCoordinate(mainPlot, 0, 'x', item.index)],
-                        y: [getPlotCoordinate(mainPlot, 0, 'y', focusedTextIndex), getPlotCoordinate(mainPlot, 0, 'y', item.index)],
-                        mode: 'lines', type: 'scatter', meta: 'semanticConnection', hoverinfo: 'skip',
-                        showlegend: false,
-                        line: { color: semanticConnectionColor(rank, neighbors.length), width: 2 } };
-                }).filter(Boolean);
-                if (traces.length && refreshToken === mainSemanticRefreshToken) {
-                    await Plotly.addTraces(mainPlot, traces);
-                }
+            if (!semanticLineModeEnabled || focusedTextIndex < 0 || !focusedTextName) {
                 await bringMainFocusOverlayToFront();
+                return;
             }
 
-            function syncCurrentColorDataFromPlot() {
-                const plotData = mainPlot && mainPlot.data && mainPlot.data[0];
-                if (!plotData || !plotData.marker || plotData.marker.color === undefined) {
-                    currentColorDataForPlot = new Array(textNames.length).fill(null);
-                    return;
-                }
-                const markerColors = plotData.marker.color;
-                if (Array.isArray(markerColors)) {
-                    currentColorDataForPlot = markerColors.slice();
-                } else if (ArrayBuffer.isView(markerColors)) {
-                    currentColorDataForPlot = Array.from(markerColors);
-                } else {
-                    currentColorDataForPlot = new Array(textNames.length).fill(markerColors);
-                }
+            const neighbors = getFocusNeighbors(focusedTextIndex)
+                .slice(0, semanticLineCount);
+
+            const traces = neighbors
+                .map((item, rank) => {
+                    return {
+                        x: [
+                            getPlotCoordinate(mainPlot, 0, 'x', focusedTextIndex),
+                            getPlotCoordinate(mainPlot, 0, 'x', item.index)
+                        ],
+                        y: [
+                            getPlotCoordinate(mainPlot, 0, 'y', focusedTextIndex),
+                            getPlotCoordinate(mainPlot, 0, 'y', item.index)
+                        ],
+                        mode: 'lines',
+                        type: 'scatter',
+                        meta: 'semanticConnection',
+                        hoverinfo: 'skip',
+                        showlegend: false,
+                        line: {
+                            color: semanticConnectionColor(rank, neighbors.length),
+                            width: 2
+                        }
+                    };
+                })
+                .filter(Boolean);
+
+            if (traces.length && refreshToken === mainSemanticRefreshToken) {
+                await Plotly.addTraces(mainPlot, traces);
             }
 
-            function ordinalSuffix(n) {
-                const value = Math.round(n);
-                const tens = value % 100;
-                if (tens >= 11 && tens <= 13) {
+            await bringMainFocusOverlayToFront();
+        }
+
+        function syncCurrentColorDataFromPlot() {
+            const plotData = mainPlot && mainPlot.data && mainPlot.data[0];
+
+            if (
+                !plotData ||
+                !plotData.marker ||
+                plotData.marker.color === undefined
+            ) {
+                currentColorDataForPlot = new Array(textNames.length).fill(null);
+                return;
+            }
+
+            const markerColors = plotData.marker.color;
+
+            if (Array.isArray(markerColors)) {
+                currentColorDataForPlot = markerColors.slice();
+            } else if (ArrayBuffer.isView(markerColors)) {
+                currentColorDataForPlot = Array.from(markerColors);
+            } else {
+                currentColorDataForPlot = new Array(textNames.length).fill(markerColors);
+            }
+        }
+
+        function ordinalSuffix(n) {
+            const value = Math.round(n);
+            const tens = value % 100;
+
+            if (tens >= 11 && tens <= 13) {
+                return `${value}th`;
+            }
+
+            switch (value % 10) {
+                case 1:
+                    return `${value}st`;
+                case 2:
+                    return `${value}nd`;
+                case 3:
+                    return `${value}rd`;
+                default:
                     return `${value}th`;
-                }
-                switch (value % 10) {
-                    case 1: return `${value}st`;
-                    case 2: return `${value}nd`;
-                    case 3: return `${value}rd`;
-                    default: return `${value}th`;
+            }
+        }
+
+        function formatTrimmedNumber(value, digits = 4) {
+            if (value === null || value === undefined || Number.isNaN(value)) {
+                return 'N/A';
+            }
+
+            const fixed = Number(value).toFixed(digits);
+
+            const trimmed = fixed
+                .replace(/\.?0+$/, match => (match.startsWith('.') ? '' : ''))
+                .replace(/(\.\d*?[1-9])0+/, '$1');
+
+            return trimmed === '-0' ? '0' : trimmed;
+        }
+
+        function calculateFocusedMetricPercentile(metricKey, textIndex) {
+            const metricValues = metricsData[metricKey];
+
+            if (
+                !metricValues ||
+                textIndex < 0 ||
+                textIndex >= metricValues.length
+            ) {
+                return null;
+            }
+
+            const focusValue = metricValues[textIndex];
+
+            if (focusValue === null || isNaN(focusValue) || focusValue <= 0) {
+                return { percentile: null, validCount: 0, focusValue };
+            }
+
+            const validValues = metricValues.filter(
+                v => v !== null && !isNaN(v)
+            );
+
+            if (!validValues.length) {
+                return { percentile: null, validCount: 0, focusValue };
+            }
+
+            let lessThan = 0;
+            let equalTo = 0;
+            const EPSILON = 1e-9;
+
+            for (const value of validValues) {
+                if (value < focusValue - EPSILON) {
+                    lessThan += 1;
+                } else if (Math.abs(value - focusValue) <= EPSILON) {
+                    equalTo += 1;
                 }
             }
 
-            function formatTrimmedNumber(value, digits = 4) {
-                if (value === null || value === undefined || Number.isNaN(value)) {
-                    return 'N/A';
-                }
-                const fixed = Number(value).toFixed(digits);
-                const trimmed = fixed
-                    .replace(/\\.?0+$/, (match) => match.startsWith('.') ? '' : '')
-                    .replace(/(\\.\\d*?[1-9])0+/, '$1');
-                return trimmed === '-0' ? '0' : trimmed;
+            const percentile =
+                ((lessThan + equalTo * 0.5) / validValues.length) * 100;
+
+            return {
+                percentile,
+                validCount: validValues.length,
+                focusValue
+            };
+        }
+
+        function updateFocusMetricPercentileLabel() {
+            const percentileEl = document.getElementById('focusMetricPercentile');
+            if (!percentileEl) return;
+
+            if (!focusedTextName || focusedTextIndex < 0) {
+                percentileEl.textContent = '';
+                return;
             }
 
-            function calculateFocusedMetricPercentile(metricKey, textIndex) {
-                const metricValues = metricsData[metricKey];
-                if (!metricValues || textIndex < 0 || textIndex >= metricValues.length) {
-                    return null;
-                }
+            const metricLabel = metricDisplayNames[currentMetric] || currentMetric;
+            const percentileInfo = calculateFocusedMetricPercentile(
+                currentMetric,
+                focusedTextIndex
+            );
 
-                const focusValue = metricValues[textIndex];
-                if (focusValue === null || isNaN(focusValue) || focusValue <= 0) {
-                    return { percentile: null, validCount: 0, focusValue };
-                }
-
-                const validValues = metricValues.filter(v => v !== null && !isNaN(v));
-                if (!validValues.length) {
-                    return { percentile: null, validCount: 0, focusValue };
-                }
-
-                let lessThan = 0;
-                let equalTo = 0;
-                const EPSILON = 1e-9;
-                for (const value of validValues) {
-                    if (value < focusValue - EPSILON) lessThan += 1;
-                    else if (Math.abs(value - focusValue) <= EPSILON) equalTo += 1;
-                }
-
-                const percentile = ((lessThan + (equalTo * 0.5)) / validValues.length) * 100;
-                return { percentile, validCount: validValues.length, focusValue };
+            if (!percentileInfo || percentileInfo.percentile === null) {
+                percentileEl.textContent = `${metricLabel}: no non-zero score`;
+                return;
             }
 
-            function updateFocusMetricPercentileLabel() {
-                const percentileEl = document.getElementById('focusMetricPercentile');
-                if (!percentileEl) {
-                    return;
-                }
+            const pctLabel = ordinalSuffix(percentileInfo.percentile);
+            const focusValue = percentileInfo.focusValue;
 
-                if (!focusedTextName || focusedTextIndex < 0) {
-                    percentileEl.textContent = '';
-                    return;
-                }
-
-                const metricLabel = metricDisplayNames[currentMetric] || currentMetric;
-                const percentileInfo = calculateFocusedMetricPercentile(currentMetric, focusedTextIndex);
-
-                if (!percentileInfo || percentileInfo.percentile === null) {
-                    percentileEl.textContent = `${metricLabel}: no non-zero score`;
-                    return;
-                }
-
-                const pctLabel = ordinalSuffix(percentileInfo.percentile);
-                const focusValue = percentileInfo.focusValue;
-                const displayCount = Number.isInteger(focusValue) || Math.abs(focusValue - Math.round(focusValue)) < 1e-9
+            const displayCount =
+                Number.isInteger(focusValue) ||
+                Math.abs(focusValue - Math.round(focusValue)) < 1e-9
                     ? `${Math.round(focusValue)}`
                     : formatTrimmedNumber(focusValue, 4);
-                percentileEl.textContent = `${metricLabel}: ${pctLabel} percentile (${displayCount})`;
-            }
 
-            function setFocusedText(textInput) {
-                const normalizedInput = (textInput || '').trim();
-                if (!normalizedInput) {
-                    focusedTextName = null;
-                    focusedTextIndex = -1;
-                    refreshFocusedTextMarker();
-                    refreshFocusedTextInCorrelationPlot();
-                    updateTextList();
-                    updateFocusMetricPercentileLabel();
-                    return;
-                }
+            percentileEl.textContent = `${metricLabel}: ${pctLabel} percentile (${displayCount})`;
+        }
 
-                const match = textNameLookup.get(normalizedInput.toLowerCase());
-                if (!match) {
-                    alert(`Who even is "${normalizedInput}"??? I dunno that text. Who they be???`);
-                    return;
-                }
+        function setFocusedText(textInput) {
+            const normalizedInput = (textInput || '').trim();
 
-                focusedTextName = match.name;
-                focusedTextIndex = match.index;
+            if (!normalizedInput) {
+                focusedTextName = null;
+                focusedTextIndex = -1;
                 refreshFocusedTextMarker();
                 refreshFocusedTextInCorrelationPlot();
                 updateTextList();
                 updateFocusMetricPercentileLabel();
+                return;
             }
 
-            function updateTextList() {
-                const sortOrder = document.getElementById('textSortOrder').value;
-                const textListContainer = document.getElementById('textList');
-                const currentMetricData = metricsData[currentMetric];
+            const match = textNameLookup.get(normalizedInput.toLowerCase());
 
-                const heading = document.getElementById('textListHeading');
-                if (semanticLineModeEnabled && focusedTextName) {
-                    const modeLabel = focusSimilarityMode === 'burrows' ? 'Stylistically (Burrows)' : 'Semantically';
-                    heading.textContent = `Most ${modeLabel} Similar to ${focusedTextName}:`;
-                    textListContainer.innerHTML = '';
-                    getFocusNeighbors(focusedTextIndex).forEach((item, position) => {
-                        const listItem = document.createElement('div');
-                        const scoreLabel = focusSimilarityMode === 'burrows' ? 'burrows' : 'cosine';
-                        listItem.textContent = `${position + 1}. ${item.text} (${scoreLabel}: ${formatTrimmedNumber(item.similarity, 4)})`;
-                        textListContainer.appendChild(listItem);
-                    });
-                    return;
-                }
-                heading.textContent = 'Texts';
+            if (!match) {
+                alert(`Who even is "${normalizedInput}"??? I dunno that text. Who they be???`);
+                return;
+            }
 
-                const textsWithValues = textNames
-                    .map((name, index) => ({
-                        name: name,
-                        index: index,
-                        value: currentMetricData ? currentMetricData[index] : null
-                    }))
-                    .filter(text =>
-                        text.value !== null &&
-                        text.value !== undefined &&
-                        !Number.isNaN(text.value)
-                    );
+            focusedTextName = match.name;
+            focusedTextIndex = match.index;
 
-                const sortFunctions = {
-                    'alpha-asc': (a, b) => a.name.localeCompare(b.name),
-                    'alpha-desc': (a, b) => b.name.localeCompare(a.name),
-                    'metric-asc': (a, b) => (a.value || 0) - (b.value || 0),
-                    'metric-desc': (a, b) => (b.value || 0) - (a.value || 0)
-                };
+            refreshFocusedTextMarker();
+            refreshFocusedTextInCorrelationPlot();
+            updateTextList();
+            updateFocusMetricPercentileLabel();
+        }
 
-                if (sortFunctions[sortOrder]) {
-                    textsWithValues.sort(sortFunctions[sortOrder]);
-                }
+        function updateTextList() {
+            const sortOrder = document.getElementById('textSortOrder').value;
+            const textListContainer = document.getElementById('textList');
+            const currentMetricData = metricsData[currentMetric];
+            const heading = document.getElementById('textListHeading');
 
+            if (semanticLineModeEnabled && focusedTextName) {
+                const modeLabel =
+                    focusSimilarityMode === 'burrows'
+                        ? 'Stylistically (Burrows)'
+                        : 'Semantically';
+
+                heading.textContent = `Most ${modeLabel} Similar to ${focusedTextName}:`;
                 textListContainer.innerHTML = '';
 
-                textsWithValues.forEach((text, position) => {
+                getFocusNeighbors(focusedTextIndex).forEach((item, position) => {
                     const listItem = document.createElement('div');
-                    const valueDisplay = formatTrimmedNumber(text.value, 4);
-                    listItem.textContent = `${position + 1}. ${text.name} (${valueDisplay})`;
-                    listItem.title = 'Click to highlight on graph';
-                    if (text.index === focusedTextIndex) {
-                        listItem.classList.add('focusedTextItem');
-                    }
+                    const scoreLabel =
+                        focusSimilarityMode === 'burrows' ? 'burrows' : 'cosine';
 
-                    listItem.addEventListener('click', () => {
-                        const sizes = buildMarkerSizes();
-                        const baseOpacities = buildMarkerOpacities();
-                        const opacities = baseOpacities.map(opacity => opacity === 0 ? 0 : CONFIG.dimmedOpacity);
-                        sizes[text.index] = CONFIG.highlightSize;
-                        opacities[text.index] = 1.0;
-                        Plotly.restyle(mainPlot, {
-                            'marker.size': [sizes],
-                            'marker.opacity': [opacities]
-                        }, [0]);
-
-                        setTimeout(() => {
-                            Plotly.restyle(mainPlot, {
-                                'marker.size': [buildMarkerSizes()],
-                                'marker.opacity': [buildMarkerOpacities()]
-                            }, [0]).then(() => {
-                                const overlayIdx = mainPlot.data.findIndex(t => t.meta === FOCUS_OVERLAY_META);
-                                if (overlayIdx >= 0) {
-                                    Plotly.restyle(mainPlot, {
-                                        'marker.size': [CONFIG.focusStarSize]
-                                    }, [overlayIdx]);
-                                }
-                                refreshFocusedTextMarker();
-                            });
-                        }, CONFIG.highlightDuration);
-                    });
+                    listItem.textContent =
+                        `${position + 1}. ${item.text} ` +
+                        `(${scoreLabel}: ${formatTrimmedNumber(item.similarity, 4)})`;
 
                     textListContainer.appendChild(listItem);
                 });
+
+                return;
             }
 
-            function updateColorScaleInputs() {
-                const plotData = mainPlot.data[0];
-                if (!plotData) {
-                    return;
+            heading.textContent = 'Texts';
+
+            const textsWithValues = textNames
+                .map((name, index) => ({
+                    name,
+                    index,
+                    value: currentMetricData ? currentMetricData[index] : null
+                }))
+                .filter(text =>
+                    text.value !== null &&
+                    text.value !== undefined &&
+                    !Number.isNaN(text.value)
+                );
+
+            const sortFunctions = {
+                'alpha-asc': (a, b) => a.name.localeCompare(b.name),
+                'alpha-desc': (a, b) => b.name.localeCompare(a.name),
+                'metric-asc': (a, b) => (a.value || 0) - (b.value || 0),
+                'metric-desc': (a, b) => (b.value || 0) - (a.value || 0)
+            };
+
+            if (sortFunctions[sortOrder]) {
+                textsWithValues.sort(sortFunctions[sortOrder]);
+            }
+
+            textListContainer.innerHTML = '';
+
+            textsWithValues.forEach((text, position) => {
+                const listItem = document.createElement('div');
+                const valueDisplay = formatTrimmedNumber(text.value, 4);
+
+                listItem.textContent =
+                    `${position + 1}. ${text.name} (${valueDisplay})`;
+                listItem.title = 'Click to highlight on graph';
+
+                if (text.index === focusedTextIndex) {
+                    listItem.classList.add('focusedTextItem');
                 }
-                document.getElementById('colorMin').value = plotData.marker.cmin;
-                document.getElementById('colorMax').value = plotData.marker.cmax;
-            }
 
-            function applyColorScale(minValue, maxValue) {
-                Plotly.restyle(mainPlot, {
-                    'marker.cmin': minValue,
-                    'marker.cmax': maxValue
-                }).then(() => {
-                    currentCmin = minValue;
-                    currentCmax = maxValue;
-                    refreshFocusedTextMarker();
+                listItem.addEventListener('click', () => {
+                    const sizes = buildMarkerSizes();
+                    const baseOpacities = buildMarkerOpacities();
+
+                    const opacities = baseOpacities.map(opacity =>
+                        opacity === 0 ? 0 : CONFIG.dimmedOpacity
+                    );
+
+                    sizes[text.index] = CONFIG.highlightSize;
+                    opacities[text.index] = 1.0;
+
+                    Plotly.restyle(
+                        mainPlot,
+                        {
+                            'marker.size': [sizes],
+                            'marker.opacity': [opacities]
+                        },
+                        [0]
+                    );
+
+                    setTimeout(() => {
+                        Plotly.restyle(
+                            mainPlot,
+                            {
+                                'marker.size': [buildMarkerSizes()],
+                                'marker.opacity': [buildMarkerOpacities()]
+                            },
+                            [0]
+                        ).then(() => {
+                            const overlayIdx = mainPlot.data.findIndex(
+                                t => t.meta === FOCUS_OVERLAY_META
+                            );
+
+                            if (overlayIdx >= 0) {
+                                Plotly.restyle(
+                                    mainPlot,
+                                    {
+                                        'marker.size': [CONFIG.focusStarSize]
+                                    },
+                                    [overlayIdx]
+                                );
+                            }
+
+                            refreshFocusedTextMarker();
+                        });
+                    }, CONFIG.highlightDuration);
                 });
-            }
 
-            document.getElementById('focusTextInput').value = CONFIG.defaultFocusText;
-            populateFocusClusterMetricSelect();
-            syncCurrentColorDataFromPlot();
-
-            (function initColorStateFromTrace() {
-                const base = mainPlot.data[0];
-                if (base && base.marker) {
-                    if (base.marker.colorscale !== undefined) {
-                        currentColorscale = base.marker.colorscale;
-                    }
-                    if (base.marker.cmin !== undefined && base.marker.cmin !== null) {
-                        currentCmin = base.marker.cmin;
-                    }
-                    if (base.marker.cmax !== undefined && base.marker.cmax !== null) {
-                        currentCmax = base.marker.cmax;
-                    }
-                }
-            })();
-
-            if (CONFIG.defaultFocusText) {
-                setFocusedText(CONFIG.defaultFocusText);
-            } else {
-                refreshFocusedTextMarker();
-            }
-            updateColorScaleInputs();
-            updateTextList();
-            updateFocusMetricPercentileLabel();
-
-            const initialRange = calculateMetricRange(metricsData[currentMetric]);
-            if (initialRange) {
-                metricRangeCache[currentMetric] = initialRange;
-            }
-
-            metricSearchInput.addEventListener('input', function() {
-                const previousMetric = metricSelect.value;
-                repopulateMetricSelect(metricSelect, previousMetric, this.value);
-                if (metricSelect.value && metricSelect.value !== previousMetric) {
-                    metricSelect.dispatchEvent(new Event('change'));
-                }
+                textListContainer.appendChild(listItem);
             });
+        }
 
-            metricSelect.addEventListener('change', function() {
-                const selectedMetric = this.value;
-                const metricColorData = metricsData[selectedMetric];
-                const chartTitle = chartTitles[selectedMetric] || 'Text Semantic Clusters';
+        function updateColorScaleInputs() {
+            const plotData = mainPlot.data[0];
+            if (!plotData) return;
 
-                if (!metricColorData) {
-                    return;
+            document.getElementById('colorMin').value = plotData.marker.cmin;
+            document.getElementById('colorMax').value = plotData.marker.cmax;
+        }
+
+        function applyColorScale(minValue, maxValue) {
+            Plotly.restyle(mainPlot, {
+                'marker.cmin': minValue,
+                'marker.cmax': maxValue
+            }).then(() => {
+                currentCmin = minValue;
+                currentCmax = maxValue;
+                refreshFocusedTextMarker();
+            });
+        }
+
+        document.getElementById('focusTextInput').value = CONFIG.defaultFocusText;
+
+        populateFocusClusterMetricSelect();
+        syncCurrentColorDataFromPlot();
+
+        (function initColorStateFromTrace() {
+            const base = mainPlot.data[0];
+
+            if (base && base.marker) {
+                if (base.marker.colorscale !== undefined) {
+                    currentColorscale = base.marker.colorscale;
                 }
 
-                const colorDataForPlot = metricColorData.map(value => value === null ? NaN : value);
-
-                const valueRange = calculateMetricRange(metricColorData);
-                if (!valueRange) {
-                    return;
+                if (base.marker.cmin !== undefined && base.marker.cmin !== null) {
+                    currentCmin = base.marker.cmin;
                 }
 
-                const selectedColorScale = (selectedMetric === 'cluster' || selectedMetric.startsWith('cluster_'))
+                if (base.marker.cmax !== undefined && base.marker.cmax !== null) {
+                    currentCmax = base.marker.cmax;
+                }
+            }
+        })();
+
+        if (CONFIG.defaultFocusText) {
+            setFocusedText(CONFIG.defaultFocusText);
+        } else {
+            refreshFocusedTextMarker();
+        }
+
+        updateColorScaleInputs();
+        updateTextList();
+        updateFocusMetricPercentileLabel();
+
+        const initialRange = calculateMetricRange(metricsData[currentMetric]);
+
+        if (initialRange) {
+            metricRangeCache[currentMetric] = initialRange;
+        }
+
+        metricSearchInput.addEventListener('input', function() {
+            const previousMetric = metricSelect.value;
+
+            repopulateMetricSelect(metricSelect, previousMetric, this.value);
+
+            if (metricSelect.value && metricSelect.value !== previousMetric) {
+                metricSelect.dispatchEvent(new Event('change'));
+            }
+        });
+
+        metricSelect.addEventListener('change', function() {
+            const selectedMetric = this.value;
+            const metricColorData = metricsData[selectedMetric];
+            const chartTitle =
+                chartTitles[selectedMetric] || 'Text Semantic Clusters';
+
+            if (!metricColorData) {
+                return;
+            }
+
+            const colorDataForPlot = metricColorData.map(value =>
+                value === null ? NaN : value
+            );
+
+            const valueRange = calculateMetricRange(metricColorData);
+
+            if (!valueRange) {
+                return;
+            }
+
+            const selectedColorScale =
+                selectedMetric === 'cluster' ||
+                selectedMetric.startsWith('cluster_')
                     ? CLUSTER_TURBO_COLORSCALE
-                    : (metricColorScales[selectedMetric] || CONFIG.defaultColorScale);
+                    : (metricColorScales[selectedMetric] ||
+                        CONFIG.defaultColorScale);
 
-                currentMetric = selectedMetric;
-                currentColorDataForPlot = colorDataForPlot;
-                currentColorscale = selectedColorScale;
-                currentCmin = valueRange.min;
-                currentCmax = valueRange.max;
-                metricRangeCache[selectedMetric] = valueRange;
+            currentMetric = selectedMetric;
+            currentColorDataForPlot = colorDataForPlot;
+            currentColorscale = selectedColorScale;
+            currentCmin = valueRange.min;
+            currentCmax = valueRange.max;
+            metricRangeCache[selectedMetric] = valueRange;
 
-                Promise.all([
-                    Plotly.restyle(mainPlot, {
+            Promise.all([
+                Plotly.restyle(
+                    mainPlot,
+                    {
                         'marker.color': [colorDataForPlot],
                         'marker.colorscale': [selectedColorScale],
                         'marker.autocolorscale': [false],
                         'marker.cmin': valueRange.min,
                         'marker.cmax': valueRange.max,
-                        'marker.colorbar.title': metricDisplayNames[selectedMetric] || selectedMetric
-                    }, [0]),
-                    Plotly.relayout(mainPlot, {'title.text': chartTitle})
-                ]).then(() => {
-                    updateColorScaleInputs();
-                    updateTextList();
-                    updateFocusMetricPercentileLabel();
-                    refreshFocusedTextMarker();
-                });
+                        'marker.colorbar.title':
+                            metricDisplayNames[selectedMetric] || selectedMetric
+                    },
+                    [0]
+                ),
+                Plotly.relayout(mainPlot, { 'title.text': chartTitle })
+            ]).then(() => {
+                updateColorScaleInputs();
+                updateTextList();
+                updateFocusMetricPercentileLabel();
+                refreshFocusedTextMarker();
             });
+        });
 
-            document.getElementById('applyColorBtn').addEventListener('click', () => {
-                const minValue = parseFloat(document.getElementById('colorMin').value);
-                const maxValue = parseFloat(document.getElementById('colorMax').value);
+        document.getElementById('applyColorBtn').addEventListener('click', () => {
+            const minValue = parseFloat(
+                document.getElementById('colorMin').value
+            );
 
-                if (isNaN(minValue) || isNaN(maxValue) || minValue >= maxValue) {
-                    alert('Dang it! You just did something impossible! Min can never be greater than Max!');
-                    return;
-                }
+            const maxValue = parseFloat(
+                document.getElementById('colorMax').value
+            );
 
-                applyColorScale(minValue, maxValue);
-            });
+            if (isNaN(minValue) || isNaN(maxValue) || minValue >= maxValue) {
+                alert('Dang it! You just did something impossible! Min can never be greater than Max!');
+                return;
+            }
 
-            document.getElementById('resetColorBtn').addEventListener('click', () => {
-                const cachedRange = metricRangeCache[currentMetric];
-                if (!cachedRange) {
-                    return;
-                }
+            applyColorScale(minValue, maxValue);
+        });
 
-                document.getElementById('colorMin').value = cachedRange.min;
-                document.getElementById('colorMax').value = cachedRange.max;
-                applyColorScale(cachedRange.min, cachedRange.max);
-            });
+        document.getElementById('resetColorBtn').addEventListener('click', () => {
+            const cachedRange = metricRangeCache[currentMetric];
+            if (!cachedRange) return;
 
-            document.getElementById('zoomInColorBtn').addEventListener('click', () => {
-                const currentMin = parseFloat(document.getElementById('colorMin').value);
-                const currentMax = parseFloat(document.getElementById('colorMax').value);
-                const range = currentMax - currentMin;
-                const center = (currentMin + currentMax) / 2;
+            document.getElementById('colorMin').value = cachedRange.min;
+            document.getElementById('colorMax').value = cachedRange.max;
 
-                const newMin = center - range * CONFIG.colorScaleZoomRatio;
-                const newMax = center + range * CONFIG.colorScaleZoomRatio;
+            applyColorScale(cachedRange.min, cachedRange.max);
+        });
 
-                document.getElementById('colorMin').value = newMin;
-                document.getElementById('colorMax').value = newMax;
-                applyColorScale(newMin, newMax);
-            });
+        document.getElementById('zoomInColorBtn').addEventListener('click', () => {
+            const currentMin = parseFloat(
+                document.getElementById('colorMin').value
+            );
 
-            document.getElementById('zoomOutColorBtn').addEventListener('click', () => {
-                const currentMin = parseFloat(document.getElementById('colorMin').value);
-                const currentMax = parseFloat(document.getElementById('colorMax').value);
-                const range = currentMax - currentMin;
-                const center = (currentMin + currentMax) / 2;
+            const currentMax = parseFloat(
+                document.getElementById('colorMax').value
+            );
 
-                const newMin = center - range;
-                const newMax = center + range;
+            const range = currentMax - currentMin;
+            const center = (currentMin + currentMax) / 2;
 
-                document.getElementById('colorMin').value = newMin;
-                document.getElementById('colorMax').value = newMax;
-                applyColorScale(newMin, newMax);
-            });
+            const newMin = center - range * CONFIG.colorScaleZoomRatio;
+            const newMax = center + range * CONFIG.colorScaleZoomRatio;
 
-            document.getElementById('textSortOrder').addEventListener('change', updateTextList);
+            document.getElementById('colorMin').value = newMin;
+            document.getElementById('colorMax').value = newMax;
 
-            document.getElementById('openFocusPanelBtn').addEventListener('click', () => {
-                const panel = document.getElementById('focusPanel');
-                panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
-            });
+            applyColorScale(newMin, newMax);
+        });
 
-            document.getElementById('applyFocusBtn').addEventListener('click', () => {
-                const userInput = document.getElementById('focusTextInput').value;
-                setFocusedText(userInput);
-            });
+        document.getElementById('zoomOutColorBtn').addEventListener('click', () => {
+            const currentMin = parseFloat(
+                document.getElementById('colorMin').value
+            );
 
-            document.getElementById('clearFocusBtn').addEventListener('click', () => {
-                document.getElementById('focusTextInput').value = '';
-                setFocusedText('');
-            });
+            const currentMax = parseFloat(
+                document.getElementById('colorMax').value
+            );
 
-            document.getElementById('focusTextInput').addEventListener('keydown', (event) => {
+            const range = currentMax - currentMin;
+            const center = (currentMin + currentMax) / 2;
+
+            const newMin = center - range;
+            const newMax = center + range;
+
+            document.getElementById('colorMin').value = newMin;
+            document.getElementById('colorMax').value = newMax;
+
+            applyColorScale(newMin, newMax);
+        });
+
+        document
+            .getElementById('textSortOrder')
+            .addEventListener('change', updateTextList);
+
+        document.getElementById('openFocusPanelBtn').addEventListener('click', () => {
+            const panel = document.getElementById('focusPanel');
+
+            panel.style.display =
+                panel.style.display === 'none' ? 'block' : 'none';
+        });
+
+        document.getElementById('applyFocusBtn').addEventListener('click', () => {
+            const userInput = document.getElementById('focusTextInput').value;
+            setFocusedText(userInput);
+        });
+
+        document.getElementById('clearFocusBtn').addEventListener('click', () => {
+            document.getElementById('focusTextInput').value = '';
+            setFocusedText('');
+        });
+
+        document
+            .getElementById('focusTextInput')
+            .addEventListener('keydown', event => {
                 if (event.key === 'Enter') {
                     setFocusedText(event.target.value);
                 }
             });
 
-            document.getElementById('focusSimilarityModeSelect').addEventListener('change', (event) => {
+        document
+            .getElementById('focusSimilarityModeSelect')
+            .addEventListener('change', event => {
                 focusSimilarityMode = event.target.value;
                 refreshFocusedTextMarker();
                 refreshFocusedTextInCorrelationPlot();
                 updateTextList();
             });
 
-            document.getElementById('focusClusterOnlyCheckbox').addEventListener('change', (event) => {
+        document
+            .getElementById('focusClusterOnlyCheckbox')
+            .addEventListener('change', event => {
                 focusClusterOnly = !!event.target.checked;
                 refreshFocusedTextMarker();
             });
 
-            document.getElementById('focusClusterMetricSelect').addEventListener('change', (event) => {
+        document
+            .getElementById('focusClusterMetricSelect')
+            .addEventListener('change', event => {
                 focusClusterMetric = event.target.value;
                 refreshFocusedTextMarker();
             });
 
-            document.getElementById('semanticLinesCheckbox').addEventListener('change', (event) => {
+        document
+            .getElementById('semanticLinesCheckbox')
+            .addEventListener('change', event => {
                 semanticLineModeEnabled = !!event.target.checked;
                 refreshFocusedTextMarker();
                 refreshFocusedTextInCorrelationPlot();
                 updateTextList();
             });
 
-            document.getElementById('semanticLinesSlider').addEventListener('input', (event) => {
-                semanticLineCount = Math.max(1, Math.min(50, Number(event.target.value) || 1));
-                document.getElementById('semanticLinesValue').textContent = semanticLineCount;
+        document
+            .getElementById('semanticLinesSlider')
+            .addEventListener('input', event => {
+                semanticLineCount = Math.max(
+                    1,
+                    Math.min(50, Number(event.target.value) || 1)
+                );
+
+                document.getElementById('semanticLinesValue').textContent =
+                    semanticLineCount;
+
                 if (semanticLineModeEnabled) {
                     refreshSemanticConnections();
                     refreshCorrelationSemanticConnections();
@@ -1244,722 +1583,1027 @@
                 }
             });
 
-            document.getElementById('toggleLabelsBtn').addEventListener('click', function() {
+        document
+            .getElementById('toggleLabelsBtn')
+            .addEventListener('click', function() {
                 if (umapLabelsVisible) {
-                    Plotly.restyle(mainPlot, {'mode': 'markers'});
+                    Plotly.restyle(mainPlot, { mode: 'markers' });
                     this.textContent = 'Show Labels';
                 } else {
-                    Plotly.restyle(mainPlot, {'mode': 'markers+text'});
+                    Plotly.restyle(mainPlot, { mode: 'markers+text' });
                     this.textContent = 'Hide Labels';
                 }
+
                 umapLabelsVisible = !umapLabelsVisible;
             });
 
-            document.getElementById('toggleGrayPointsBtn').addEventListener('click', function() {
+        document
+            .getElementById('toggleGrayPointsBtn')
+            .addEventListener('click', function() {
                 hideGrayPoints = !hideGrayPoints;
-                this.textContent = hideGrayPoints ? 'Show Gray Points' : 'Hide Gray Points';
+
+                this.textContent = hideGrayPoints
+                    ? 'Show Gray Points'
+                    : 'Hide Gray Points';
+
                 refreshFocusedTextMarker();
             });
 
-            const correlationContainer = document.createElement('div');
-            correlationContainer.id = 'correlationContainer';
-            Object.assign(correlationContainer.style, {
-                display: 'none',
-                position: 'fixed',
-                top: '0',
-                left: '0',
-                width: '100%',
-                height: '100%',
-                background: '#ffffff',
-                zIndex: '9990',
-                justifyContent: 'center',
-                alignItems: 'center',
-                overflow: 'auto'
-            });
-            correlationContainer.innerHTML = '<div id="correlationPlot" style="width:1200px; height:800px;"></div>';
-            document.body.appendChild(correlationContainer);
+        const correlationContainer = document.createElement('div');
+        correlationContainer.id = 'correlationContainer';
 
-            const correlationControls = createControlPanel('correlationControls',
-                { left: '10px', top: '45px', display: 'none' },
-                '0.5px solid black',
-                '<b>Correlation Analysis</b><br/>' +
-                '<b>X-Axis</b><br/>' +
-                '<input id="xMetricSearchInput" class="searchableMetricInput" type="text" placeholder="Search X metric..."><br/>' +
-                '<select id="xMetricSelect" class="searchableMetricSelect"></select><br/>' +
-                '<b>Y-Axis</b><br/>' +
-                '<input id="yMetricSearchInput" class="searchableMetricInput" type="text" placeholder="Search Y metric..."><br/>' +
-                '<select id="yMetricSelect" class="searchableMetricSelect"></select><br/>' +
-                '<b>Regression</b><br/>' +
-                '<select id="regressionType">' +
-                '<option value="linear">Linear</option>' +
-                '<option value="polynomial">Polynomial</option>' +
-                '<option value="logistic">Logistic</option>' +
-                '</select><br/>' +
-                '<button id="updateCorrelationBtn" style="margin-top: 5px;">Update Plot</button><br/>' +
-                '<button id="toggleCorrelationLabelsBtn" style="margin-top: 5px;">Toggle Labels</button>',
-                { zIndex: 9999, minWidth: '220px', dragLabel: 'correlation analysis' }
+        Object.assign(correlationContainer.style, {
+            display: 'none',
+            position: 'fixed',
+            top: '0',
+            left: '0',
+            width: '100%',
+            height: '100%',
+            background: '#ffffff',
+            zIndex: '9990',
+            justifyContent: 'center',
+            alignItems: 'center',
+            overflow: 'auto'
+        });
+
+        correlationContainer.innerHTML =
+            '<div id="correlationPlot" style="width:1200px; height:800px;"></div>';
+
+        document.body.appendChild(correlationContainer);
+
+        const correlationControls = createControlPanel(
+            'correlationControls',
+            { left: '10px', top: '45px', display: 'none' },
+            '0.5px solid black',
+            '<b>Correlation Analysis</b><br/>' +
+            '<b>X-Axis</b><br/>' +
+            '<input id="xMetricSearchInput" class="searchableMetricInput" type="text" placeholder="Search X metric..."><br/>' +
+            '<select id="xMetricSelect" class="searchableMetricSelect"></select><br/>' +
+            '<b>Y-Axis</b><br/>' +
+            '<input id="yMetricSearchInput" class="searchableMetricInput" type="text" placeholder="Search Y metric..."><br/>' +
+            '<select id="yMetricSelect" class="searchableMetricSelect"></select><br/>' +
+            '<b>Regression</b><br/>' +
+            '<select id="regressionType">' +
+            '<option value="linear">Linear</option>' +
+            '<option value="polynomial">Polynomial</option>' +
+            '<option value="logistic">Logistic</option>' +
+            '</select><br/>' +
+            '<button id="updateCorrelationBtn" style="margin-top: 5px;">Update Plot</button><br/>' +
+            '<button id="toggleCorrelationLabelsBtn" style="margin-top: 5px;">Toggle Labels</button>',
+            { zIndex: 9999, minWidth: '220px', dragLabel: 'correlation analysis' }
+        );
+
+        xMetricSearchInput = document.getElementById('xMetricSearchInput');
+        yMetricSearchInput = document.getElementById('yMetricSearchInput');
+
+        const correlationStats = createControlPanel(
+            'correlationStats',
+            { right: '10px', top: '45px', display: 'none' },
+            '0.5px solid black',
+            '',
+            { zIndex: 9999, minWidth: '220px', dragLabel: 'correlation stats' }
+        );
+
+        function initializeCorrelationDropdowns() {
+            const xSelect = document.getElementById('xMetricSelect');
+            const ySelect = document.getElementById('yMetricSelect');
+
+            if (!xSelect || !ySelect) return;
+
+            repopulateMetricSelect(
+                xSelect,
+                correlationXMetric,
+                (xMetricSearchInput && xMetricSearchInput.value) || ''
             );
 
-            xMetricSearchInput = document.getElementById('xMetricSearchInput');
-            yMetricSearchInput = document.getElementById('yMetricSearchInput');
-
-            const correlationStats = createControlPanel('correlationStats',
-                { right: '10px', top: '45px', display: 'none' },
-                '0.5px solid black',
-                '',
-                { zIndex: 9999, minWidth: '220px', dragLabel: 'correlation stats' }
+            repopulateMetricSelect(
+                ySelect,
+                correlationYMetric,
+                (yMetricSearchInput && yMetricSearchInput.value) || ''
             );
 
-            function initializeCorrelationDropdowns() {
-                const xSelect = document.getElementById('xMetricSelect');
-                const ySelect = document.getElementById('yMetricSelect');
-                if (!xSelect || !ySelect) return;
-                repopulateMetricSelect(xSelect, correlationXMetric, (xMetricSearchInput && xMetricSearchInput.value) || '');
-                repopulateMetricSelect(ySelect, correlationYMetric, (yMetricSearchInput && yMetricSearchInput.value) || '');
-
-                if (xSelect.value) {
-                    correlationXMetric = xSelect.value;
-                }
-                if (ySelect.value) {
-                    correlationYMetric = ySelect.value;
-                }
+            if (xSelect.value) {
+                correlationXMetric = xSelect.value;
             }
 
-            function calculatePearsonCorrelation(xValues, yValues) {
-                const validPairs = xValues
-                    .map((x, i) => [x, yValues[i]])
-                    .filter(pair =>
-                        pair[0] !== null && pair[1] !== null &&
-                        !isNaN(pair[0]) && !isNaN(pair[1])
-                    );
-
-                if (validPairs.length < 2) {
-                    return null;
-                }
-
-                const meanX = validPairs.reduce((sum, pair) => sum + pair[0], 0) / validPairs.length;
-                const meanY = validPairs.reduce((sum, pair) => sum + pair[1], 0) / validPairs.length;
-
-                let numerator = 0;
-                let denominatorX = 0;
-                let denominatorY = 0;
-
-                validPairs.forEach(pair => {
-                    const deviationX = pair[0] - meanX;
-                    const deviationY = pair[1] - meanY;
-                    numerator += deviationX * deviationY;
-                    denominatorX += deviationX * deviationX;
-                    denominatorY += deviationY * deviationY;
-                });
-
-                if (denominatorX === 0 || denominatorY === 0) {
-                    return null;
-                }
-
-                return numerator / Math.sqrt(denominatorX * denominatorY);
+            if (ySelect.value) {
+                correlationYMetric = ySelect.value;
             }
+        }
 
-            function calculateMean(values) {
-                if (!values || values.length === 0) return null;
-                return values.reduce((sum, value) => sum + value, 0) / values.length;
-            }
-
-            function calculateVariance(values) {
-                if (!values || values.length === 0) return null;
-                const mean = calculateMean(values);
-                const sq = values.reduce((sum, value) => sum + Math.pow(value - mean, 2), 0);
-                return sq / values.length;
-            }
-
-            function calculateStdDev(values) {
-                const variance = calculateVariance(values);
-                return variance === null ? null : Math.sqrt(variance);
-            }
-
-            function calculateLinearRegression(xValues, yValues) {
-                const n = xValues.length;
-                let sumX = 0, sumY = 0, sumXY = 0, sumX2 = 0;
-
-                for (let i = 0; i < n; i++) {
-                    sumX += xValues[i];
-                    sumY += yValues[i];
-                    sumXY += xValues[i] * yValues[i];
-                    sumX2 += xValues[i] * xValues[i];
-                }
-
-                const denom = (n * sumX2 - sumX * sumX);
-                const slope = denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
-                const intercept = n === 0 ? 0 : (sumY - slope * sumX) / n;
-
-                return { slope, intercept };
-            }
-
-            function calculatePolynomialRegression(xValues, yValues) {
-                const n = xValues.length;
-                let sumX = 0, sumY = 0, sumX2 = 0, sumX3 = 0, sumX4 = 0, sumXY = 0, sumX2Y = 0;
-
-                for (let i = 0; i < n; i++) {
-                    const x = xValues[i];
-                    const y = yValues[i];
-                    sumX += x;
-                    sumY += y;
-                    sumX2 += x * x;
-                    sumX3 += x * x * x;
-                    sumX4 += x * x * x * x;
-                    sumXY += x * y;
-                    sumX2Y += x * x * y;
-                }
-
-                let matrix = [
-                    [n, sumX, sumX2],
-                    [sumX, sumX2, sumX3],
-                    [sumX2, sumX3, sumX4]
-                ];
-                let vector = [sumY, sumXY, sumX2Y];
-
-                for (let i = 0; i < 3; i++) {
-                    let maxRow = i;
-                    for (let j = i + 1; j < 3; j++) {
-                        if (Math.abs(matrix[j][i]) > Math.abs(matrix[maxRow][i])) {
-                            maxRow = j;
-                        }
-                    }
-
-                    [matrix[i], matrix[maxRow]] = [matrix[maxRow], matrix[i]];
-                    [vector[i], vector[maxRow]] = [vector[maxRow], vector[i]];
-
-                    for (let j = i + 1; j < 3; j++) {
-                        const factor = matrix[j][i] / matrix[i][i];
-                        for (let k = i; k < 3; k++) {
-                            matrix[j][k] -= factor * matrix[i][k];
-                        }
-                        vector[j] -= factor * vector[i];
-                    }
-                }
-
-                let coefficients = [0, 0, 0];
-                for (let i = 2; i >= 0; i--) {
-                    coefficients[i] = vector[i];
-                    for (let j = i + 1; j < 3; j++) {
-                        coefficients[i] -= matrix[i][j] * coefficients[j];
-                    }
-                    coefficients[i] /= matrix[i][i];
-                }
-
-                return {
-                    a: coefficients[2],
-                    b: coefficients[1],
-                    c: coefficients[0]
-                };
-            }
-
-            function calculateLogisticRegression(xValues, yValues) {
-                const minY = Math.min(...yValues);
-                const maxY = Math.max(...yValues);
-                if (maxY === minY) {
-                    return null;
-                }
-                const normalizedY = yValues.map(y => (y - minY) / (maxY - minY));
-
-                const linearFit = calculateLinearRegression(xValues, normalizedY);
-
-                return {
-                    alpha: linearFit.intercept,
-                    beta: linearFit.slope,
-                    minY: minY,
-                    maxY: maxY
-                };
-            }
-
-            function getRegressionModel(xValues, yValues, regressionType) {
-                if (!xValues || xValues.length < 2) {
-                    return null;
-                }
-
-                if (regressionType === 'linear') {
-                    return calculateLinearRegression(xValues, yValues);
-                }
-                if (regressionType === 'polynomial') {
-                    return calculatePolynomialRegression(xValues, yValues);
-                }
-                if (regressionType === 'logistic') {
-                    return calculateLogisticRegression(xValues, yValues);
-                }
-                return null;
-            }
-
-            function predictRegressionY(x, regressionType, model) {
-                if (!model) return null;
-
-                if (regressionType === 'linear') {
-                    return model.slope * x + model.intercept;
-                }
-                if (regressionType === 'polynomial') {
-                    return model.a * x * x + model.b * x + model.c;
-                }
-                if (regressionType === 'logistic') {
-                    const normalized = 1 / (1 + Math.exp(-(model.alpha + model.beta * x)));
-                    return normalized * (model.maxY - model.minY) + model.minY;
-                }
-                return null;
-            }
-
-            function buildResidualRanking(texts, xValues, yValues, regressionType, model) {
-                if (!model) return [];
-
-                const ranked = [];
-                for (let i = 0; i < xValues.length; i++) {
-                    const predicted = predictRegressionY(xValues[i], regressionType, model);
-                    if (predicted === null || isNaN(predicted)) continue;
-                    const residual = yValues[i] - predicted;
-                    ranked.push({
-                        text: texts[i],
-                        residual,
-                        absResidual: Math.abs(residual)
-                    });
-                }
-
-                ranked.sort((a, b) => b.absResidual - a.absResidual);
-                return ranked;
-            }
-
-            function generateRegressionLine(xValues, yValues, regressionType) {
-                if (xValues.length < 2) {
-                    return null;
-                }
-
-                const minX = Math.min(...xValues);
-                const maxX = Math.max(...xValues);
-
-                const lineX = Array.from(
-                    { length: CONFIG.regressionLinePoints + 1 },
-                    (_, i) => minX + (maxX - minX) * i / CONFIG.regressionLinePoints
+        function calculatePearsonCorrelation(xValues, yValues) {
+            const validPairs = xValues
+                .map((x, i) => [x, yValues[i]])
+                .filter(pair =>
+                    pair[0] !== null &&
+                    pair[1] !== null &&
+                    !isNaN(pair[0]) &&
+                    !isNaN(pair[1])
                 );
 
-                let lineY = [];
-
-                if (regressionType === 'linear') {
-                    const regression = calculateLinearRegression(xValues, yValues);
-                    lineY = lineX.map(x => regression.slope * x + regression.intercept);
-                }
-                else if (regressionType === 'polynomial') {
-                    const regression = calculatePolynomialRegression(xValues, yValues);
-                    lineY = lineX.map(x => regression.a * x * x + regression.b * x + regression.c);
-                }
-                else if (regressionType === 'logistic') {
-                    const regression = calculateLogisticRegression(xValues, yValues);
-                    lineY = lineX.map(x => {
-                        const normalized = 1 / (1 + Math.exp(-(regression.alpha + regression.beta * x)));
-                        return normalized * (regression.maxY - regression.minY) + regression.minY;
-                    });
-                }
-
-                return { x: lineX, y: lineY };
+            if (validPairs.length < 2) {
+                return null;
             }
 
-            function buildCorrFocusOverlayTrace() {
-                return {
-                    x: [], y: [],
-                    mode: 'markers+text',
-                    type: 'scatter',
-                    meta: CORR_FOCUS_OVERLAY_META,
-                    hoverinfo: 'skip',
-                    showlegend: false,
-                    text: [],
-                    textposition: 'middle center',
-                    textfont: { size: 9, color: '#000' },
-                    marker: {
-                        symbol: 'star',
-                        size: CONFIG.focusStarSize,
-                        color: '#ffd400',
-                        line: { color: '#111', width: 2 }
+            const meanX =
+                validPairs.reduce((sum, pair) => sum + pair[0], 0) /
+                validPairs.length;
+
+            const meanY =
+                validPairs.reduce((sum, pair) => sum + pair[1], 0) /
+                validPairs.length;
+
+            let numerator = 0;
+            let denominatorX = 0;
+            let denominatorY = 0;
+
+            validPairs.forEach(pair => {
+                const deviationX = pair[0] - meanX;
+                const deviationY = pair[1] - meanY;
+
+                numerator += deviationX * deviationY;
+                denominatorX += deviationX * deviationX;
+                denominatorY += deviationY * deviationY;
+            });
+
+            if (denominatorX === 0 || denominatorY === 0) {
+                return null;
+            }
+
+            return numerator / Math.sqrt(denominatorX * denominatorY);
+        }
+
+        function calculateMean(values) {
+            if (!values || values.length === 0) return null;
+
+            return values.reduce((sum, value) => sum + value, 0) / values.length;
+        }
+
+        function calculateVariance(values) {
+            if (!values || values.length === 0) return null;
+
+            const mean = calculateMean(values);
+
+            const sq = values.reduce(
+                (sum, value) => sum + Math.pow(value - mean, 2),
+                0
+            );
+
+            return sq / values.length;
+        }
+
+        function calculateStdDev(values) {
+            const variance = calculateVariance(values);
+            return variance === null ? null : Math.sqrt(variance);
+        }
+
+        function calculateLinearRegression(xValues, yValues) {
+            const n = xValues.length;
+
+            let sumX = 0;
+            let sumY = 0;
+            let sumXY = 0;
+            let sumX2 = 0;
+
+            for (let i = 0; i < n; i++) {
+                sumX += xValues[i];
+                sumY += yValues[i];
+                sumXY += xValues[i] * yValues[i];
+                sumX2 += xValues[i] * xValues[i];
+            }
+
+            const denom = n * sumX2 - sumX * sumX;
+
+            const slope =
+                denom === 0 ? 0 : (n * sumXY - sumX * sumY) / denom;
+
+            const intercept = n === 0 ? 0 : (sumY - slope * sumX) / n;
+
+            return { slope, intercept };
+        }
+
+        function calculatePolynomialRegression(xValues, yValues) {
+            const n = xValues.length;
+
+            let sumX = 0;
+            let sumY = 0;
+            let sumX2 = 0;
+            let sumX3 = 0;
+            let sumX4 = 0;
+            let sumXY = 0;
+            let sumX2Y = 0;
+
+            for (let i = 0; i < n; i++) {
+                const x = xValues[i];
+                const y = yValues[i];
+
+                sumX += x;
+                sumY += y;
+                sumX2 += x * x;
+                sumX3 += x * x * x;
+                sumX4 += x * x * x * x;
+                sumXY += x * y;
+                sumX2Y += x * x * y;
+            }
+
+            const matrix = [
+                [n, sumX, sumX2],
+                [sumX, sumX2, sumX3],
+                [sumX2, sumX3, sumX4]
+            ];
+
+            const vector = [sumY, sumXY, sumX2Y];
+
+            for (let i = 0; i < 3; i++) {
+                let maxRow = i;
+
+                for (let j = i + 1; j < 3; j++) {
+                    if (
+                        Math.abs(matrix[j][i]) >
+                        Math.abs(matrix[maxRow][i])
+                    ) {
+                        maxRow = j;
                     }
-                };
+                }
+
+                [matrix[i], matrix[maxRow]] = [matrix[maxRow], matrix[i]];
+                [vector[i], vector[maxRow]] = [vector[maxRow], vector[i]];
+
+                for (let j = i + 1; j < 3; j++) {
+                    const factor = matrix[j][i] / matrix[i][i];
+
+                    for (let k = i; k < 3; k++) {
+                        matrix[j][k] -= factor * matrix[i][k];
+                    }
+
+                    vector[j] -= factor * vector[i];
+                }
             }
 
-            function ensureCorrFocusOverlay() {
-                const correlationPlot = document.getElementById('correlationPlot');
-                if (!correlationPlot || !correlationPlot.data) return Promise.resolve();
-                if (!correlationPlot.data.some(t => t.meta === CORR_FOCUS_OVERLAY_META)) {
-                    return Plotly.addTraces(correlationPlot, buildCorrFocusOverlayTrace());
+            const coefficients = [0, 0, 0];
+
+            for (let i = 2; i >= 0; i--) {
+                coefficients[i] = vector[i];
+
+                for (let j = i + 1; j < 3; j++) {
+                    coefficients[i] -= matrix[i][j] * coefficients[j];
                 }
+
+                coefficients[i] /= matrix[i][i];
+            }
+
+            return {
+                a: coefficients[2],
+                b: coefficients[1],
+                c: coefficients[0]
+            };
+        }
+
+        function calculateLogisticRegression(xValues, yValues) {
+            const minY = Math.min(...yValues);
+            const maxY = Math.max(...yValues);
+
+            if (maxY === minY) {
+                return null;
+            }
+
+            const normalizedY = yValues.map(
+                y => (y - minY) / (maxY - minY)
+            );
+
+            const linearFit = calculateLinearRegression(
+                xValues,
+                normalizedY
+            );
+
+            return {
+                alpha: linearFit.intercept,
+                beta: linearFit.slope,
+                minY,
+                maxY
+            };
+        }
+
+        function getRegressionModel(xValues, yValues, regressionType) {
+            if (!xValues || xValues.length < 2) {
+                return null;
+            }
+
+            if (regressionType === 'linear') {
+                return calculateLinearRegression(xValues, yValues);
+            }
+
+            if (regressionType === 'polynomial') {
+                return calculatePolynomialRegression(xValues, yValues);
+            }
+
+            if (regressionType === 'logistic') {
+                return calculateLogisticRegression(xValues, yValues);
+            }
+
+            return null;
+        }
+
+        function predictRegressionY(x, regressionType, model) {
+            if (!model) return null;
+
+            if (regressionType === 'linear') {
+                return model.slope * x + model.intercept;
+            }
+
+            if (regressionType === 'polynomial') {
+                return model.a * x * x + model.b * x + model.c;
+            }
+
+            if (regressionType === 'logistic') {
+                const normalized =
+                    1 / (1 + Math.exp(-(model.alpha + model.beta * x)));
+
+                return normalized * (model.maxY - model.minY) + model.minY;
+            }
+
+            return null;
+        }
+
+        function buildResidualRanking(
+            texts,
+            xValues,
+            yValues,
+            regressionType,
+            model
+        ) {
+            if (!model) return [];
+
+            const ranked = [];
+
+            for (let i = 0; i < xValues.length; i++) {
+                const predicted = predictRegressionY(
+                    xValues[i],
+                    regressionType,
+                    model
+                );
+
+                if (predicted === null || isNaN(predicted)) continue;
+
+                const residual = yValues[i] - predicted;
+
+                ranked.push({
+                    text: texts[i],
+                    residual,
+                    absResidual: Math.abs(residual)
+                });
+            }
+
+            ranked.sort((a, b) => b.absResidual - a.absResidual);
+
+            return ranked;
+        }
+
+        function generateRegressionLine(
+            xValues,
+            yValues,
+            regressionType
+        ) {
+            if (xValues.length < 2) {
+                return null;
+            }
+
+            const minX = Math.min(...xValues);
+            const maxX = Math.max(...xValues);
+
+            const lineX = Array.from(
+                { length: CONFIG.regressionLinePoints + 1 },
+                (_, i) =>
+                    minX +
+                    ((maxX - minX) * i) / CONFIG.regressionLinePoints
+            );
+
+            let lineY = [];
+
+            if (regressionType === 'linear') {
+                const regression = calculateLinearRegression(xValues, yValues);
+
+                lineY = lineX.map(
+                    x => regression.slope * x + regression.intercept
+                );
+            } else if (regressionType === 'polynomial') {
+                const regression = calculatePolynomialRegression(
+                    xValues,
+                    yValues
+                );
+
+                lineY = lineX.map(
+                    x => regression.a * x * x + regression.b * x + regression.c
+                );
+            } else if (regressionType === 'logistic') {
+                const regression = calculateLogisticRegression(
+                    xValues,
+                    yValues
+                );
+
+                lineY = lineX.map(x => {
+                    const normalized =
+                        1 / (1 + Math.exp(-(regression.alpha + regression.beta * x)));
+
+                    return (
+                        normalized * (regression.maxY - regression.minY) +
+                        regression.minY
+                    );
+                });
+            }
+
+            return { x: lineX, y: lineY };
+        }
+
+        function buildCorrFocusOverlayTrace() {
+            return {
+                x: [],
+                y: [],
+                mode: 'markers+text',
+                type: 'scatter',
+                meta: CORR_FOCUS_OVERLAY_META,
+                hoverinfo: 'skip',
+                showlegend: false,
+                text: [],
+                textposition: 'middle center',
+                textfont: { size: 9, color: '#000' },
+                marker: {
+                    symbol: 'star',
+                    size: CONFIG.focusStarSize,
+                    color: '#ffd400',
+                    line: { color: '#111', width: 2 }
+                }
+            };
+        }
+
+        function ensureCorrFocusOverlay() {
+            const correlationPlot = document.getElementById('correlationPlot');
+
+            if (!correlationPlot || !correlationPlot.data) {
                 return Promise.resolve();
             }
 
-            function bringCorrFocusOverlayToFront() {
-                const correlationPlot = document.getElementById('correlationPlot');
-                if (!correlationPlot || !correlationPlot.data) return Promise.resolve();
-                const idx = correlationPlot.data.findIndex(t => t.meta === CORR_FOCUS_OVERLAY_META);
-                if (idx >= 0 && idx !== correlationPlot.data.length - 1) {
-                    return Plotly.moveTraces(correlationPlot, [idx], [correlationPlot.data.length - 1]);
-                }
+            if (
+                !correlationPlot.data.some(
+                    t => t.meta === CORR_FOCUS_OVERLAY_META
+                )
+            ) {
+                return Plotly.addTraces(
+                    correlationPlot,
+                    buildCorrFocusOverlayTrace()
+                );
+            }
+
+            return Promise.resolve();
+        }
+
+        function bringCorrFocusOverlayToFront() {
+            const correlationPlot = document.getElementById('correlationPlot');
+
+            if (!correlationPlot || !correlationPlot.data) {
                 return Promise.resolve();
             }
 
-            function refreshFocusedTextInCorrelationPlot() {
-                try {
-                    const correlationPlot = document.getElementById('correlationPlot');
-                    if (!correlationPlot || !correlationPlot.data || !correlationPlot.data[0]) {
-                        return;
-                    }
+            const idx = correlationPlot.data.findIndex(
+                t => t.meta === CORR_FOCUS_OVERLAY_META
+            );
 
-                    const scatterTexts = correlationPlot.data[0].text || [];
-                    const pointIndex = focusedTextName ? scatterTexts.indexOf(focusedTextName) : -1;
+            if (idx >= 0 && idx !== correlationPlot.data.length - 1) {
+                return Plotly.moveTraces(
+                    correlationPlot,
+                    [idx],
+                    [correlationPlot.data.length - 1]
+                );
+            }
 
-                    ensureCorrFocusOverlay().then(() => {
-                        const overlayIdx = correlationPlot.data.findIndex(t => t.meta === CORR_FOCUS_OVERLAY_META);
+            return Promise.resolve();
+        }
+
+        function refreshFocusedTextInCorrelationPlot() {
+            try {
+                const correlationPlot = document.getElementById('correlationPlot');
+
+                if (
+                    !correlationPlot ||
+                    !correlationPlot.data ||
+                    !correlationPlot.data[0]
+                ) {
+                    return;
+                }
+
+                const scatterTexts = correlationPlot.data[0].text || [];
+
+                const pointIndex = focusedTextName
+                    ? scatterTexts.indexOf(focusedTextName)
+                    : -1;
+
+                ensureCorrFocusOverlay()
+                    .then(() => {
+                        const overlayIdx = correlationPlot.data.findIndex(
+                            t => t.meta === CORR_FOCUS_OVERLAY_META
+                        );
+
                         if (overlayIdx < 0) return Promise.resolve();
 
                         if (pointIndex < 0) {
-                            return Plotly.restyle(correlationPlot, {
-                                x: [[]], y: [[]], text: [[]]
-                            }, [overlayIdx]);
+                            return Plotly.restyle(
+                                correlationPlot,
+                                {
+                                    x: [[]],
+                                    y: [[]],
+                                    text: [[]]
+                                },
+                                [overlayIdx]
+                            );
                         }
 
                         const xv = correlationPlot.data[0].x[pointIndex];
                         const yv = correlationPlot.data[0].y[pointIndex];
-
-                        const resolved = readBaseColor(correlationPlot, pointIndex);
+                        const resolved = readBaseColor(
+                            correlationPlot,
+                            pointIndex
+                        );
 
                         if (resolved && typeof resolved === 'string') {
-                            return Plotly.restyle(correlationPlot, {
-                                x: [[xv]], y: [[yv]],
-                                text: [[focusedTextName]],
-                                'marker.color': [[resolved]]
-                            }, [overlayIdx]);
+                            return Plotly.restyle(
+                                correlationPlot,
+                                {
+                                    x: [[xv]],
+                                    y: [[yv]],
+                                    text: [[focusedTextName]],
+                                    'marker.color': [[resolved]]
+                                },
+                                [overlayIdx]
+                            );
                         }
-                        return Plotly.restyle(correlationPlot, {
-                            x: [[xv]], y: [[yv]],
-                            text: [[focusedTextName]]
-                        }, [overlayIdx]);
-                    }).then(() => bringCorrFocusOverlayToFront())
-                      .then(() => refreshCorrelationSemanticConnections());
-                } catch (err) {
-                    console.error('refreshFocusedTextInCorrelationPlot failed:', err);
-                }
-            }
 
-            async function refreshCorrelationSemanticConnections() {
-                const correlationPlot = document.getElementById('correlationPlot');
-                if (!correlationPlot || !correlationPlot.data || !correlationPlot.data[0]) return;
-                const refreshToken = ++correlationSemanticRefreshToken;
-                await removeSemanticConnectionTraces(correlationPlot);
-                if (refreshToken !== correlationSemanticRefreshToken) return;
-                if (!semanticLineModeEnabled || !focusedTextName) {
-                    await bringCorrFocusOverlayToFront();
-                    return;
-                }
-                const scatterTexts = correlationPlot.data[0].text || [];
-                const focusPoint = scatterTexts.indexOf(focusedTextName);
-                if (focusPoint < 0) {
-                    await bringCorrFocusOverlayToFront();
-                    return;
-                }
-                const focusIndex = textNameLookup.get(focusedTextName)?.index;
-                if (focusIndex === undefined) {
-                    await bringCorrFocusOverlayToFront();
-                    return;
-                }
-                const neighbors = getFocusNeighbors(focusIndex).slice(0, semanticLineCount);
-                const traces = neighbors.map((item, rank) => {
-                    const targetPoint = scatterTexts.indexOf(item.text);
-                    if (targetPoint < 0) return null;
-                    return { x: [correlationPlot.data[0].x[focusPoint], correlationPlot.data[0].x[targetPoint]],
-                        y: [correlationPlot.data[0].y[focusPoint], correlationPlot.data[0].y[targetPoint]],
-                        mode: 'lines', type: 'scatter', meta: 'semanticConnection', hoverinfo: 'skip',
-                        showlegend: false,
-                        line: { color: semanticConnectionColor(rank, neighbors.length), width: 2 } };
-                }).filter(Boolean);
-                if (traces.length && refreshToken === correlationSemanticRefreshToken) {
-                    await Plotly.addTraces(correlationPlot, traces);
-                }
-                await bringCorrFocusOverlayToFront();
-            }
-
-            function updateCorrelationPlot() {
-                try {
-                    const xSelect = document.getElementById('xMetricSelect');
-                    const ySelect = document.getElementById('yMetricSelect');
-                    const regressionSelect = document.getElementById('regressionType');
-
-                    if (!xSelect || !ySelect || !regressionSelect) {
-                        console.error('[correlation] missing dropdowns',
-                            { xSelect: !!xSelect, ySelect: !!ySelect, regressionSelect: !!regressionSelect });
-                        return;
-                    }
-
-                    correlationXMetric = xSelect.value;
-                    correlationYMetric = ySelect.value;
-
-                    const xData = metricsData[correlationXMetric];
-                    const yData = metricsData[correlationYMetric];
-
-                    if (!xData || !yData) {
-                        alert('WHAT DID YOU DO!? You selected a metric that has no data! HOW?!?!?');
-                        return;
-                    }
-
-                    const scatterTexts = [];
-                    const scatterX = [];
-                    const scatterY = [];
-                    const scatterColors = [];
-
-                    for (let i = 0; i < xData.length; i++) {
-                        if (xData[i] !== null && xData[i] !== undefined &&
-                            yData[i] !== null && yData[i] !== undefined &&
-                            !isNaN(xData[i]) && !isNaN(yData[i])) {
-                            scatterTexts.push(textNames[i]);
-                            scatterX.push(xData[i]);
-                            scatterY.push(yData[i]);
-                            scatterColors.push(i);
-                        }
-                    }
-
-                    const scatterTrace = {
-                        x: scatterX,
-                        y: scatterY,
-                        mode: 'markers+text',
-                        type: 'scatter',
-                        name: '',
-                        text: scatterTexts,
-                        textposition: 'middle center',
-                        textfont: {
-                            size: CONFIG.pointFontSize,
-                            color: 'black'
-                        },
-                        marker: {
-                            size: CONFIG.normalSize,
-                            color: scatterColors,
-                            colorscale: 'Viridis',
-                            showscale: false,
-                            line: { color: 'black', width: 1 }
-                        },
-                        hovertext: scatterTexts,
-                        hoverinfo: 'text+x+y'
-                    };
-
-                    const correlation = calculatePearsonCorrelation(xData, yData);
-
-                    let title = `${metricDisplayNames[correlationXMetric]} vs ${metricDisplayNames[correlationYMetric]}`;
-                    if (correlation !== null) {
-                        title += `<br><sub>Pearson r = ${correlation.toFixed(3)}</sub>`;
-                    }
-
-                    const layout = {
-                        title: { text: title, x: 0.5, xanchor: 'center' },
-                        xaxis: {
-                            title: metricDisplayNames[correlationXMetric],
-                            showgrid: true,
-                            gridwidth: 1,
-                            gridcolor: '#e0e0e0'
-                        },
-                        yaxis: {
-                            title: metricDisplayNames[correlationYMetric],
-                            showgrid: true,
-                            gridwidth: 1,
-                            gridcolor: '#e0e0e0'
-                        },
-                        plot_bgcolor: '#f8f9fa',
-                        paper_bgcolor: 'white',
-                        hovermode: 'closest',
-                        showlegend: false,
-                        height: 800,
-                        width: 1200,
-                        font: { family: 'Arial, sans-serif' },
-                        margin: { t: 100, l: 80, r: 80, b: 80 }
-                    };
-
-                    const regressionType = regressionSelect.value;
-                    const regressionData = generateRegressionLine(scatterX, scatterY, regressionType);
-                    const regressionModel = getRegressionModel(scatterX, scatterY, regressionType);
-
-                    let traces = [scatterTrace];
-
-                    if (regressionData) {
-                        traces.push({
-                            x: regressionData.x,
-                            y: regressionData.y,
-                            mode: 'lines',
-                            type: 'scatter',
-                            name: `${regressionType} fit`,
-                            line: {
-                                color: 'rgba(220, 53, 69, 0.2)',
-                                width: 3,
-                                dash: 'solid'
+                        return Plotly.restyle(
+                            correlationPlot,
+                            {
+                                x: [[xv]],
+                                y: [[yv]],
+                                text: [[focusedTextName]]
                             },
-                            hoverinfo: 'skip',
-                            showlegend: false
-                        });
-                    }
+                            [overlayIdx]
+                        );
+                    })
+                    .then(() => bringCorrFocusOverlayToFront())
+                    .then(() => refreshCorrelationSemanticConnections());
+            } catch (err) {
+                console.error(
+                    'refreshFocusedTextInCorrelationPlot failed:',
+                    err
+                );
+            }
+        }
 
-                    Plotly.newPlot('correlationPlot', traces, layout).then(() => {
-                        refreshFocusedTextInCorrelationPlot();
-                    }).catch(err => console.error('[correlation] Plotly.newPlot failed:', err));
+        async function refreshCorrelationSemanticConnections() {
+            const correlationPlot = document.getElementById('correlationPlot');
 
-                    setTimeout(() => {
-                        addTextOutlines('#correlationPlot .scatterlayer .textpoint text', 'correlationStrokeText');
-                    }, CONFIG.textOutlineDelay);
-
-                    const statsPanel = document.getElementById('correlationStats');
-                    const statsBody = statsPanel ? statsPanel.querySelector('.panelBody') : null;
-                    const statsTarget = statsBody || statsPanel;
-                    if (!statsTarget) {
-                        return;
-                    }
-
-                    while (statsTarget.firstChild) {
-                        statsTarget.removeChild(statsTarget.firstChild);
-                    }
-
-                    const heading = document.createElement('strong');
-                    heading.textContent = 'Correlation Statistics';
-                    statsTarget.appendChild(heading);
-
-                    const wrapper = document.createElement('div');
-                    wrapper.style.marginTop = '8px';
-
-                    const nLine = document.createElement('div');
-                    nLine.style.marginBottom = '6px';
-                    nLine.textContent = `Shample Size: ${scatterX.length}`;
-                    wrapper.appendChild(nLine);
-
-                    if (correlation !== null) {
-                        const rSquared = formatTrimmedNumber(correlation * correlation, 4);
-                        const rValue = formatTrimmedNumber(correlation, 4);
-                        const absCorrelation = Math.abs(correlation);
-
-                        let strength = '';
-                        if (absCorrelation >= 0.7) {
-                            strength = ' (Strong)';
-                        } else if (absCorrelation >= 0.4) {
-                            strength = ' (Moderate)';
-                        } else {
-                            strength = ' (Weak)';
-                        }
-
-                        const rLine = document.createElement('div');
-                        rLine.style.marginBottom = '6px';
-                        rLine.textContent = `Pearson r: ${rValue}${strength}`;
-
-                        const r2Line = document.createElement('div');
-                        r2Line.style.marginBottom = '6px';
-                        r2Line.textContent = `R²: ${rSquared}`;
-
-                        wrapper.appendChild(rLine);
-                        wrapper.appendChild(r2Line);
-                    } else {
-                        const rLine = document.createElement('div');
-                        rLine.style.marginBottom = '6px';
-                        rLine.textContent = 'Pearson r: unavailable';
-                        wrapper.appendChild(rLine);
-                    }
-
-                    const xVar = calculateVariance(scatterX);
-                    const yVar = calculateVariance(scatterY);
-                    const xStd = calculateStdDev(scatterX);
-                    const yStd = calculateStdDev(scatterY);
-
-                    const xStatsLine = document.createElement('div');
-                    xStatsLine.style.marginBottom = '6px';
-                    xStatsLine.textContent = `X variance/std: ${formatTrimmedNumber(xVar, 4)} / ${formatTrimmedNumber(xStd, 4)}`;
-
-                    const yStatsLine = document.createElement('div');
-                    yStatsLine.style.marginBottom = '6px';
-                    yStatsLine.textContent = `Y variance/std: ${formatTrimmedNumber(yVar, 4)} / ${formatTrimmedNumber(yStd, 4)}`;
-
-                    wrapper.appendChild(xStatsLine);
-                    wrapper.appendChild(yStatsLine);
-
-                    const residualRanking = buildResidualRanking(scatterTexts, scatterX, scatterY, regressionType, regressionModel);
-                    if (residualRanking.length) {
-                        const topOutliers = residualRanking.slice(0, 5);
-                        const leastOutliers = [...residualRanking].slice(-5).reverse();
-
-                        const outlierHeading = document.createElement('div');
-                        outlierHeading.style.marginTop = '10px';
-                        outlierHeading.style.marginBottom = '4px';
-                        outlierHeading.style.fontWeight = '600';
-                        outlierHeading.textContent = 'Greatest Outliers';
-                        wrapper.appendChild(outlierHeading);
-
-                        topOutliers.forEach((item, idx) => {
-                            const line = document.createElement('div');
-                            line.style.marginBottom = '3px';
-                            line.textContent = `${idx + 1}. ${item.text} (|res|=${formatTrimmedNumber(item.absResidual, 4)})`;
-                            wrapper.appendChild(line);
-                        });
-
-                        const leastHeading = document.createElement('div');
-                        leastHeading.style.marginTop = '10px';
-                        leastHeading.style.marginBottom = '4px';
-                        leastHeading.style.fontWeight = '600';
-                        leastHeading.textContent = 'Least Outliers';
-                        wrapper.appendChild(leastHeading);
-
-                        leastOutliers.forEach((item, idx) => {
-                            const line = document.createElement('div');
-                            line.style.marginBottom = '3px';
-                            line.textContent = `${idx + 1}. ${item.text} (|res|=${formatTrimmedNumber(item.absResidual, 4)})`;
-                            wrapper.appendChild(line);
-                        });
-                    }
-
-                    statsTarget.appendChild(wrapper);
-                } catch (err) {
-                    console.error('[correlation] updateCorrelationPlot failed:', err);
-                    const statsPanel = document.getElementById('correlationStats');
-                    const statsBody = statsPanel ? statsPanel.querySelector('.panelBody') : null;
-                    if (statsBody) {
-                        const msg = (err && err.message) ? err.message : String(err);
-                        const stack = (err && err.stack) ? err.stack : '';
-                        statsBody.innerHTML =
-                            '<b style="color:#c00;">Correlation error</b><br>' +
-                            '<div style="font-size:11px; margin:4px 0;"><b>' +
-                            msg.replace(/&/g, '&amp;').replace(/</g, '&lt;') +
-                            '</b></div>' +
-                            '<pre style="font-size:9px; white-space:pre-wrap; margin:0;">' +
-                            stack.replace(/&/g, '&amp;').replace(/</g, '&lt;') +
-                            '</pre>';
-                    }
-                }
+            if (
+                !correlationPlot ||
+                !correlationPlot.data ||
+                !correlationPlot.data[0]
+            ) {
+                return;
             }
 
-            initializeCorrelationDropdowns();
+            const refreshToken = ++correlationSemanticRefreshToken;
 
-            function setViewMode(mode) {
-                try {
-                    const isCorrelation = (mode === 'correlation');
+            await removeSemanticConnectionTraces(correlationPlot);
 
-                    ['metricPanel', 'colorPanel', 'textPanel'].forEach(id => {
-                        const el = document.getElementById(id);
-                        if (!el) return;
-                        if (isCorrelation) {
-                            el.style.display = 'none';
-                        } else {
-                            el.style.display = (id === 'textPanel') ? 'flex' : 'block';
+            if (refreshToken !== correlationSemanticRefreshToken) return;
+
+            if (!semanticLineModeEnabled || !focusedTextName) {
+                await bringCorrFocusOverlayToFront();
+                return;
+            }
+
+            const scatterTexts = correlationPlot.data[0].text || [];
+            const focusPoint = scatterTexts.indexOf(focusedTextName);
+
+            if (focusPoint < 0) {
+                await bringCorrFocusOverlayToFront();
+                return;
+            }
+
+            const focusIndex = textNameLookup.get(focusedTextName)?.index;
+
+            if (focusIndex === undefined) {
+                await bringCorrFocusOverlayToFront();
+                return;
+            }
+
+            const neighbors = getFocusNeighbors(focusIndex)
+                .slice(0, semanticLineCount);
+
+            const traces = neighbors
+                .map((item, rank) => {
+                    const targetPoint = scatterTexts.indexOf(item.text);
+
+                    if (targetPoint < 0) return null;
+
+                    return {
+                        x: [
+                            correlationPlot.data[0].x[focusPoint],
+                            correlationPlot.data[0].x[targetPoint]
+                        ],
+                        y: [
+                            correlationPlot.data[0].y[focusPoint],
+                            correlationPlot.data[0].y[targetPoint]
+                        ],
+                        mode: 'lines',
+                        type: 'scatter',
+                        meta: 'semanticConnection',
+                        hoverinfo: 'skip',
+                        showlegend: false,
+                        line: {
+                            color: semanticConnectionColor(
+                                rank,
+                                neighbors.length
+                            ),
+                            width: 2
                         }
+                    };
+                })
+                .filter(Boolean);
+
+            if (
+                traces.length &&
+                refreshToken === correlationSemanticRefreshToken
+            ) {
+                await Plotly.addTraces(correlationPlot, traces);
+            }
+
+            await bringCorrFocusOverlayToFront();
+        }
+
+        function updateCorrelationPlot() {
+            try {
+                const xSelect = document.getElementById('xMetricSelect');
+                const ySelect = document.getElementById('yMetricSelect');
+                const regressionSelect =
+                    document.getElementById('regressionType');
+
+                if (!xSelect || !ySelect || !regressionSelect) {
+                    console.error('[correlation] missing dropdowns', {
+                        xSelect: !!xSelect,
+                        ySelect: !!ySelect,
+                        regressionSelect: !!regressionSelect
                     });
 
-                    const corrControls = document.getElementById('correlationControls');
-                    const corrStats = document.getElementById('correlationStats');
+                    return;
+                }
 
-                    if (isCorrelation) {
-                        correlationContainer.style.display = 'flex';
-                        if (corrControls) corrControls.style.display = 'block';
-                        if (corrStats) corrStats.style.display = 'block';
+                correlationXMetric = xSelect.value;
+                correlationYMetric = ySelect.value;
+
+                const xData = metricsData[correlationXMetric];
+                const yData = metricsData[correlationYMetric];
+
+                if (!xData || !yData) {
+                    alert('WHAT DID YOU DO!? You selected a metric that has no data! HOW?!?!?');
+                    return;
+                }
+
+                const scatterTexts = [];
+                const scatterX = [];
+                const scatterY = [];
+                const scatterColors = [];
+
+                for (let i = 0; i < xData.length; i++) {
+                    if (
+                        xData[i] !== null &&
+                        xData[i] !== undefined &&
+                        yData[i] !== null &&
+                        yData[i] !== undefined &&
+                        !isNaN(xData[i]) &&
+                        !isNaN(yData[i])
+                    ) {
+                        scatterTexts.push(textNames[i]);
+                        scatterX.push(xData[i]);
+                        scatterY.push(yData[i]);
+                        scatterColors.push(i);
+                    }
+                }
+
+                const scatterTrace = {
+                    x: scatterX,
+                    y: scatterY,
+                    mode: 'markers+text',
+                    type: 'scatter',
+                    name: '',
+                    text: scatterTexts,
+                    textposition: 'middle center',
+                    textfont: {
+                        size: CONFIG.pointFontSize,
+                        color: 'black'
+                    },
+                    marker: {
+                        size: CONFIG.normalSize,
+                        color: scatterColors,
+                        colorscale: 'Viridis',
+                        showscale: false,
+                        line: { color: 'black', width: 1 }
+                    },
+                    hovertext: scatterTexts,
+                    hoverinfo: 'text+x+y'
+                };
+
+                const correlation = calculatePearsonCorrelation(xData, yData);
+
+                let title =
+                    `${metricDisplayNames[correlationXMetric]} vs ` +
+                    `${metricDisplayNames[correlationYMetric]}`;
+
+                if (correlation !== null) {
+                    title += `<br><sub>Pearson r = ${correlation.toFixed(3)}</sub>`;
+                }
+
+                const layout = {
+                    title: { text: title, x: 0.5, xanchor: 'center' },
+                    xaxis: {
+                        title: metricDisplayNames[correlationXMetric],
+                        showgrid: true,
+                        gridwidth: 1,
+                        gridcolor: '#e0e0e0'
+                    },
+                    yaxis: {
+                        title: metricDisplayNames[correlationYMetric],
+                        showgrid: true,
+                        gridwidth: 1,
+                        gridcolor: '#e0e0e0'
+                    },
+                    plot_bgcolor: '#f8f9fa',
+                    paper_bgcolor: 'white',
+                    hovermode: 'closest',
+                    showlegend: false,
+                    height: 800,
+                    width: 1200,
+                    font: { family: 'Arial, sans-serif' },
+                    margin: { t: 100, l: 80, r: 80, b: 80 }
+                };
+
+                const regressionType = regressionSelect.value;
+
+                const regressionData = generateRegressionLine(
+                    scatterX,
+                    scatterY,
+                    regressionType
+                );
+
+                const regressionModel = getRegressionModel(
+                    scatterX,
+                    scatterY,
+                    regressionType
+                );
+
+                const traces = [scatterTrace];
+
+                if (regressionData) {
+                    traces.push({
+                        x: regressionData.x,
+                        y: regressionData.y,
+                        mode: 'lines',
+                        type: 'scatter',
+                        name: `${regressionType} fit`,
+                        line: {
+                            color: 'rgba(220, 53, 69, 0.2)',
+                            width: 3,
+                            dash: 'solid'
+                        },
+                        hoverinfo: 'skip',
+                        showlegend: false
+                    });
+                }
+
+                Plotly.newPlot('correlationPlot', traces, layout)
+                    .then(() => {
+                        refreshFocusedTextInCorrelationPlot();
+                    })
+                    .catch(err =>
+                        console.error('[correlation] Plotly.newPlot failed:', err)
+                    );
+
+                setTimeout(() => {
+                    addTextOutlines(
+                        '#correlationPlot .scatterlayer .textpoint text',
+                        'correlationStrokeText'
+                    );
+                }, CONFIG.textOutlineDelay);
+
+                const statsPanel = document.getElementById('correlationStats');
+
+                const statsBody = statsPanel
+                    ? statsPanel.querySelector('.panelBody')
+                    : null;
+
+                const statsTarget = statsBody || statsPanel;
+
+                if (!statsTarget) {
+                    return;
+                }
+
+                while (statsTarget.firstChild) {
+                    statsTarget.removeChild(statsTarget.firstChild);
+                }
+
+                const heading = document.createElement('strong');
+                heading.textContent = 'Correlation Statistics';
+                statsTarget.appendChild(heading);
+
+                const wrapper = document.createElement('div');
+                wrapper.style.marginTop = '8px';
+
+                const nLine = document.createElement('div');
+                nLine.style.marginBottom = '6px';
+                nLine.textContent = `Shample Size: ${scatterX.length}`;
+                wrapper.appendChild(nLine);
+
+                if (correlation !== null) {
+                    const rSquared = formatTrimmedNumber(
+                        correlation * correlation,
+                        4
+                    );
+
+                    const rValue = formatTrimmedNumber(correlation, 4);
+                    const absCorrelation = Math.abs(correlation);
+
+                    let strength = '';
+
+                    if (absCorrelation >= 0.7) {
+                        strength = ' (Strong)';
+                    } else if (absCorrelation >= 0.4) {
+                        strength = ' (Moderate)';
                     } else {
-                        correlationContainer.style.display = 'none';
-                        if (corrControls) corrControls.style.display = 'none';
-                        if (corrStats) corrStats.style.display = 'none';
+                        strength = ' (Weak)';
                     }
 
-                    viewMode = mode;
-                } catch (err) {
-                    console.error('setViewMode failed:', err);
+                    const rLine = document.createElement('div');
+                    rLine.style.marginBottom = '6px';
+                    rLine.textContent = `Pearson r: ${rValue}${strength}`;
+
+                    const r2Line = document.createElement('div');
+                    r2Line.style.marginBottom = '6px';
+                    r2Line.textContent = `R²: ${rSquared}`;
+
+                    wrapper.appendChild(rLine);
+                    wrapper.appendChild(r2Line);
+                } else {
+                    const rLine = document.createElement('div');
+                    rLine.style.marginBottom = '6px';
+                    rLine.textContent = 'Pearson r: unavailable';
+                    wrapper.appendChild(rLine);
+                }
+
+                const xVar = calculateVariance(scatterX);
+                const yVar = calculateVariance(scatterY);
+                const xStd = calculateStdDev(scatterX);
+                const yStd = calculateStdDev(scatterY);
+
+                const xStatsLine = document.createElement('div');
+                xStatsLine.style.marginBottom = '6px';
+                xStatsLine.textContent =
+                    `X variance/std: ${formatTrimmedNumber(xVar, 4)} / ` +
+                    `${formatTrimmedNumber(xStd, 4)}`;
+
+                const yStatsLine = document.createElement('div');
+                yStatsLine.style.marginBottom = '6px';
+                yStatsLine.textContent =
+                    `Y variance/std: ${formatTrimmedNumber(yVar, 4)} / ` +
+                    `${formatTrimmedNumber(yStd, 4)}`;
+
+                wrapper.appendChild(xStatsLine);
+                wrapper.appendChild(yStatsLine);
+
+                const residualRanking = buildResidualRanking(
+                    scatterTexts,
+                    scatterX,
+                    scatterY,
+                    regressionType,
+                    regressionModel
+                );
+
+                if (residualRanking.length) {
+                    const topOutliers = residualRanking.slice(0, 5);
+
+                    const leastOutliers = [...residualRanking]
+                        .slice(-5)
+                        .reverse();
+
+                    const outlierHeading = document.createElement('div');
+                    outlierHeading.style.marginTop = '10px';
+                    outlierHeading.style.marginBottom = '4px';
+                    outlierHeading.style.fontWeight = '600';
+                    outlierHeading.textContent = 'Greatest Outliers';
+                    wrapper.appendChild(outlierHeading);
+
+                    topOutliers.forEach((item, idx) => {
+                        const line = document.createElement('div');
+                        line.style.marginBottom = '3px';
+                        line.textContent =
+                            `${idx + 1}. ${item.text} ` +
+                            `(|res|=${formatTrimmedNumber(item.absResidual, 4)})`;
+                        wrapper.appendChild(line);
+                    });
+
+                    const leastHeading = document.createElement('div');
+                    leastHeading.style.marginTop = '10px';
+                    leastHeading.style.marginBottom = '4px';
+                    leastHeading.style.fontWeight = '600';
+                    leastHeading.textContent = 'Least Outliers';
+                    wrapper.appendChild(leastHeading);
+
+                    leastOutliers.forEach((item, idx) => {
+                        const line = document.createElement('div');
+                        line.style.marginBottom = '3px';
+                        line.textContent =
+                            `${idx + 1}. ${item.text} ` +
+                            `(|res|=${formatTrimmedNumber(item.absResidual, 4)})`;
+                        wrapper.appendChild(line);
+                    });
+                }
+
+                statsTarget.appendChild(wrapper);
+            } catch (err) {
+                console.error('[correlation] updateCorrelationPlot failed:', err);
+
+                const statsPanel = document.getElementById('correlationStats');
+
+                const statsBody = statsPanel
+                    ? statsPanel.querySelector('.panelBody')
+                    : null;
+
+                if (statsBody) {
+                    const msg = err && err.message ? err.message : String(err);
+                    const stack = err && err.stack ? err.stack : '';
+
+                    statsBody.innerHTML =
+                        '<b style="color:#c00;">Correlation error</b><br>' +
+                        '<div style="font-size:11px; margin:4px 0;"><b>' +
+                        msg.replace(/&/g, '&amp;').replace(/</g, '&lt;') +
+                        '</b></div>' +
+                        '<pre style="font-size:9px; white-space:pre-wrap; margin:0;">' +
+                        stack.replace(/&/g, '&amp;').replace(/</g, '&lt;') +
+                        '</pre>';
                 }
             }
+        }
 
-            document.getElementById('toggleViewBtn').addEventListener('click', function() {
+        initializeCorrelationDropdowns();
+
+        function setViewMode(mode) {
+            try {
+                const isCorrelation = mode === 'correlation';
+
+                ['metricPanel', 'colorPanel', 'textPanel'].forEach(id => {
+                    const el = document.getElementById(id);
+                    if (!el) return;
+
+                    if (isCorrelation) {
+                        el.style.display = 'none';
+                    } else {
+                        el.style.display =
+                            id === 'textPanel' ? 'flex' : 'block';
+                    }
+                });
+
+                const corrControls =
+                    document.getElementById('correlationControls');
+
+                const corrStats = document.getElementById('correlationStats');
+
+                if (isCorrelation) {
+                    correlationContainer.style.display = 'flex';
+
+                    if (corrControls) {
+                        corrControls.style.display = 'block';
+                    }
+
+                    if (corrStats) {
+                        corrStats.style.display = 'block';
+                    }
+                } else {
+                    correlationContainer.style.display = 'none';
+
+                    if (corrControls) {
+                        corrControls.style.display = 'none';
+                    }
+
+                    if (corrStats) {
+                        corrStats.style.display = 'none';
+                    }
+                }
+
+                viewMode = mode;
+            } catch (err) {
+                console.error('setViewMode failed:', err);
+            }
+        }
+
+        document
+            .getElementById('toggleViewBtn')
+            .addEventListener('click', function() {
                 if (viewMode === 'umap') {
                     setViewMode('correlation');
                     updateCorrelationPlot();
@@ -1970,27 +2614,54 @@
                 }
             });
 
-            document.getElementById('updateCorrelationBtn').addEventListener('click', updateCorrelationPlot);
+        document
+            .getElementById('updateCorrelationBtn')
+            .addEventListener('click', updateCorrelationPlot);
 
-            if (xMetricSearchInput) xMetricSearchInput.addEventListener('input', initializeCorrelationDropdowns);
-            if (yMetricSearchInput) yMetricSearchInput.addEventListener('input', initializeCorrelationDropdowns);
+        if (xMetricSearchInput) {
+            xMetricSearchInput.addEventListener(
+                'input',
+                initializeCorrelationDropdowns
+            );
+        }
 
-            document.getElementById('regressionType').addEventListener('change', updateCorrelationPlot);
+        if (yMetricSearchInput) {
+            yMetricSearchInput.addEventListener(
+                'input',
+                initializeCorrelationDropdowns
+            );
+        }
 
-            document.getElementById('toggleCorrelationLabelsBtn').addEventListener('click', function() {
+        document
+            .getElementById('regressionType')
+            .addEventListener('change', updateCorrelationPlot);
+
+        document
+            .getElementById('toggleCorrelationLabelsBtn')
+            .addEventListener('click', function() {
                 correlationLabelsVisible = !correlationLabelsVisible;
-                const correlationPlot = document.getElementById('correlationPlot');
-                const displayMode = correlationLabelsVisible ? 'markers+text' : 'markers';
 
-                Plotly.restyle(correlationPlot, {'mode': displayMode}, [0]);
-                this.textContent = correlationLabelsVisible ? 'Hide Labels' : 'Show Labels';
+                const correlationPlot =
+                    document.getElementById('correlationPlot');
+
+                const displayMode = correlationLabelsVisible
+                    ? 'markers+text'
+                    : 'markers';
+
+                Plotly.restyle(correlationPlot, { mode: displayMode }, [0]);
+
+                this.textContent = correlationLabelsVisible
+                    ? 'Hide Labels'
+                    : 'Show Labels';
 
                 if (correlationLabelsVisible) {
                     setTimeout(() => {
-                        addTextOutlines('#correlationPlot .scatterlayer .textpoint text', 'correlationStrokeText');
+                        addTextOutlines(
+                            '#correlationPlot .scatterlayer .textpoint text',
+                            'correlationStrokeText'
+                        );
                     }, CONFIG.textOutlineDelay);
                 }
             });
-
-        });
-    </script>
+    });
+</script>
