@@ -3097,8 +3097,6 @@ class TextClassifier(TextMetricsMixin):
             "__METRIC_NAMES_JSON__": json.dumps(metric_names_dict),
             "__METRIC_COLORScales_JSON__": json.dumps(metric_colorscale_dict),
             "__METRIC_KEYS_JSON__": json.dumps(metric_keys_list),
-            "__PROGRAMMER_NOTES_JSON__": programmer_notes_json,
-            "__ANNOTATIONS_ENABLED_JSON__": annotations_enabled_json,
             "__SEMANTIC_EMBEDDINGS_JSON__": safe_json_dumps(semantic_embeddings),
             "__BURROWS_SIMILARITY_JSON__": safe_json_dumps(burrows_similarity),
             "__LOW_TOKEN_TEXTS_JSON__": json.dumps(

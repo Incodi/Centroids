@@ -3,18 +3,6 @@
         font-family: Arial, sans-serif;
     }
 
-    body,
-    html,
-    div,
-    span,
-    input,
-    button,
-    select,
-    option,
-    textarea {
-        font-family: Arial, sans-serif;
-    }
-
     .js-plotly-plot .hoverlayer,
     .plotly .hoverlayer {
         z-index: 20050;
@@ -35,38 +23,6 @@
         cursor: move;
         user-select: none;
         -webkit-user-select: none;
-    }
-
-    #noteModal {
-        display: none;
-        position: fixed;
-        z-index: 10000;
-        left: 0;
-        top: 0;
-        width: 100%;
-        height: 100%;
-        background-color: rgba(0, 0, 0, 0.5);
-    }
-
-    #noteModalContent {
-        background-color: white;
-        margin: 50px auto;
-        padding: 10px;
-        border: 0.5px solid black;
-        width: 60%;
-        max-height: 70vh;
-        overflow-y: auto;
-    }
-
-    #noteModalClose {
-        float: right;
-        font-size: 20px;
-        cursor: pointer;
-    }
-
-    #noteModalBody {
-        white-space: pre-wrap;
-        word-wrap: break-word;
     }
 
     .plotly-graph-div:not(#correlationPlot) {
@@ -223,8 +179,6 @@
     ];
 
     const metricKeys = __METRIC_KEYS_JSON__;
-    const textAnnotations = __PROGRAMMER_NOTES_JSON__;
-    const annotationsEnabled = __ANNOTATIONS_ENABLED_JSON__;
     const semanticEmbeddings = __SEMANTIC_EMBEDDINGS_JSON__;
     const burrowsSimilarity = __BURROWS_SIMILARITY_JSON__;
     const lowTokenTexts = __LOW_TOKEN_TEXTS_JSON__;
@@ -272,30 +226,6 @@
         textElements.forEach(element => element.classList.add(className));
     }
 
-    function showAnnotationModal(textName) {
-        if (!annotationsEnabled || !textAnnotations[textName]) {
-            return;
-        }
-
-        const modal = document.getElementById('noteModal');
-        const body = document.getElementById('noteModalBody');
-
-        while (body.firstChild) {
-            body.removeChild(body.firstChild);
-        }
-
-        const title = document.createElement('strong');
-        title.textContent = `${textName} annotation:`;
-        body.appendChild(title);
-        body.appendChild(document.createElement('hr'));
-
-        const content = document.createElement('div');
-        content.style.whiteSpace = 'pre-wrap';
-        content.textContent = textAnnotations[textName];
-        body.appendChild(content);
-        modal.style.display = 'block';
-    }
-
     function calculateMetricRange(metricArray) {
         let min = Infinity;
         let max = -Infinity;
@@ -341,6 +271,8 @@
             document.removeEventListener('mouseup', onUp);
         }
 
+        // This project is not meant to be used on mobile devices, 
+        // so we don't handle touch events here.
         handle.addEventListener('mousedown', (e) => {
             const tag = (e.target.tagName || '').toUpperCase();
 
@@ -450,35 +382,6 @@
         }
 
         setTimeout(() => addTextOutlines(), CONFIG.textOutlineDelay);
-
-        if (annotationsEnabled) {
-            const modal = document.createElement('div');
-            modal.id = 'noteModal';
-            modal.innerHTML =
-                '<div id="noteModalContent">' +
-                '<span id="noteModalClose">&times;</span>' +
-                '<div id="noteModalBody"></div>' +
-                '</div>';
-
-            document.body.appendChild(modal);
-
-            document.getElementById('noteModalClose').onclick = () => {
-                modal.style.display = 'none';
-            };
-
-            window.addEventListener('click', (event) => {
-                if (event.target === modal) {
-                    modal.style.display = 'none';
-                }
-            });
-
-            mainPlot.on('plotly_click', (data) => {
-                if (data.points && data.points[0]) {
-                    const textName = textNames[data.points[0].pointIndex];
-                    showAnnotationModal(textName);
-                }
-            });
-        }
 
         const plotObserver = new MutationObserver(() => {
             addTextOutlines();
@@ -1075,7 +978,7 @@
             const fixed = Number(value).toFixed(digits);
 
             const trimmed = fixed
-                .replace(/\.?0+$/, match => (match.startsWith('.') ? '' : ''))
+                .replace(/\.?0+$/, '')
                 .replace(/(\.\d*?[1-9])0+/, '$1');
 
             return trimmed === '-0' ? '0' : trimmed;
@@ -2417,7 +2320,7 @@
 
                 const nLine = document.createElement('div');
                 nLine.style.marginBottom = '6px';
-                nLine.textContent = `Shample Size: ${scatterX.length}`;
+                nLine.textContent = `Sample Size: ${scatterX.length}`;
                 wrapper.appendChild(nLine);
 
                 if (correlation !== null) {
