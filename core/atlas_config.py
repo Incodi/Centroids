@@ -92,9 +92,11 @@ CACHE_FILTER_KEYS = {
     'stat_word_count',
 }
 
-SBERT_MODEL = os.getenv('ATLAS_EMBEDDING_MODEL', 'all-MiniLM-L12-v2')
+SBERT_MODEL = os.getenv('ATLAS_EMBEDDING_MODEL', 'BAAI/bge-small-en-v1.5')
 
 EMBEDDING_MODEL_PROFILES: Dict[str, Dict[str, int]] = {
+    'BAAI/bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
+    'bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
     'thenlper/gte-small': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
     'all-MiniLM-L12-v2': {'context_window': 256, 'chunk_target': 220, 'min_chunk': 160, 'batch_size': 256},
     'my_finetuned_sbert': {'context_window': 256, 'chunk_target': 220, 'min_chunk': 160, 'batch_size': 256},
@@ -108,6 +110,8 @@ MODEL_NAME_ALIASES: Dict[str, str] = {
     'modernbert': 'Alibaba-NLP/gte-modernbert-base',
     'gte-small': 'thenlper/gte-small',
     'gte_small': 'thenlper/gte-small',
+    'bge-small': 'BAAI/bge-small-en-v1.5',
+    'bge_small': 'BAAI/bge-small-en-v1.5',
 }
 
 
