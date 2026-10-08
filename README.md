@@ -2,6 +2,8 @@
 
 An advanced text analysis and visualization tool for comparing linguistic features across large text corpora. Built with YouTube channel analysis in mind, but supports NLTK corpora and custom text directories.
 
+- Currently working to make a demo version of this so it can be easily tested 
+
 ## README is a work in progress
 
 Currently a mix of hand-written notes and AI-assisted drafts. Being cleaned up.
