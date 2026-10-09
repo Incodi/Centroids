@@ -435,8 +435,12 @@ Interactive Plotly visualization with:
 
 ## TODOs
 
-Doctor file to help users download packages before running the program.
-
-Demo file to help users test the program with a small dataset and test the features.
-
 Guide for understanding the structure of data needed to use the YouTube channel part of the program.
+
+Download tool to help download YT videos with the correct structure.
+
+Improving MALLET feature (The feature currently doesn't work on large datasets so I will make it compatible)
+
+Mode to help find what function words are common, uncommon, or rare in a genre.
+
+Actually getting findings from this tool.
