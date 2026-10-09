@@ -304,7 +304,8 @@ Burrows Delta is a stylometric method that analyzes function word usage to ident
 SBERT generates dense vector representations of text that capture semantic meaning, enabling similarity-based clustering and visualization.
 
 **Supported Models**:
-- `all-MiniLM-L12-v2` (default): Fast, good balance of speed/accuracy
+- `bge-small-en-v1.5` (default): Fast, good balance of speed/accuracy. Great accuracy for a small model.
+- `all-MiniLM-L12-v2` : Fast, good balance of speed/accuracy
 - `all-mpnet-base-v2`: Higher accuracy, slower
 - `thenlper/gte-small`: Excellent performance, efficient
 - `Alibaba-NLP/gte-modernbert-base`: Large context window (8192 tokens), state-of-the-art
