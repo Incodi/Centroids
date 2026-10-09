@@ -2,11 +2,31 @@
 
 An advanced text analysis and visualization tool for comparing linguistic features across large text corpora. Built with YouTube channel analysis in mind, but supports NLTK corpora and custom text directories.
 
-- Currently working to make a demo version of this so it can be easily tested 
+## Using the demo
 
-## README is a work in progress
+First check the doctor file to check if you have everything installed:
 
-Currently a mix of hand-written notes and AI-assisted drafts. Being cleaned up.
+```bash
+python core/atlas_doctor.py 
+```
+
+or if you have python 3:
+
+```bash
+python3 core/atlas_doctor.py 
+```
+
+Then when everything is installed try the demo:
+
+```bash
+python core/atlas_demo.py 
+```
+
+or if you have python 3:
+
+```bash
+python3 core/atlas_demo.py 
+```
 
 ## Key Features
 
