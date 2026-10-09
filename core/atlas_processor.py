@@ -2,10 +2,6 @@ import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-import numpy as np
-import torch
-from transformers import AutoModelForCausalLM, AutoTokenizer
-
 from atlas_config import *  # noqa
 from atlas_config import (
     TOKEN_REGEX,
@@ -18,6 +14,10 @@ from atlas_config import (
     vader_analyzer,
 )
 import atlas_config as cfg
+
+import numpy as np
+import torch
+from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
 class TextProcessor:
@@ -83,6 +83,10 @@ class TextProcessor:
     def has_external_document(self, text: str) -> bool:
         return text in self.external_documents
 
+    def get_source_text(self, text: str) -> Optional[str]:
+        external = self.external_documents.get(text)
+        return external[0] if external is not None else None
+
     def _initialize_spacy_model(self):
         if cfg.spacy_nlp is not None:
             return
@@ -108,11 +112,22 @@ class TextProcessor:
             return
 
         print("Loading perplexity model...")
-        perplexity_tokenizer = AutoTokenizer.from_pretrained(model_name)
-        perplexity_model = AutoModelForCausalLM.from_pretrained(model_name)
+        perplexity_tokenizer = AutoTokenizer.from_pretrained(
+            model_name,
+            local_files_only=True,
+        )
+        perplexity_model = AutoModelForCausalLM.from_pretrained(
+            model_name,
+            local_files_only=True,
+        )
         perplexity_model.eval()
 
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        if torch.cuda.is_available():
+            device = torch.device("cuda")
+        elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+            device = torch.device("mps")
+        else:
+            device = torch.device("cpu")
         perplexity_model.to(device)
         print(f"Perplexity model loaded on {device}")
 

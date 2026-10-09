@@ -2,6 +2,7 @@
 README copy.md
 __pycache__/
 *.py[cod]
+demo_output/
 data/
 cache/
 SBERTClustersHD.html

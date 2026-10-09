@@ -4,6 +4,7 @@ import hashlib
 import importlib
 import inspect
 import json
+import logging
 import math
 import os
 import re
@@ -16,6 +17,10 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+
+logging.getLogger('torch.distributed.elastic.multiprocessing.redirects').setLevel(logging.ERROR)
+logging.getLogger('torch.utils._pytree').setLevel(logging.ERROR)
+
 import torch
 from scipy.stats import rankdata
 from sentence_transformers import SentenceTransformer
@@ -212,6 +217,12 @@ class TextClassifier(TextMetricsMixin):
 
         names = [n for n in names if n not in self.CROSS_CHANNEL_METRICS]
 
+        if not self.processor.external_documents:
+            names = [
+                n for n in names
+                if not MetricConfig.METRICS.get(n, {}).get('sentence_metric', False)
+            ]
+
         if skip_centroid_duplicates:
             names = [n for n in names if not MetricConfig.is_centroid_duplicate(n)]
 
@@ -348,7 +359,7 @@ class TextClassifier(TextMetricsMixin):
 
     def _metric_needs_compute(self, name: str, cached_metrics: Dict[str, Any]) -> bool:
         if name not in cached_metrics:
-            return True
+            return self._metric_is_eligible(name)
         if cached_metrics[name] is not None:
             return False
         return self._metric_is_eligible(name)
@@ -388,20 +399,11 @@ class TextClassifier(TextMetricsMixin):
         other_metrics = [name for name in completed if name not in grouped_names]
 
         if word_count_metrics:
-            print(
-                f"      • Word counts ({len(word_count_metrics)}): "
-                f"{self._summarize_metric_names(word_count_metrics)}"
-            )
+            print(f"      • Word counts: {len(word_count_metrics)}")
         if embedding_metrics:
-            print(
-                f"      • Embedding metrics ({len(embedding_metrics)}): "
-                f"{self._summarize_metric_names(embedding_metrics)}"
-            )
+            print(f"      • Embedding metrics: {len(embedding_metrics)}")
         if other_metrics:
-            print(
-                f"      • Other metrics ({len(other_metrics)}): "
-                f"{self._summarize_metric_names(other_metrics)}"
-            )
+            print(f"      • Other metrics: {len(other_metrics)}")
 
         category_buckets: Dict[str, List[str]] = defaultdict(list)
         for metric_name in completed:
@@ -410,28 +412,12 @@ class TextClassifier(TextMetricsMixin):
             )
             category_buckets[str(category)].append(metric_name)
 
-        linguistic_categories = {
-            'Core Linguistic Metrics',
-            'Lexical Diversity',
-            'Syntactic Patterns',
-            'Discourse Markers',
-            'Common Phrases',
-        }
-
         for category_name in sorted(category_buckets):
             names_in_category = category_buckets[category_name]
-            full_list = category_name in linguistic_categories
-            summary = self._summarize_metric_names(
-                names_in_category,
-                max_items=None if full_list else 16,
-            )
-            print(f"      • {category_name} ({len(names_in_category)}): {summary}")
+            print(f"      • {category_name}: {len(names_in_category)}")
 
         if skipped:
-            print(
-                f"      • Skipped/unavailable ({len(skipped)}): "
-                f"{self._summarize_metric_names(skipped)}"
-            )
+            print(f"      • Skipped/unavailable: {len(skipped)}")
 
     @staticmethod
     def _detect_embedding_device() -> str:
@@ -502,7 +488,10 @@ class TextClassifier(TextMetricsMixin):
         mallet_num_topics: int = 0,
     ):
         self.embedding_model_name = resolve_embedding_model_name(embedding_model)
-        self.model = SentenceTransformer(self.embedding_model_name)
+        self.model = SentenceTransformer(
+            self.embedding_model_name,
+            local_files_only=True,
+        )
         profile = get_embedding_model_profile(self.embedding_model_name)
         self.embedding_device = self._detect_embedding_device()
 
@@ -579,6 +568,10 @@ class TextClassifier(TextMetricsMixin):
         self._fighting_words_token_counts: Dict[str, int] = {}
         self._fighting_words_unigrams_centroid: Dict[str, Counter] = {}
         self._fighting_words_token_counts_centroid: Dict[str, int] = {}
+        self._fighting_words_peak_unigrams: Dict[str, str] = {}
+        self._fighting_words_floor_unigrams: Dict[str, str] = {}
+        self._fighting_words_peak_unigrams_centroid: Dict[str, str] = {}
+        self._fighting_words_floor_unigrams_centroid: Dict[str, str] = {}
         self._centroid_equals_stat: Dict[str, bool] = {}
 
         self.centroid_mode = centroid_mode
@@ -702,9 +695,9 @@ class TextClassifier(TextMetricsMixin):
         texts: List[str],
         rank: int,
         use_centroid: bool = False,
-    ) -> Dict[str, Optional[float]]:
+    ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[str]]]:
         if not texts:
-            return {}
+            return {}, {}
 
         source_unigrams = (
             self._fighting_words_unigrams_centroid
@@ -729,7 +722,7 @@ class TextClassifier(TextMetricsMixin):
             token_counts[text] = token_count
 
         if not counters:
-            return {text: None for text in texts}
+            return {text: None for text in texts}, {text: None for text in texts}
 
         total_counts = Counter()
         total_tokens = 0
@@ -738,6 +731,7 @@ class TextClassifier(TextMetricsMixin):
             total_tokens += token_counts[text]
 
         floors: Dict[str, Optional[float]] = {}
+        unigrams: Dict[str, Optional[str]] = {}
 
         for text in texts:
             focus_counts = counters.get(text)
@@ -745,11 +739,13 @@ class TextClassifier(TextMetricsMixin):
 
             if focus_counts is None or focus_token_count <= 0:
                 floors[text] = None
+                unigrams[text] = None
                 continue
 
             rest_token_count = total_tokens - focus_token_count
             if rest_token_count <= 0:
                 floors[text] = None
+                unigrams[text] = None
                 continue
 
             rest_counts = total_counts - focus_counts
@@ -759,10 +755,11 @@ class TextClassifier(TextMetricsMixin):
             ]
             if not candidates:
                 floors[text] = None
+                unigrams[text] = None
                 continue
 
             V = len(candidates)
-            z_scores: List[float] = []
+            z_score_pairs: List[Tuple[float, str]] = []
 
             for phrase in candidates:
                 f_focus = focus_counts[phrase]
@@ -785,23 +782,26 @@ class TextClassifier(TextMetricsMixin):
                     (1.0 / (f_focus + FIGHTING_WORDS_FLOOR_ALPHA))
                     + (1.0 / (f_rest + FIGHTING_WORDS_FLOOR_ALPHA))
                 )
-                z_scores.append(log_odds / math.sqrt(variance))
+                z_score = log_odds / math.sqrt(variance)
+                z_score_pairs.append((z_score, phrase))
 
-            if not z_scores:
+            if not z_score_pairs:
                 floors[text] = None
+                unigrams[text] = None
                 continue
 
-            z_scores.sort(reverse=True)
-            rank_index = min(rank, len(z_scores)) - 1
-            floors[text] = float(z_scores[rank_index])
+            z_score_pairs.sort(reverse=True, key=lambda x: x[0])
+            rank_index = min(rank, len(z_score_pairs)) - 1
+            floors[text] = float(z_score_pairs[rank_index][0])
+            unigrams[text] = z_score_pairs[rank_index][1]
 
-        return floors
+        return floors, unigrams
 
     def _compute_fighting_words_floor_values(
         self,
         texts: List[str],
         use_centroid: bool = False,
-    ) -> Dict[str, Optional[float]]:
+    ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[str]]]:
         return self._compute_fighting_words_values(
             texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=use_centroid
         )
@@ -2063,6 +2063,7 @@ class TextClassifier(TextMetricsMixin):
                 text, cache_filters, video_ids_for_cache,
                 embeddings_only=self.no_metrics,
                 force_latest_cache=self.force_latest_cache,
+                expected_token_count=token_cap,
                 **cache_kwargs,
             )
             if cached is not None and cached.get('mean_emb') is not None:
@@ -2107,7 +2108,23 @@ class TextClassifier(TextMetricsMixin):
                         **({} if self.no_metrics else result_metrics),
                     }
 
-                print(f"    -> {len(missing_metrics)} metrics missing; computing only those")
+                missing_summary = self._summarize_metric_names(
+                    missing_metrics, max_items=None
+                )
+                print(
+                    f"    -> {len(missing_metrics)} metrics missing from cache: "
+                    f"{missing_summary}"
+                )
+
+                uncached_by_fast_mode = [
+                    name for name in missing_metrics
+                    if self.fast_mode and name in ('ngram_entropy_2', 'ngram_entropy_3')
+                ]
+                if uncached_by_fast_mode:
+                    print(
+                        "    -> Not persisted because --fast-mode excludes: "
+                        f"{self._summarize_metric_names(uncached_by_fast_mode, max_items=None)}"
+                    )
 
         result = self.processor.load_video_centroids(
             text, self.centroid_videos, filters, ignore_ids,
@@ -2639,6 +2656,8 @@ class TextClassifier(TextMetricsMixin):
                 header.extend([f'Closest {i}', f'Closest {i} Similarity'])
             for i in range(1, n + 1):
                 header.extend([f'Farthest {i}', f'Farthest {i} Similarity'])
+            if self.compute_fighting_words:
+                header.extend(['Fighting Words Peak Unigram', 'Fighting Words Floor Unigram'])
             writer.writerow(header)
 
             for i, text in enumerate(texts):
@@ -2661,9 +2680,46 @@ class TextClassifier(TextMetricsMixin):
                         row.extend([farthest[j][0], _format_trimmed_decimal(farthest[j][1], 4)])
                     else:
                         row.extend(['', ''])
+                if self.compute_fighting_words:
+                    row.extend([
+                        self._fighting_words_peak_unigrams.get(text, ''),
+                        self._fighting_words_floor_unigrams.get(text, '')
+                    ])
                 writer.writerow(row)
 
         print(f"  Exported: {output_path.absolute()}")
+
+    def export_metrics_csv(
+        self,
+        texts: List[str],
+        metrics_data: Dict[str, np.ndarray],
+        output: str,
+    ):
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        metric_names = [
+            name for name in MetricConfig.get_metric_names()
+            if name in metrics_data and metrics_data[name] is not None
+        ]
+        channel_mode = not self.processor.external_documents
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Text', *metric_names])
+            for index, text in enumerate(texts):
+                label = text
+                if channel_mode and not METRICS_CSV_FULL_CHANNEL_NAMES:
+                    label = text[:5]
+                row = [label]
+                for metric_name in metric_names:
+                    value = metrics_data[metric_name][index]
+                    row.append(
+                        '' if value is None or np.isnan(value)
+                        else _format_trimmed_decimal(float(value), 6)
+                    )
+                writer.writerow(row)
+
+        print(f"  Exported metrics: {output_path.absolute()}")
 
     def visualize(
         self,
@@ -2677,6 +2733,7 @@ class TextClassifier(TextMetricsMixin):
         focus_text: Optional[str] = None,
         semantic_embeddings: Optional[List[List[float]]] = None,
         burrows_similarity: Optional[List[List[float]]] = None,
+        fighting_words_unigrams: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
     ):
         if low_token_texts is None:
             low_token_texts = set()
@@ -2686,6 +2743,8 @@ class TextClassifier(TextMetricsMixin):
             semantic_embeddings = []
         if burrows_similarity is None:
             burrows_similarity = []
+        if fighting_words_unigrams is None:
+            fighting_words_unigrams = {}
 
         exclude_from_hover = {
             'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
@@ -2700,7 +2759,8 @@ class TextClassifier(TextMetricsMixin):
             'window_normalized_lzma_cr',
             'vader_positivity', 'vader_volatility',
             'vader_positivity_centroid', 'vader_volatility_centroid',
-            'fighting_words_floor_z1000', 'fighting_words_floor_z1000_centroid',
+            'fighting_words_peak_z1', 'fighting_words_floor_z1000',
+            'fighting_words_peak_z1_centroid', 'fighting_words_floor_z1000_centroid',
         }
         exclude_from_hover.update({
             metric_name for metric_name in MetricConfig.METRICS
@@ -2779,7 +2839,7 @@ class TextClassifier(TextMetricsMixin):
 
                         if metric_name in [
                             'MTLD', 'TTR', 'MATTR', 'yules_k',
-                            'lexical_density', 'hapax_ratio',
+                            'hapax_ratio',
                             'avg_word_length', 'semantic_disparity',
                             'burrows_cosine_disagreement',
                             'MTLD_centroid', 'MATTR_centroid',
@@ -3102,6 +3162,7 @@ class TextClassifier(TextMetricsMixin):
             "__LOW_TOKEN_TEXTS_JSON__": json.dumps(
                 [tx for tx in texts if tx in low_token_texts]
             ),
+            "__FIGHTING_WORDS_UNIGRAMS_JSON__": safe_json_dumps(fighting_words_unigrams),
             "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
         }
 
@@ -3151,6 +3212,10 @@ class TextClassifier(TextMetricsMixin):
             self._fighting_words_token_counts = {}
             self._fighting_words_unigrams_centroid = {}
             self._fighting_words_token_counts_centroid = {}
+            self._fighting_words_peak_unigrams = {}
+            self._fighting_words_floor_unigrams = {}
+            self._fighting_words_peak_unigrams_centroid = {}
+            self._fighting_words_floor_unigrams_centroid = {}
 
         successful = []
         low_token_texts = set()
@@ -3160,6 +3225,7 @@ class TextClassifier(TextMetricsMixin):
         annotations_enabled = filter_kwargs.get('annotations', False)
 
         for tx in texts:
+            self._current_text_name = tx
             result = self.process_text(tx, ignore_ids=ignore_ids, **filter_kwargs)
             if result is not None:
                 self.embeddings[tx] = result['mean_emb']
@@ -3200,10 +3266,10 @@ class TextClassifier(TextMetricsMixin):
         if self.compute_fighting_words:
             fighting_word_texts = successful
 
-            peak_values = self._compute_fighting_words_values(
+            peak_values, peak_unigrams = self._compute_fighting_words_values(
                 fighting_word_texts, FIGHTING_WORDS_PEAK_RANK, use_centroid=False
             )
-            floor_values = self._compute_fighting_words_values(
+            floor_values, floor_unigrams = self._compute_fighting_words_values(
                 fighting_word_texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=False
             )
 
@@ -3214,16 +3280,19 @@ class TextClassifier(TextMetricsMixin):
                 for tx in fighting_word_texts:
                     metrics_storage[metric_name][tx] = values.get(tx)
 
+            self._fighting_words_peak_unigrams = peak_unigrams
+            self._fighting_words_floor_unigrams = floor_unigrams
+
             any_separate_centroid = any(
                 not self._centroid_equals_stat.get(tx, True)
                 for tx in fighting_word_texts
             )
 
             if any_separate_centroid:
-                peak_values_c = self._compute_fighting_words_values(
+                peak_values_c, peak_unigrams_c = self._compute_fighting_words_values(
                     fighting_word_texts, FIGHTING_WORDS_PEAK_RANK, use_centroid=True
                 )
-                floor_values_c = self._compute_fighting_words_values(
+                floor_values_c, floor_unigrams_c = self._compute_fighting_words_values(
                     fighting_word_texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=True
                 )
                 for metric_name, values in (
@@ -3232,6 +3301,9 @@ class TextClassifier(TextMetricsMixin):
                 ):
                     for tx in fighting_word_texts:
                         metrics_storage[metric_name][tx] = values.get(tx)
+
+                self._fighting_words_peak_unigrams_centroid = peak_unigrams_c
+                self._fighting_words_floor_unigrams_centroid = floor_unigrams_c
 
             print(
                 f"  Fighting-words metrics: peak computed "
@@ -3334,6 +3406,13 @@ class TextClassifier(TextMetricsMixin):
                     f"  Attached {attached} MALLET topic metrics to visualization"
                 )
 
+        if filter_kwargs.get('get_metrics_csv', False):
+            metrics_output = Path(output_csv)
+            metrics_output = metrics_output.with_name(
+                f'{metrics_output.stem}_metrics{metrics_output.suffix}'
+            )
+            self.export_metrics_csv(successful, metrics_data, str(metrics_output))
+
         n_success = len(successful)
         burrows_similarity_matrix = np.zeros((n_success, n_success), dtype=np.float32)
         for i in range(n_success):
@@ -3361,6 +3440,12 @@ class TextClassifier(TextMetricsMixin):
             focus_text=focus_text,
             semantic_embeddings=normalized_embeddings.tolist(),
             burrows_similarity=burrows_similarity_matrix.tolist(),
+            fighting_words_unigrams={
+                FIGHTING_WORDS_PEAK_METRIC: self._fighting_words_peak_unigrams,
+                FIGHTING_WORDS_FLOOR_METRIC: self._fighting_words_floor_unigrams,
+                FIGHTING_WORDS_PEAK_CENTROID_METRIC: self._fighting_words_peak_unigrams_centroid,
+                FIGHTING_WORDS_FLOOR_CENTROID_METRIC: self._fighting_words_floor_unigrams_centroid,
+            },
         )
 
 
@@ -3435,11 +3520,15 @@ Available metrics for --color-by:
     )
 
     parser.add_argument(
-        '--output-csv', default='data/input/text_similarities.csv',
+        '--output-csv', default='data/output/text_similarities.csv',
         help='Output CSV file path',
     )
     parser.add_argument(
-        '--output-html', default='data/input/SBERTClustersHD.html',
+        '--get-metrics-csv', action='store_true',
+        help='Also export one row per text with metric columns to a *_metrics.csv file',
+    )
+    parser.add_argument(
+        '--output-html', default='data/output/SBERTClustersHD.html',
         help='Output HTML visualization file path',
     )
     parser.add_argument('--no-cache', action='store_true', help='Disable embedding cache')
@@ -3459,10 +3548,6 @@ Available metrics for --color-by:
     parser.add_argument(
         '--calculate-perplexity', action='store_true',
         help='Enable perplexity calculation (slower, loads language model)',
-    )
-    parser.add_argument(
-        '--enable-spacy', action='store_true',
-        help='Enable spaCy-dependent metrics such as lexical_density (slower, loads 40MB model)',
     )
     parser.add_argument(
         '--compute-ngram-entropy', action='store_true',
@@ -3760,8 +3845,7 @@ Available metrics for --color-by:
     enable_spacy = (
         (not args.no_metrics)
         and (
-            args.enable_spacy
-            or (active_metric and MetricConfig.requires_spacy_model(active_metric))
+            active_metric and MetricConfig.requires_spacy_model(active_metric)
         )
     )
 
@@ -3834,6 +3918,7 @@ Available metrics for --color-by:
         cluster_variants=args.cluster_variants,
         annotations=args.annotations,
         focus_text=args.focus_text,
+        get_metrics_csv=args.get_metrics_csv,
     )
 
 

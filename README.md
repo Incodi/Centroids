@@ -2,11 +2,31 @@
 
 An advanced text analysis and visualization tool for comparing linguistic features across large text corpora. Built with YouTube channel analysis in mind, but supports NLTK corpora and custom text directories.
 
-- Currently working to make a demo version of this so it can be easily tested 
+## Using the demo
 
-## README is a work in progress
+First check the doctor file to check if you have everything installed:
 
-Currently a mix of hand-written notes and AI-assisted drafts. Being cleaned up.
+```bash
+python core/atlas_doctor.py 
+```
+
+or if you have python 3:
+
+```bash
+python3 core/atlas_doctor.py 
+```
+
+Then when everything is installed try the demo:
+
+```bash
+python core/atlas_demo.py 
+```
+
+or if you have python 3:
+
+```bash
+python3 core/atlas_demo.py 
+```
 
 ## Key Features
 
@@ -114,10 +134,16 @@ Centroid modes control how text embeddings are computed from multiple documents:
 --fast-mode              Skip expensive metrics (fastest mode)
 --word-counts-only       Compute only count-style and regex-pattern metrics
 --calculate-perplexity   Enable GPT-2 perplexity calculation (slower)
---enable-spacy           Enable spaCy metrics like lexical_density (slower)
 --compute-ngram-entropy  Enable n-gram cross-entropy metrics (slower)
 --compute-fighting-words Enable fighting-words peak/floor metrics
+--get-metrics-csv        Also write a <output-csv>_metrics.csv file with one row per text
 ```
+
+The metrics CSV uses metric names as its first row and one text per row. In channel mode,
+text labels are limited to five characters by default; set `METRICS_CSV_FULL_CHANNEL_NAMES`
+in `core/atlas_config.py` to `True` to keep full channel names. External text sources
+(`--nltk-corpus` and `--txt-directory`) also provide `readability` (Flesch Reading Ease)
+and `average_sentence_length` metrics.
 
 ### Clustering & UMAP
 
@@ -278,7 +304,8 @@ Burrows Delta is a stylometric method that analyzes function word usage to ident
 SBERT generates dense vector representations of text that capture semantic meaning, enabling similarity-based clustering and visualization.
 
 **Supported Models**:
-- `all-MiniLM-L12-v2` (default): Fast, good balance of speed/accuracy
+- `bge-small-en-v1.5` (default): Fast, good balance of speed/accuracy. Great accuracy for a small model.
+- `all-MiniLM-L12-v2` : Fast, good balance of speed/accuracy
 - `all-mpnet-base-v2`: Higher accuracy, slower
 - `thenlper/gte-small`: Excellent performance, efficient
 - `Alibaba-NLP/gte-modernbert-base`: Large context window (8192 tokens), state-of-the-art
@@ -342,10 +369,9 @@ The Focus Text feature enables interactive similarity mapping to explore relatio
 - **Yule's K**: Vocabulary richness statistic
 - **Average Word Length**: Character-level measure
 - **Word Burstiness**: Gini coefficient of word frequency distribution
-- **Semantic Disparity**: Spread of word meanings (requires spaCy)
+- **Semantic Disparity**: Spread of word meanings 
 - **Unique Bigrams/Trigrams**: N-gram diversity
 - **Hapax/Dis Legomena**: Words used once or twice
-- **Lexical Density**: Content word ratio (requires spaCy)
 
 ### Sentiment & Tone
 - **VADER Positivity**: Positive sentiment ratio
