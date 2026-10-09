@@ -95,9 +95,9 @@ CACHE_FILTER_KEYS = {
 SBERT_MODEL = os.getenv('ATLAS_EMBEDDING_MODEL', 'BAAI/bge-small-en-v1.5')
 
 EMBEDDING_MODEL_PROFILES: Dict[str, Dict[str, int]] = {
-    'BAAI/bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
-    'bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
-    'thenlper/gte-small': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 384, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
+    'BAAI/bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 512, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
+    'bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 512, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
+    'thenlper/gte-small': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 512, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
     'all-MiniLM-L12-v2': {'context_window': 256, 'chunk_target': 220, 'min_chunk': 160, 'batch_size': 256},
     'my_finetuned_sbert': {'context_window': 256, 'chunk_target': 220, 'min_chunk': 160, 'batch_size': 256},
     'all-MiniLM-L6-v2': {'context_window': 256, 'chunk_target': 220, 'min_chunk': 160, 'batch_size': 256},
@@ -130,9 +130,9 @@ def get_embedding_model_profile(model_name: str) -> Dict[str, int]:
         'chunk_target': 384,
         'min_chunk': 256,
         'batch_size': 128,
-        'practical_max_tokens_cpu': 384,
+        'practical_max_tokens_cpu': 512,
         'practical_max_tokens_mps': 512,
-        'practical_max_tokens_cuda': 1024,
+        'practical_max_tokens_cuda': 512,
     }
 
 
@@ -428,6 +428,7 @@ def _install_spacy_model(model_name: str = "en_core_web_sm"):
 
 
 METRICS_VERSION = 3
+METRICS_CSV_FULL_CHANNEL_NAMES = False
 FIGHTING_WORDS_PEAK_METRIC = 'fighting_words_peak_z1'
 FIGHTING_WORDS_FLOOR_METRIC = 'fighting_words_floor_z1000'
 FIGHTING_WORDS_PEAK_CENTROID_METRIC = 'fighting_words_peak_z1_centroid'
@@ -473,6 +474,8 @@ class MetricConfig:
         'MTLD_centroid': {'name': 'MTLD (Centroid)', 'title_suffix': 'MTLD on centroid tokens', 'compute_method': '_compute_MTLD_score', 'centroid_metric': True, 'centroid_duplicate': True, 'category': 'Core Linguistic Metrics'},
         'MATTR': {'name': 'MATTR', 'title_suffix': 'MATTR (Moving Average Type-Token Ratio, window=25)', 'compute_method': '_compute_MATTR', 'category': 'Core Linguistic Metrics'},
         'MATTR_centroid': {'name': 'MATTR (Centroid)', 'title_suffix': 'MATTR on centroid tokens', 'compute_method': '_compute_MATTR', 'centroid_metric': True, 'centroid_duplicate': True, 'category': 'Core Linguistic Metrics'},
+        'readability': {'name': 'Readability (Flesch)', 'title_suffix': 'Flesch Reading Ease', 'compute_method': '_compute_readability', 'sentence_metric': True, 'category': 'Sentence Metrics'},
+        'average_sentence_length': {'name': 'Average Sentence Length', 'title_suffix': 'Average Sentence Length (words)', 'compute_method': '_compute_average_sentence_length', 'sentence_metric': True, 'category': 'Sentence Metrics'},
         'avg_words_per_video': {'name': 'Average Words per Video', 'title_suffix': 'Average words per centroid video', 'compute_method': '_compute_avg_words_per_video', 'centroid_metric': True, 'video_centroid_only': True, 'category': 'Core Linguistic Metrics'},
         'dev_specialty_count': {'name': 'Dev\'s Specialty Markers', 'title_suffix': 'count of "this is a"', 'compute_method': '_compute_dev_specialty_count', 'category': 'Core Linguistic Metrics'},
         'custom_marker_count': {'name': 'Smore markers', 'title_suffix': 'count of I think, probably, maybe, I feel like', 'compute_method': '_compute_custom_marker_count', 'category': 'Core Linguistic Metrics'},
@@ -495,7 +498,6 @@ class MetricConfig:
         'moving_unique_bigrams': {'name': 'Window Unique Bigrams', 'title_suffix': 'Avg Unique Bigrams per 5k Chunk', 'compute_method': '_compute_moving_unique_bigrams', 'category': 'Lexical Diversity'},
         'unique_trigrams': {'name': 'Unique Trigrams', 'title_suffix': 'Unique Trigram Count', 'compute_method': '_compute_unique_trigrams', 'category': 'Lexical Diversity'},
         'moving_unique_trigrams': {'name': 'Window Unique Trigrams', 'title_suffix': 'Avg Unique Trigrams per 5k Chunk', 'compute_method': '_compute_moving_unique_trigrams', 'category': 'Lexical Diversity'},
-        'lexical_density': {'name': 'Lexical Density', 'title_suffix': 'Lexical Density (Content Words)', 'compute_method': '_compute_lexical_density', 'requires_spacy_model': True, 'category': 'Lexical Diversity'},
         'hapax_ratio': {'name': 'Hapax Legomena Ratio', 'title_suffix': 'Hapax Legomena Ratio (Words Used Once)', 'compute_method': '_compute_hapax_ratio', 'category': 'Lexical Diversity'},
         'dis_ratio': {'name': 'Dis Legomena Ratio', 'title_suffix': 'Dis Legomena Ratio (Words Used Twice)', 'compute_method': '_compute_dis_ratio', 'category': 'Lexical Diversity'},
 

@@ -10,7 +10,6 @@ sys.path.insert(0, str(Path(__file__).parent))
 from atlas import TextClassifier
 
 def setup_nltk_gutenberg_demo():
-    """Set up demo using NLTK Gutenberg corpus in text mode (each text is its own category)."""
     import nltk
     from nltk.corpus import gutenberg
 

@@ -1,9 +1,13 @@
 import os
 import sys
 import shutil
+import logging
 import platform
 from pathlib import Path
 from typing import List, Tuple, Optional
+
+logging.getLogger('torch.distributed.elastic.multiprocessing.redirects').setLevel(logging.ERROR)
+logging.getLogger('torch.utils._pytree').setLevel(logging.ERROR)
 
 try:
     import psutil

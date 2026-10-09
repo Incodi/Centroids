@@ -182,6 +182,7 @@
     const semanticEmbeddings = __SEMANTIC_EMBEDDINGS_JSON__;
     const burrowsSimilarity = __BURROWS_SIMILARITY_JSON__;
     const lowTokenTexts = __LOW_TOKEN_TEXTS_JSON__;
+    const fightingWordsUnigrams = __FIGHTING_WORDS_UNIGRAMS_JSON__;
 
     const FOCUS_OVERLAY_META = 'focusOverlay';
     const CORR_FOCUS_OVERLAY_META = 'corrFocusOverlay';
@@ -1152,9 +1153,12 @@
             textsWithValues.forEach((text, position) => {
                 const listItem = document.createElement('div');
                 const valueDisplay = formatTrimmedNumber(text.value, 4);
+                const unigramMap = fightingWordsUnigrams[currentMetric];
+                const unigram = unigramMap ? unigramMap[text.name] : null;
+                const unigramDisplay = unigram ? ` ${unigram}` : '';
 
                 listItem.textContent =
-                    `${position + 1}. ${text.name} (${valueDisplay})`;
+                    `${position + 1}. ${text.name} (${valueDisplay})${unigramDisplay}`;
                 listItem.title = 'Click to highlight on graph';
 
                 if (text.index === focusedTextIndex) {

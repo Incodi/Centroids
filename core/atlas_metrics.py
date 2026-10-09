@@ -13,6 +13,46 @@ from typing import Dict, List, Optional, Tuple
 
 class TextMetricsMixin:
 
+    def _get_sentence_metrics_text(self) -> str:
+        text_name = getattr(self, '_current_text_name', None)
+        processor = getattr(self, 'processor', None)
+        if not text_name or processor is None:
+            return ''
+        return processor.get_source_text(text_name) or ''
+
+    @staticmethod
+    def _sentence_word_lists(text: str) -> List[List[str]]:
+        sentences = re.split(r'[.!?]+(?:\s+|$)', text)
+        return [
+            re.findall(r"[A-Za-z0-9]+(?:['-][A-Za-z0-9]+)*", sentence)
+            for sentence in sentences
+            if sentence.strip()
+        ]
+
+    @staticmethod
+    def _estimate_syllables(word: str) -> int:
+        normalized = re.sub(r'[^a-z]', '', word.lower())
+        if not normalized:
+            return 0
+        groups = len(re.findall(r'[aeiouy]+', normalized))
+        if normalized.endswith('e') and groups > 1:
+            groups -= 1
+        return max(1, groups)
+
+    def _compute_average_sentence_length(self, tokens: List[str]) -> float:
+        sentences = self._sentence_word_lists(self._get_sentence_metrics_text())
+        lengths = [len(sentence) for sentence in sentences if sentence]
+        return float(np.mean(lengths)) if lengths else 0.0
+
+    def _compute_readability(self, tokens: List[str]) -> float:
+        sentences = self._sentence_word_lists(self._get_sentence_metrics_text())
+        words = [word for sentence in sentences for word in sentence]
+        if not sentences or not words:
+            return 0.0
+        average_sentence_length = len(words) / len(sentences)
+        average_syllables = sum(self._estimate_syllables(word) for word in words) / len(words)
+        return float(206.835 - (1.015 * average_sentence_length) - (84.6 * average_syllables))
+
     def _compute_TTR(self, tokens: List[str]) -> float:
         if not tokens:
             return 0.0
@@ -258,19 +298,6 @@ class TextMetricsMixin:
                 trigrams = {(chunk_tokens[j], chunk_tokens[j + 1], chunk_tokens[j + 2]) for j in range(len(chunk_tokens) - 2)}
                 trigram_counts.append(float(len(trigrams)))
         return float(np.mean(trigram_counts)) if trigram_counts else 0.0
-
-    def _compute_lexical_density(self, tokens: List[str]) -> float:
-        if not tokens or len(tokens) < 10:
-            return 0.0
-        try:
-            stats = self._get_runtime_spacy_stats(tokens)
-            if stats is None:
-                return 0.0
-            total_content = int(stats.get('total_content', 0))
-            total_valid = int(stats.get('total_valid', 0))
-            return float(total_content / total_valid) if total_valid > 0 else 0.0
-        except Exception:
-            return 0.0
 
     def _compute_hapax_ratio(self, tokens: List[str], freq_counter: Optional[Counter] = None) -> float:
         if not tokens or len(tokens) < 10:

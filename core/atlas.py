@@ -217,6 +217,12 @@ class TextClassifier(TextMetricsMixin):
 
         names = [n for n in names if n not in self.CROSS_CHANNEL_METRICS]
 
+        if not self.processor.external_documents:
+            names = [
+                n for n in names
+                if not MetricConfig.METRICS.get(n, {}).get('sentence_metric', False)
+            ]
+
         if skip_centroid_duplicates:
             names = [n for n in names if not MetricConfig.is_centroid_duplicate(n)]
 
@@ -353,7 +359,7 @@ class TextClassifier(TextMetricsMixin):
 
     def _metric_needs_compute(self, name: str, cached_metrics: Dict[str, Any]) -> bool:
         if name not in cached_metrics:
-            return True
+            return self._metric_is_eligible(name)
         if cached_metrics[name] is not None:
             return False
         return self._metric_is_eligible(name)
@@ -482,7 +488,10 @@ class TextClassifier(TextMetricsMixin):
         mallet_num_topics: int = 0,
     ):
         self.embedding_model_name = resolve_embedding_model_name(embedding_model)
-        self.model = SentenceTransformer(self.embedding_model_name)
+        self.model = SentenceTransformer(
+            self.embedding_model_name,
+            local_files_only=True,
+        )
         profile = get_embedding_model_profile(self.embedding_model_name)
         self.embedding_device = self._detect_embedding_device()
 
@@ -2054,6 +2063,7 @@ class TextClassifier(TextMetricsMixin):
                 text, cache_filters, video_ids_for_cache,
                 embeddings_only=self.no_metrics,
                 force_latest_cache=self.force_latest_cache,
+                expected_token_count=token_cap,
                 **cache_kwargs,
             )
             if cached is not None and cached.get('mean_emb') is not None:
@@ -2098,7 +2108,23 @@ class TextClassifier(TextMetricsMixin):
                         **({} if self.no_metrics else result_metrics),
                     }
 
-                print(f"    -> {len(missing_metrics)} metrics missing; computing only those")
+                missing_summary = self._summarize_metric_names(
+                    missing_metrics, max_items=None
+                )
+                print(
+                    f"    -> {len(missing_metrics)} metrics missing from cache: "
+                    f"{missing_summary}"
+                )
+
+                uncached_by_fast_mode = [
+                    name for name in missing_metrics
+                    if self.fast_mode and name in ('ngram_entropy_2', 'ngram_entropy_3')
+                ]
+                if uncached_by_fast_mode:
+                    print(
+                        "    -> Not persisted because --fast-mode excludes: "
+                        f"{self._summarize_metric_names(uncached_by_fast_mode, max_items=None)}"
+                    )
 
         result = self.processor.load_video_centroids(
             text, self.centroid_videos, filters, ignore_ids,
@@ -2663,6 +2689,38 @@ class TextClassifier(TextMetricsMixin):
 
         print(f"  Exported: {output_path.absolute()}")
 
+    def export_metrics_csv(
+        self,
+        texts: List[str],
+        metrics_data: Dict[str, np.ndarray],
+        output: str,
+    ):
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        metric_names = [
+            name for name in MetricConfig.get_metric_names()
+            if name in metrics_data and metrics_data[name] is not None
+        ]
+        channel_mode = not self.processor.external_documents
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Text', *metric_names])
+            for index, text in enumerate(texts):
+                label = text
+                if channel_mode and not METRICS_CSV_FULL_CHANNEL_NAMES:
+                    label = text[:5]
+                row = [label]
+                for metric_name in metric_names:
+                    value = metrics_data[metric_name][index]
+                    row.append(
+                        '' if value is None or np.isnan(value)
+                        else _format_trimmed_decimal(float(value), 6)
+                    )
+                writer.writerow(row)
+
+        print(f"  Exported metrics: {output_path.absolute()}")
+
     def visualize(
         self,
         reduced: np.ndarray,
@@ -2675,6 +2733,7 @@ class TextClassifier(TextMetricsMixin):
         focus_text: Optional[str] = None,
         semantic_embeddings: Optional[List[List[float]]] = None,
         burrows_similarity: Optional[List[List[float]]] = None,
+        fighting_words_unigrams: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
     ):
         if low_token_texts is None:
             low_token_texts = set()
@@ -2684,6 +2743,8 @@ class TextClassifier(TextMetricsMixin):
             semantic_embeddings = []
         if burrows_similarity is None:
             burrows_similarity = []
+        if fighting_words_unigrams is None:
+            fighting_words_unigrams = {}
 
         exclude_from_hover = {
             'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
@@ -2698,7 +2759,8 @@ class TextClassifier(TextMetricsMixin):
             'window_normalized_lzma_cr',
             'vader_positivity', 'vader_volatility',
             'vader_positivity_centroid', 'vader_volatility_centroid',
-            'fighting_words_floor_z1000', 'fighting_words_floor_z1000_centroid',
+            'fighting_words_peak_z1', 'fighting_words_floor_z1000',
+            'fighting_words_peak_z1_centroid', 'fighting_words_floor_z1000_centroid',
         }
         exclude_from_hover.update({
             metric_name for metric_name in MetricConfig.METRICS
@@ -2777,7 +2839,7 @@ class TextClassifier(TextMetricsMixin):
 
                         if metric_name in [
                             'MTLD', 'TTR', 'MATTR', 'yules_k',
-                            'lexical_density', 'hapax_ratio',
+                            'hapax_ratio',
                             'avg_word_length', 'semantic_disparity',
                             'burrows_cosine_disagreement',
                             'MTLD_centroid', 'MATTR_centroid',
@@ -2797,14 +2859,6 @@ class TextClassifier(TextMetricsMixin):
                             stats_column += f"{display_name}: {metric_values[i]:.1f}<br>"
                         else:
                             stats_column += f"{display_name}: {int(metric_values[i])}<br>"
-
-                if self.compute_fighting_words:
-                    peak_unigram = self._fighting_words_peak_unigrams.get(text, '')
-                    floor_unigram = self._fighting_words_floor_unigrams.get(text, '')
-                    if peak_unigram:
-                        stats_column += f"Fighting Words Peak Unigram: {peak_unigram}<br>"
-                    if floor_unigram:
-                        stats_column += f"Fighting Words Floor Unigram: {floor_unigram}<br>"
 
             if enable_annotations:
                 message = None
@@ -3108,6 +3162,7 @@ class TextClassifier(TextMetricsMixin):
             "__LOW_TOKEN_TEXTS_JSON__": json.dumps(
                 [tx for tx in texts if tx in low_token_texts]
             ),
+            "__FIGHTING_WORDS_UNIGRAMS_JSON__": safe_json_dumps(fighting_words_unigrams),
             "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
         }
 
@@ -3170,6 +3225,7 @@ class TextClassifier(TextMetricsMixin):
         annotations_enabled = filter_kwargs.get('annotations', False)
 
         for tx in texts:
+            self._current_text_name = tx
             result = self.process_text(tx, ignore_ids=ignore_ids, **filter_kwargs)
             if result is not None:
                 self.embeddings[tx] = result['mean_emb']
@@ -3350,6 +3406,13 @@ class TextClassifier(TextMetricsMixin):
                     f"  Attached {attached} MALLET topic metrics to visualization"
                 )
 
+        if filter_kwargs.get('get_metrics_csv', False):
+            metrics_output = Path(output_csv)
+            metrics_output = metrics_output.with_name(
+                f'{metrics_output.stem}_metrics{metrics_output.suffix}'
+            )
+            self.export_metrics_csv(successful, metrics_data, str(metrics_output))
+
         n_success = len(successful)
         burrows_similarity_matrix = np.zeros((n_success, n_success), dtype=np.float32)
         for i in range(n_success):
@@ -3377,6 +3440,12 @@ class TextClassifier(TextMetricsMixin):
             focus_text=focus_text,
             semantic_embeddings=normalized_embeddings.tolist(),
             burrows_similarity=burrows_similarity_matrix.tolist(),
+            fighting_words_unigrams={
+                FIGHTING_WORDS_PEAK_METRIC: self._fighting_words_peak_unigrams,
+                FIGHTING_WORDS_FLOOR_METRIC: self._fighting_words_floor_unigrams,
+                FIGHTING_WORDS_PEAK_CENTROID_METRIC: self._fighting_words_peak_unigrams_centroid,
+                FIGHTING_WORDS_FLOOR_CENTROID_METRIC: self._fighting_words_floor_unigrams_centroid,
+            },
         )
 
 
@@ -3451,11 +3520,15 @@ Available metrics for --color-by:
     )
 
     parser.add_argument(
-        '--output-csv', default='data/input/text_similarities.csv',
+        '--output-csv', default='data/output/text_similarities.csv',
         help='Output CSV file path',
     )
     parser.add_argument(
-        '--output-html', default='data/input/SBERTClustersHD.html',
+        '--get-metrics-csv', action='store_true',
+        help='Also export one row per text with metric columns to a *_metrics.csv file',
+    )
+    parser.add_argument(
+        '--output-html', default='data/output/SBERTClustersHD.html',
         help='Output HTML visualization file path',
     )
     parser.add_argument('--no-cache', action='store_true', help='Disable embedding cache')
@@ -3475,10 +3548,6 @@ Available metrics for --color-by:
     parser.add_argument(
         '--calculate-perplexity', action='store_true',
         help='Enable perplexity calculation (slower, loads language model)',
-    )
-    parser.add_argument(
-        '--enable-spacy', action='store_true',
-        help='Enable spaCy-dependent metrics such as lexical_density (slower, loads 40MB model)',
     )
     parser.add_argument(
         '--compute-ngram-entropy', action='store_true',
@@ -3776,8 +3845,7 @@ Available metrics for --color-by:
     enable_spacy = (
         (not args.no_metrics)
         and (
-            args.enable_spacy
-            or (active_metric and MetricConfig.requires_spacy_model(active_metric))
+            active_metric and MetricConfig.requires_spacy_model(active_metric)
         )
     )
 
@@ -3850,6 +3918,7 @@ Available metrics for --color-by:
         cluster_variants=args.cluster_variants,
         annotations=args.annotations,
         focus_text=args.focus_text,
+        get_metrics_csv=args.get_metrics_csv,
     )
 
 

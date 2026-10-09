@@ -114,10 +114,16 @@ Centroid modes control how text embeddings are computed from multiple documents:
 --fast-mode              Skip expensive metrics (fastest mode)
 --word-counts-only       Compute only count-style and regex-pattern metrics
 --calculate-perplexity   Enable GPT-2 perplexity calculation (slower)
---enable-spacy           Enable spaCy metrics like lexical_density (slower)
 --compute-ngram-entropy  Enable n-gram cross-entropy metrics (slower)
 --compute-fighting-words Enable fighting-words peak/floor metrics
+--get-metrics-csv        Also write a <output-csv>_metrics.csv file with one row per text
 ```
+
+The metrics CSV uses metric names as its first row and one text per row. In channel mode,
+text labels are limited to five characters by default; set `METRICS_CSV_FULL_CHANNEL_NAMES`
+in `core/atlas_config.py` to `True` to keep full channel names. External text sources
+(`--nltk-corpus` and `--txt-directory`) also provide `readability` (Flesch Reading Ease)
+and `average_sentence_length` metrics.
 
 ### Clustering & UMAP
 
@@ -342,10 +348,9 @@ The Focus Text feature enables interactive similarity mapping to explore relatio
 - **Yule's K**: Vocabulary richness statistic
 - **Average Word Length**: Character-level measure
 - **Word Burstiness**: Gini coefficient of word frequency distribution
-- **Semantic Disparity**: Spread of word meanings (requires spaCy)
+- **Semantic Disparity**: Spread of word meanings 
 - **Unique Bigrams/Trigrams**: N-gram diversity
 - **Hapax/Dis Legomena**: Words used once or twice
-- **Lexical Density**: Content word ratio (requires spaCy)
 
 ### Sentiment & Tone
 - **VADER Positivity**: Positive sentiment ratio
