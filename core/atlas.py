@@ -125,20 +125,20 @@ class TextClassifier(TextMetricsMixin):
     CROSS_CHANNEL_METRICS = {'burrows_cosine_disagreement'}
 
     BURROWS_FUNCTION_WORDS = tuple(sorted({
-        'i', 'you', 'he', 'she', 'it', 'we', 'they',
-        'me', 'him', 'her', 'us', 'them',
+        'i', 'you', 'he', 'it', 'we', 'they',
+        'me', 'him', 'us', 'them',
         'my', 'your', 'his', 'its', 'our', 'their', 'mine', 'yours', 'ours', 'theirs',
-        'myself', 'yourself', 'himself', 'herself', 'themselves',
+        'myself', 'yourself', 'himself', 'themselves',
         'be', 'is', 'am', 'are', 'was', 'were', 'been', 'being',
         'have', 'has', 'had', 'having',
         'do', 'does', 'did', 'doing',
-        'will', 'would', 'shall', 'should', 'can', 'could', 'may', 'might', 'must',
+        'will', 'would', 'should', 'can', 'could', 'may', 'might', 'must',
         'to', 'of', 'and', 'a', 'in', 'that', 'for', 'not', 'on', 'with', 'as', 'at',
-        'but', 'by', 'from', 'or', 'an', 'up', 'out', 'if', 'about', 'over',
-        'after', 'because', 'any', 'than', 'into', 'through', 'down', 'before', 'between',
+        'but', 'by', 'from', 'or', 'an', 'if', 'about', 
+        'after', 'because', 'any', 'than', 'into', 'through', 'before', 
         'this', 'these', 'those', 'there', 'what', 'so', 'who', 'which', 'when',
-        'no', 'nor', 'only', 'other', 'some', 'then', 'now', 'look', 'come', 'go', 'get',
-        'take', 'see', 'think', 'also', 'back', 'use', 'how', 'even', 'want', 'give',
+        'no', 'only', 'other', 'some', 'then', 'now', 'look', 'come', 'go', 'get',
+        'take', 'see', 'think', 'also', 'use', 'how', 'even', 'want', 'give',
         'most', 'each', 'every', 'both', 'few', 'more', 'such', 'own', 'same', 'too',
         'very', 'just', 'here', 'why', 'once', 'the',
         'oh', 'yeah', 'yes', 'okay', 'ok', 'like', 'well', 'uh', 'um', 'right',
@@ -149,7 +149,7 @@ class TextClassifier(TextMetricsMixin):
         "i'm": "i am", "i've": "i have", "i'd": "i would", "i'll": "i will",
         "you're": "you are", "you've": "you have", "you'd": "you would", "you'll": "you will",
         "he's": "he is", "he'd": "he would", "he'll": "he will",
-        "she's": "she is", "she'd": "she would", "she'll": "she will",
+        "she's": "he is", "he'd": "he would", "he'll": "he will",
         "it's": "it is", "it'd": "it would", "it'll": "it will",
         "we're": "we are", "we've": "we have", "we'd": "we would", "we'll": "we will",
         "they're": "they are", "they've": "they have", "they'd": "they would", "they'll": "they will",
@@ -161,6 +161,12 @@ class TextClassifier(TextMetricsMixin):
         "can't": "can not", "couldn't": "could not", "won't": "will not", "wouldn't": "would not",
         "shouldn't": "should not", "mustn't": "must not", "let's": "let us",
         "y'all": "you all",
+        # we are going to make all gendered pronouns into one token for Burrows distance.
+        # this prevents female writers from being clustered together and properly placed in a niche.
+        # but we will have to use the male version of the word due to the commonality of it in texts.
+        "her": "him",
+        "she": "he",
+        "herself": "himself",
     }
 
     @classmethod
