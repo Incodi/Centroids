@@ -65,9 +65,53 @@ data/input/
       ...
     metadata.json       (optional — YouTube-style fields)
     tag.txt             (optional — short text shown under the channel name in hover)
+    archive.txt         (you do not need this but recommend it if you are downloading directly into data/input)
   another_channel/
     txt_files/
       ...
+```
+
+### Example channel metadata
+
+The format was created and modified after downloading from yt-dlp, Youtube Data API has a different format.
+
+For now, the filters look for this format.
+
+```
+[
+  {
+    "id": "dQw4w9WgXcQ",
+    "title": "I put my favorite channels into Centroids!",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "upload_date": "20250905",
+    "duration": 1917,
+    "view_count": 12474,
+    "like_count": 897,
+    "comment_count": 65,
+    "was_live": false,
+    "is_live": false,
+    "channel_name": "thename",
+    "channel_id": "UCjs2omu0U4AO0kxhGIzfuni",
+    "subscriber_count": 120,
+    "category": "Science & Technology"
+  },
+  {
+    "id": "dQw4w9WgXcR",
+    "title": "What Youtuber is the most mathematically similar Youtuber to MrBeast?",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcR",
+    "upload_date": "20250902",
+    "duration": 1147,
+    "view_count": 14395,
+    "like_count": 1100,
+    "comment_count": 87,
+    "was_live": false,
+    "is_live": false,
+    "channel_name": "thename",
+    "channel_id": "UCjs2omu0U4AO0kxhGIzfuni",
+    "subscriber_count": 120,
+    "category": "Science & Technology"
+  }
+]
 ```
 
 Each `.txt` file is treated as one document. In video-centroid mode, the N most recent documents become the text's centroid; in word-centroid mode, the last N words across all documents do.
@@ -441,6 +485,6 @@ Download tool to help download YT videos with the correct structure.
 
 Improving MALLET feature (The feature currently doesn't work on large datasets so I will make it compatible)
 
-Mode to help find what function words are common, uncommon, or rare in a genre.
+Experimental mode to help find what function words are common, uncommon, or rare in a text and genre.
 
 Actually getting findings from this tool.
