@@ -310,6 +310,10 @@ python3 core/atlas.py \
 
 MALLET (MAchine Learning for LanguagE Toolkit) LDA (Latent Dirichlet Allocation) automatically discovers thematic topics in your corpus.
 
+Make sure your corpus is not too big as there will be complications.
+
+Training can take days if run on a giant corpus.
+
 **Usage**: `--mallet-topics N` where N is the number of topics
 
 **How it works**:
@@ -483,8 +487,12 @@ Guide for understanding the structure of data needed to use the YouTube channel 
 
 Download tool to help download YT videos with the correct structure.
 
-Improving MALLET feature (The feature currently doesn't work on large datasets so I will make it compatible)
+Design CSVs to work well with PowerBI and Tableau.
 
-Experimental mode to help find what function words are common, uncommon, or rare in a text and genre.
+In progress: Improving MALLET feature (Putting limits into place, making options to help deal with large corpora).
+
+In progress: Experimental mode to help find what function words are common, uncommon, or rare in a text and genre.
+
+Current: Learn about PyTest and Playwright to test functions and web display. 
 
 Actually getting findings from this tool.
