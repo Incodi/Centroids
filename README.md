@@ -2,6 +2,8 @@
 
 An advanced text analysis and visualization tool for comparing linguistic features across large text corpora. Built with YouTube channel analysis in mind, but supports NLTK corpora and custom text directories.
 
+Check out the [wiki!](https://github.com/Incodi/Centroids/wiki)
+
 ## Using the demo
 
 First check the doctor file to check if you have everything installed:
