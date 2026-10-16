@@ -498,3 +498,15 @@ In progress: Experimental mode to help find what function words are common, unco
 Current: Learn about PyTest and Playwright to test functions and web display. 
 
 Actually getting findings from this tool.
+
+## Issues
+
+Problem: Installing Centroids is painful because of mixed dependencies 
+such as Python packages, Java/MALLET, NLTK data, spaCy models, torch/SBERT
+
+Maybe use Docker to wrap it into a container? pyproject.toml + shell script to create venv and download models
+
+Consider replacing MALLET with tomotopy to drop the Java dependency
+
+
+
