@@ -1,5 +1,3 @@
-import os
-import shutil
 import sys
 import time
 import webbrowser
@@ -16,14 +14,6 @@ def setup_nltk_gutenberg_demo():
     print("Downloading NLTK Gutenberg corpus...")
     nltk.download('gutenberg', quiet=True)
     nltk.download('punkt', quiet=True)
-
-    base_dir = Path(__file__).resolve().parents[1]
-    input_dir = base_dir / 'data' / 'input'
-
-    if input_dir.exists():
-        shutil.rmtree(input_dir)
-
-    input_dir.mkdir(parents=True, exist_ok=True)
 
     # List of Gutenberg texts to use
     file_ids = [
@@ -44,25 +34,19 @@ def setup_nltk_gutenberg_demo():
         'chesterton-ball.txt'
     ]
 
-    texts = []
+    documents = {}
 
     for file_id in file_ids:
         try:
             text = gutenberg.raw(file_id)
             # Create category name from file_id (remove .txt extension)
             category = file_id.replace('.txt', '')
-            target_dir = input_dir / category
-            txt_files_dir = target_dir / 'txt_files'
-            txt_files_dir.mkdir(parents=True, exist_ok=True)
-
-            output_file = txt_files_dir / file_id
-            output_file.write_text(text, encoding='utf-8')
-            texts.append(category)
+            documents[category] = (text, file_id)
             print(f"  Created {category}")
         except Exception as e:
             print(f"  Warning: Could not load {file_id}: {e}")
 
-    return texts
+    return documents
 
 def main():
     base_dir = Path(__file__).resolve().parents[1]
@@ -74,7 +58,8 @@ def main():
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    texts = setup_nltk_gutenberg_demo()
+    demo_documents = setup_nltk_gutenberg_demo()
+    texts = list(demo_documents)
 
     print()
     print(f"Demo texts: {len(texts)} individual texts from NLTK Gutenberg corpus")
@@ -93,6 +78,7 @@ def main():
         cluster_method='hdbscan',
         embedding_model='all-MiniLM-L6-v2',
     )
+    classifier.processor.set_external_documents(demo_documents)
 
     print("Processing texts...")
     classifier.run(

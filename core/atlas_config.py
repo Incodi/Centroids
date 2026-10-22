@@ -94,6 +94,38 @@ CACHE_FILTER_KEYS = {
 
 SBERT_MODEL = os.getenv('ATLAS_EMBEDDING_MODEL', 'BAAI/bge-small-en-v1.5')
 
+
+def huggingface_model_is_cached(model_name: Optional[str]) -> bool:
+    """Return whether a Hugging Face model has a local snapshot available."""
+    if not model_name:
+        return False
+
+    model_path = Path(model_name).expanduser()
+    if model_path.is_dir():
+        return True
+
+    if '/' not in model_name:
+        return False
+
+    cache_home = Path(
+        os.getenv(
+            'HF_HUB_CACHE',
+            Path(os.getenv('HF_HOME', Path.home() / '.cache' / 'huggingface')) / 'hub',
+        )
+    ).expanduser()
+    repo_cache = cache_home / f"models--{model_name.replace('/', '--')}"
+    snapshots = repo_cache / 'snapshots'
+    return snapshots.is_dir() and any(snapshots.iterdir())
+
+
+def huggingface_local_files_only(model_name: Optional[str] = None) -> bool:
+    """Return whether Hugging Face model loading must stay offline."""
+    value = os.getenv('ATLAS_HF_LOCAL_FILES_ONLY', '0').strip().lower()
+    return (
+        value not in {'0', 'false', 'no', 'off'}
+        or huggingface_model_is_cached(model_name)
+    )
+
 EMBEDDING_MODEL_PROFILES: Dict[str, Dict[str, int]] = {
     'BAAI/bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 512, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
     'bge-small-en-v1.5': {'context_window': 512, 'chunk_target': 384, 'min_chunk': 192, 'batch_size': 128, 'practical_max_tokens_cpu': 512, 'practical_max_tokens_mps': 512, 'practical_max_tokens_cuda': 512},
@@ -465,9 +497,9 @@ class MetricConfig:
         FIGHTING_WORDS_FLOOR_CENTROID_METRIC: {'name': 'Fighting Words Floor (Centroid)', 'title_suffix': 'Monroe log-odds z-score floor at rank 1000 (centroid tokens)', 'compute_method': '_compute_fighting_words_floor_centroid_placeholder', 'centroid_metric': True, 'centroid_duplicate': True, 'category': 'Core Linguistic Metrics'},
         'byte_count': {'name': 'Byte Count', 'title_suffix': 'Total Bytes for Text Word Set', 'compute_method': '_compute_byte_count', 'category': 'Core Linguistic Metrics'},
         'normalized_compression_ratio': {'name': 'Normalized Compression Ratio', 'title_suffix': 'LZMA Compression Ratio (normalized to 4.5 bytes/word baseline)', 'compute_method': '_compute_normalized_compression_ratio', 'category': 'Core Linguistic Metrics'},
-        'window_normalized_lzma_cr': {'name': 'Window Normalized LZMA CR', 'title_suffix': 'Window LZMA Compression Ratio (5000-word chunks, normalized)', 'compute_method': '_compute_window_normalized_lzma_cr', 'category': 'Core Linguistic Metrics'},
+        'window_normalized_lzma_cr': {'name': 'Chunk Normalized LZMA CR', 'title_suffix': 'Chunk LZMA Compression Ratio (5000-word chunks, normalized)', 'compute_method': '_compute_window_normalized_lzma_cr', 'category': 'Core Linguistic Metrics'},
         'compression': {'name': 'Compression Ratio', 'title_suffix': 'LZMA Compression Ratio on full word set', 'compute_method': '_compute_lzma_compression_ratio', 'category': 'Core Linguistic Metrics'},
-        'moving_lzma_cr': {'name': 'Window LZMA CR', 'title_suffix': 'Window LZMA Compression Ratio (5000-word chunks)', 'compute_method': '_compute_moving_lzma_compression_ratio', 'category': 'Core Linguistic Metrics'},
+        'moving_lzma_cr': {'name': 'Chunk LZMA CR', 'title_suffix': 'Chunk LZMA Compression Ratio (5000-word chunks)', 'compute_method': '_compute_moving_lzma_compression_ratio', 'category': 'Core Linguistic Metrics'},
         'ngram_entropy_2': {'name': '2-gram Cross-Entropy', 'title_suffix': '2-gram Cross-Entropy (Bits)', 'compute_method': '_compute_ngram_entropy_2', 'requires_ngram_entropy': True, 'category': 'Core Linguistic Metrics'},
         'ngram_entropy_3': {'name': '3-gram Cross-Entropy', 'title_suffix': '3-gram Cross-Entropy (Bits)', 'compute_method': '_compute_ngram_entropy_3', 'requires_ngram_entropy': True, 'category': 'Core Linguistic Metrics'},
         'MTLD': {'name': 'MTLD', 'title_suffix': 'MTLD (Measure of Textual Lexical Diversity)', 'compute_method': '_compute_MTLD_score', 'category': 'Core Linguistic Metrics'},
@@ -495,9 +527,9 @@ class MetricConfig:
         'semantic_disparity': {'name': 'Semantic Disparity', 'title_suffix': 'Semantic Disparity (Word Meaning Spread)', 'compute_method': '_compute_semantic_disparity', 'requires_spacy_model': True, 'category': 'Lexical Diversity'},
         'burrows_cosine_disagreement': {'name': 'Burrows/Cosine Disagreement', 'title_suffix': 'Burrows/Cosine Stylistic-Semantic Disagreement (Centroid)', 'compute_method': '_compute_burrows_cosine_disagreement', 'centroid_metric': True, 'centroid_only': True, 'category': 'Cross-Modal Similarity'},
         'unique_bigrams': {'name': 'Unique Bigrams', 'title_suffix': 'Unique Bigram Count', 'compute_method': '_compute_unique_bigrams', 'category': 'Lexical Diversity'},
-        'moving_unique_bigrams': {'name': 'Window Unique Bigrams', 'title_suffix': 'Avg Unique Bigrams per 5k Chunk', 'compute_method': '_compute_moving_unique_bigrams', 'category': 'Lexical Diversity'},
+        'moving_unique_bigrams': {'name': 'Chunk Unique Bigrams', 'title_suffix': 'Avg Unique Bigrams per 5k Chunk', 'compute_method': '_compute_moving_unique_bigrams', 'category': 'Lexical Diversity'},
         'unique_trigrams': {'name': 'Unique Trigrams', 'title_suffix': 'Unique Trigram Count', 'compute_method': '_compute_unique_trigrams', 'category': 'Lexical Diversity'},
-        'moving_unique_trigrams': {'name': 'Window Unique Trigrams', 'title_suffix': 'Avg Unique Trigrams per 5k Chunk', 'compute_method': '_compute_moving_unique_trigrams', 'category': 'Lexical Diversity'},
+        'moving_unique_trigrams': {'name': 'Chunk Unique Trigrams', 'title_suffix': 'Avg Unique Trigrams per 5k Chunk', 'compute_method': '_compute_moving_unique_trigrams', 'category': 'Lexical Diversity'},
         'hapax_ratio': {'name': 'Hapax Legomena Ratio', 'title_suffix': 'Hapax Legomena Ratio (Words Used Once)', 'compute_method': '_compute_hapax_ratio', 'category': 'Lexical Diversity'},
         'dis_ratio': {'name': 'Dis Legomena Ratio', 'title_suffix': 'Dis Legomena Ratio (Words Used Twice)', 'compute_method': '_compute_dis_ratio', 'category': 'Lexical Diversity'},
 
@@ -507,7 +539,7 @@ class MetricConfig:
         'coordinate_clause_count': {'name': 'Coordinate Clause Count', 'title_suffix': 'Coordinating Conjunctions', 'compute_method': '_compute_coordinate_clause_count', 'category': 'Syntactic Patterns'},
         'latinate_word_ratio': {'name': 'Latinate Word Ratio', 'title_suffix': 'Latinate/Greek Morphology Ratio', 'compute_method': '_compute_latinate_word_ratio', 'category': 'Syntactic Patterns'},
 
-        'family_exclamations': {'name': 'Family Exclamation Count', 'title_suffix': 'Family-Friendly Exclamation Count', 'compute_method': '_compute_family_exclamations', 'category': 'Discourse Markers'},
+        'family_exclamations': {'name': 'Family-Friendly Exclamations', 'title_suffix': 'Family-Friendly Exclamation Count', 'compute_method': '_compute_family_exclamations', 'category': 'Discourse Markers'},
         'vulnerability': {'name': 'Vulnerability Count', 'title_suffix': 'Vulnerability Words/Phrases Count', 'compute_method': '_compute_vulnerability_count', 'category': 'Discourse Markers'},
         'simile_count': {'name': 'Simile Count', 'title_suffix': 'Simile and Comparative Expression Count', 'compute_method': '_compute_simile_count', 'category': 'Discourse Markers'},
         'color_count': {'name': 'Color Mention Count', 'title_suffix': 'Color Word and Shade Mention Count', 'compute_method': '_compute_color_count', 'category': 'Discourse Markers'},

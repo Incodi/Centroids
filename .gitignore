@@ -5,7 +5,6 @@ __pycache__/
 demo_output/
 data/
 cache/
-SBERTClustersHD.html
 core/SBERTClustersHD.html
 core/data/output/
 temp/
@@ -13,3 +12,7 @@ testing/
 bugfixesiwant.txt
 croob.png
 coconuts/
+gameologist/data/
+gameologist/
+clean_comps.py
+debug/
