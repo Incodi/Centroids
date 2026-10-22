@@ -62,16 +62,60 @@ For YouTube-style input, the tool expects one directory per "text" (channel, boo
 data/input/
   my_channel/
     txt_files/
-      video1 [ID].txt
-      video2 [ID].txt
+      video1 [Video ID].txt
+      video2 [Video ID].txt
       ...
     metadata.json       (optional — YouTube-style fields)
     tag.txt             (optional — short text shown under the channel name in hover)
-    hover_panel.txt     (optional — 2-4 hex colors for a top-to-bottom hover gradient)
+    hover_panel.txt     (optional — 2-4 hex colors for a top-to-bottom hover gradient, decorate hover for favorite channels)
     hover_text.txt      (optional — 2-4 hex colors: text outline, text, then optional accents)
+    archive.txt
   another_channel/
     txt_files/
       ...
+```
+
+### Example channel metadata
+
+The format was created and modified after downloading from yt-dlp, Youtube Data API has a different format.
+
+For now, the filters look for this format.
+
+```
+[
+  {
+    "id": "dQw4w9WgXcQ",
+    "title": "I put my favorite channels into Centroids!",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+    "upload_date": "20250905",
+    "duration": 1917,
+    "view_count": 12474,
+    "like_count": 897,
+    "comment_count": 65,
+    "was_live": false,
+    "is_live": false,
+    "channel_name": "thename",
+    "channel_id": "UCjs2omu0U4AO0kxhGIzfuni",
+    "subscriber_count": 120,
+    "category": "Science & Technology"
+  },
+  {
+    "id": "dQw4w9WgXcR",
+    "title": "What Youtuber is the most mathematically similar Youtuber to MrBeast?",
+    "url": "https://www.youtube.com/watch?v=dQw4w9WgXcR",
+    "upload_date": "20250902",
+    "duration": 1147,
+    "view_count": 14395,
+    "like_count": 1100,
+    "comment_count": 87,
+    "was_live": false,
+    "is_live": false,
+    "channel_name": "thename",
+    "channel_id": "UCjs2omu0U4AO0kxhGIzfuni",
+    "subscriber_count": 120,
+    "category": "Science & Technology"
+  }
+]
 ```
 
 Each `.txt` file is treated as one document. In video-centroid mode, the N most recent documents become the text's centroid; in word-centroid mode, the last N words across all documents do.
@@ -295,6 +339,10 @@ python3 core/atlas.py \
 
 MALLET (MAchine Learning for LanguagE Toolkit) LDA (Latent Dirichlet Allocation) automatically discovers thematic topics in your corpus.
 
+Make sure your corpus is not too big as there will be complications.
+
+Training can take days if run on a giant corpus.
+
 **Usage**: `--mallet-topics N` where N is the number of topics
 
 **How it works**:
@@ -333,7 +381,8 @@ Burrows Delta is a stylometric method that analyzes function word usage to ident
 SBERT generates dense vector representations of text that capture semantic meaning, enabling similarity-based clustering and visualization.
 
 **Supported Models**:
-- `all-MiniLM-L12-v2` (default): Fast, good balance of speed/accuracy
+- `bge-small-en-v1.5` (default): Fast, good balance of speed/accuracy. Great accuracy for a small model.
+- `all-MiniLM-L12-v2` : Fast, good balance of speed/accuracy
 - `all-mpnet-base-v2`: Higher accuracy, slower
 - `thenlper/gte-small`: Excellent performance, efficient
 - `Alibaba-NLP/gte-modernbert-base`: Large context window (8192 tokens), state-of-the-art
@@ -468,8 +517,28 @@ Interactive Plotly visualization with:
 
 ## TODOs
 
-Doctor file to help users download packages before running the program.
-
-Demo file to help users test the program with a small dataset and test the features.
-
 Guide for understanding the structure of data needed to use the YouTube channel part of the program.
+
+Download tool to help download YT videos with the correct structure.
+
+Design CSVs to work well with PowerBI and Tableau.
+
+In progress: Improving MALLET feature (Putting limits into place, making options to help deal with large corpora).
+
+In progress: Experimental mode to help find what function words are common, uncommon, or rare in a text and genre.
+
+Current: Learn about PyTest and Playwright to test functions and web display. 
+
+Actually getting findings from this tool.
+
+## Issues
+
+Problem: Installing Centroids is painful because of mixed dependencies 
+such as Python packages, Java/MALLET, NLTK data, spaCy models, torch/SBERT
+
+Maybe use Docker to wrap it into a container? pyproject.toml + shell script to create venv and download models
+
+Consider replacing MALLET with tomotopy to drop the Java dependency
+
+
+
