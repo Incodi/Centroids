@@ -1,5 +1,6 @@
 import argparse
 import csv
+import gc
 import hashlib
 import importlib
 import inspect
@@ -10,9 +11,10 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import time
 import webbrowser
-from collections import Counter, defaultdict
+from collections import Counter, defaultdict, deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -48,6 +50,13 @@ except ImportError:
     enchant_word_check_cache = {}
 
 from plotly import graph_objects as go
+
+try:
+    from atlas_gameologist import GameologistExporter
+    GAMEOLOGIST_AVAILABLE = True
+except ImportError:
+    GameologistExporter = None
+    GAMEOLOGIST_AVAILABLE = False
 
 from atlas_config import *  # noqa
 from atlas_config import (
@@ -141,7 +150,7 @@ class TextClassifier(TextMetricsMixin):
         'take', 'see', 'think', 'also', 'use', 'how', 'even', 'want', 'give',
         'most', 'each', 'every', 'both', 'few', 'more', 'such', 'own', 'same', 'too',
         'very', 'just', 'here', 'why', 'once', 'the',
-        'oh', 'yeah', 'yes', 'okay', 'ok', 'like', 'well', 'uh', 'um', 'right',
+        'oh', 'yeah', 'yes', 'okay', 'like', 'well', 'uh', 'um', 'right',
         'mhm', 'next', 'again',
     }))
 
@@ -167,6 +176,7 @@ class TextClassifier(TextMetricsMixin):
         "her": "him",
         "she": "he",
         "herself": "himself",
+        "okay": "ok",
     }
 
     @classmethod
@@ -351,6 +361,73 @@ class TextClassifier(TextMetricsMixin):
 
         return self._burrows_rate_profile(tokens)
 
+    @classmethod
+    def _expand_burrows_distance_matrix(
+        cls,
+        n: int,
+        distances: np.ndarray,
+        valid: List[int],
+    ) -> np.ndarray:
+        """Expand a compact valid-subset distance matrix to an n×n symmetric matrix.
+
+        Texts without a style profile receive a large fill distance so UMAP
+        pushes them to the periphery rather than smearing the whole layout.
+        """
+        full = np.full((n, n), np.nan, dtype=np.float64)
+        for r_idx, row in enumerate(valid):
+            for c_idx, col in enumerate(valid):
+                full[row, col] = distances[r_idx, c_idx]
+
+        finite_mask = np.isfinite(full)
+        if finite_mask.any():
+            fill_value = float(np.nanmax(full)) * 1.2
+        else:
+            fill_value = 1.0
+
+        full[np.isnan(full)] = fill_value
+        np.fill_diagonal(full, 0.0)
+
+        # Force exact symmetry (the diagonal is already 0)
+        full = (full + full.T) * 0.5
+        np.fill_diagonal(full, 0.0)
+
+        return full.astype(np.float32)
+
+    def _burrows_reduce_dimensions(
+        self,
+        distances: np.ndarray,
+        n: int,
+    ) -> np.ndarray:
+        """Run UMAP on a precomputed Burrows distance matrix."""
+        if n == 0:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        if n == 1:
+            return np.zeros((1, 2), dtype=np.float32)
+
+        if n == 2:
+            d = float(distances[0, 1])
+            return np.array([[0.0, 0.0], [d, 0.0]], dtype=np.float32)
+
+        n_neighbors = min(5 if n <= 30 else 50, n - 1)
+        if self.umap_neighbors is not None:
+            n_neighbors = min(self.umap_neighbors, n - 1)
+        n_neighbors = max(2, n_neighbors)
+
+        reducer = umap.UMAP(
+            n_components=2,
+            metric='precomputed',
+            n_neighbors=n_neighbors,
+            min_dist=self.umap_min_dist,
+            init='spectral',
+            random_state=20,
+            n_jobs=1,
+            verbose=False,
+            n_epochs=self.umap_epochs,
+            low_memory=False,
+        )
+        return reducer.fit_transform(distances)
+
     def _metric_is_eligible(self, name: str) -> bool:
         return MetricConfig.is_metric_eligible(
             name,
@@ -492,12 +569,32 @@ class TextClassifier(TextMetricsMixin):
         umap_min_dist: float = 0.1,
         umap_epochs: int = 50,
         mallet_num_topics: int = 0,
+        mallet_memory: Optional[str] = None,
+        mallet_max_tokens_per_channel: Optional[int] = None,
+        mallet_iterations: int = 1000,
+        mallet_threads: Optional[int] = None,
     ):
         self.embedding_model_name = resolve_embedding_model_name(embedding_model)
-        self.model = SentenceTransformer(
-            self.embedding_model_name,
-            local_files_only=True,
-        )
+        try:
+            self.model = SentenceTransformer(
+                self.embedding_model_name,
+                local_files_only=huggingface_local_files_only(
+                    self.embedding_model_name
+                ),
+            )
+        except OSError as exc:
+            offline = huggingface_local_files_only(self.embedding_model_name)
+            mode = (
+                'The model is not available in the local Hugging Face cache.'
+                if offline
+                else 'Hugging Face could not download the model.'
+            )
+            raise RuntimeError(
+                f'Unable to load embedding model '
+                f'"{self.embedding_model_name}". {mode} '
+                'Set ATLAS_HF_LOCAL_FILES_ONLY=0 with internet access to '
+                'download it, or pre-cache the model before running Centroids.'
+            ) from exc
         profile = get_embedding_model_profile(self.embedding_model_name)
         self.embedding_device = self._detect_embedding_device()
 
@@ -585,7 +682,24 @@ class TextClassifier(TextMetricsMixin):
         self.centroid_words = centroid_words
         self.stat_word_count = stat_word_count
 
+        # --- MALLET topic modeling (population-level) --------------------
         self.mallet_num_topics: int = int(mallet_num_topics or 0)
+        # Java heap size for MALLET.  Priority: explicit argument >
+        # MALLET_MEMORY env var > 4g default.  The MALLET bin/mallet shell
+        # script reads this env var and turns it into -Xmx for the JVM.
+        self.mallet_memory: str = (
+            (mallet_memory or os.environ.get('MALLET_MEMORY') or '4g').strip()
+        ) or '4g'
+        # Optional per-channel token cap.  When the full corpus cannot fit
+        # in the available Java heap, capping each channel's stream keeps
+        # MALLET trainable.  Order within a document is irrelevant to LDA,
+        # so keeping the first N tokens is as good as any other slice.
+        if mallet_max_tokens_per_channel and int(mallet_max_tokens_per_channel) > 0:
+            self.mallet_max_tokens_per_channel: Optional[int] = int(mallet_max_tokens_per_channel)
+        else:
+            self.mallet_max_tokens_per_channel = None
+        self.mallet_iterations: int = max(1, int(mallet_iterations or 1000))
+        self.mallet_threads: int = max(1, int(mallet_threads or min(8, os.cpu_count() or 1)))
         self.mallet_topic_proportions: Dict[str, Dict[int, float]] = {}
         self.mallet_topic_labels: Dict[int, str] = {}
 
@@ -620,6 +734,9 @@ class TextClassifier(TextMetricsMixin):
 
         self.embeddings: Dict[str, np.ndarray] = {}
         self.similarity_matrix: Optional[np.ndarray] = None
+        self.burrows_similarity_matrix: Optional[np.ndarray] = None
+        self.cluster_variant_labels: Dict[str, List[Optional[int]]] = {}
+        self.burrows_cluster_variant_labels: Dict[str, List[Optional[int]]] = {}
         self._scaler_cache = None
         self._video_centroid_cache: Dict[str, Tuple[List[str], List[np.ndarray], List[str]]] = {}
 
@@ -823,9 +940,13 @@ class TextClassifier(TextMetricsMixin):
             if not files:
                 return []
 
+            cap = self.mallet_max_tokens_per_channel
+            accumulate = (
+                min(self.stat_word_count, cap) if cap and self.stat_word_count else (cap or self.stat_word_count)
+            )
             result = self.processor.load_video_centroids(
                 text, self.centroid_videos, filters, ignore_ids,
-                max_accumulated_tokens=self.stat_word_count,
+                max_accumulated_tokens=accumulate,
                 precomputed_files=files,
                 need_embeddings=False,
                 need_stat_corpus=False,
@@ -845,18 +966,98 @@ class TextClassifier(TextMetricsMixin):
             tokens = tokens[-self.centroid_words:]
         return tokens
 
+    def _run_mallet_logged(
+        self, cmd: List[str], env: Dict[str, str], log_path: Path,
+        stage: str, heartbeat_seconds: int = 30,
+    ) -> Tuple[int, str]:
+        """Run a MALLET command, streaming output to a log file and printing
+        a heartbeat so a long run never looks frozen."""
+        started = time.time()
+        tail: deque = deque(maxlen=80)
+        last_line = ['(no output yet)']
+
+        with open(log_path, 'a', encoding='utf-8') as log:
+            log.write(f"\n===== {stage} | {' '.join(cmd)} =====\n")
+            log.flush()
+
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, env=env, text=True,
+                errors='ignore', bufsize=1,
+            )
+
+            def pump() -> None:
+                for line in proc.stdout:
+                    log.write(line)
+                    log.flush()
+                    stripped = line.rstrip()
+                    if stripped:
+                        tail.append(stripped)
+                        last_line[0] = stripped
+
+            reader = threading.Thread(target=pump, daemon=True)
+            reader.start()
+
+            next_beat = started + heartbeat_seconds
+            try:
+                while proc.poll() is None:
+                    time.sleep(1.0)
+                    if time.time() >= next_beat:
+                        print(
+                            f"    [{stage}] running {time.time() - started:,.0f}s | "
+                            f"last: {last_line[0][:110]}"
+                        )
+                        next_beat += heartbeat_seconds
+            except KeyboardInterrupt:
+                proc.kill()
+                raise
+            finally:
+                reader.join(timeout=5)
+
+        print(f"    [{stage}] finished in {time.time() - started:,.0f}s (exit={proc.returncode})")
+        return proc.returncode, '\n'.join(tail)
+
+    def _report_mallet_failure(self, stderr_text: str, log_path: Path) -> None:
+        if 'OutOfMemoryError' in stderr_text or 'Java heap space' in stderr_text:
+            print(f"  MALLET ran out of Java heap at heap={self.mallet_memory}.")
+            print(
+                "  Increase --mallet-memory (e.g. 12g) or lower "
+                "--mallet-max-tokens-per-channel (e.g. 200000)."
+            )
+        else:
+            print(f"  MALLET failed. Last output:\n{stderr_text[-600:]}")
+        print(f"  Full log: {log_path}")
+
     def _train_mallet_topics(
         self,
         texts: List[str],
         ignore_ids: set,
         filter_kwargs: Dict[str, Any],
     ) -> None:
+        """Train MALLET LDA on the centroid corpus of every successful text.
+
+        Streaming design: only one text's centroid tokens are held in memory
+        at a time; they are written to the MALLET input file and then freed
+        immediately.  Result proportions and top-word labels are cached under
+        ``cache/mallet/`` keyed on the text list + filters, so re-running the
+        pipeline skips the sampler entirely.
+
+        Heap size comes from ``self.mallet_memory`` (CLI flag > MALLET_MEMORY
+        env var > 4g default).  When that is still not enough for a given
+        corpus, ``self.mallet_max_tokens_per_channel`` caps the per-channel
+        token stream so MALLET remains trainable on constrained machines.
+
+        Populates:
+            self.mallet_topic_proportions: {text: {topic_id: proportion}}
+            self.mallet_topic_labels:      {topic_id: "top eight words"}
+        """
         if self.mallet_num_topics <= 0:
             return
 
         if not texts:
             return
 
+        # ---- Locate the MALLET binary ----
         mallet_binary: Optional[str] = shutil.which('mallet')
         if not mallet_binary:
             mallet_home = os.environ.get('MALLET_HOME')
@@ -873,6 +1074,7 @@ class TextClassifier(TextMetricsMixin):
             )
             return
 
+        # ---- Cache path setup ----
         cache_dir = self.base_dir / "cache" / "mallet"
         cache_dir.mkdir(parents=True, exist_ok=True)
         input_txt = cache_dir / "texts_input.txt"
@@ -884,6 +1086,9 @@ class TextClassifier(TextMetricsMixin):
         labels_path = cache_dir / "labels.json"
         doc_map_path = cache_dir / "doc_map.json"
 
+        # Signature is intentionally limited to inputs that actually affect
+        # the MALLET output.  The token cap IS included because changing it
+        # changes the corpus MALLET sees.
         filter_sig: Dict[str, Any] = {}
         for key in sorted(CACHE_FILTER_KEYS):
             if key in ('centroid_mode', 'centroid_videos', 'centroid_words', 'stat_word_count'):
@@ -895,15 +1100,19 @@ class TextClassifier(TextMetricsMixin):
 
         cache_signature = {
             'num_topics': int(self.mallet_num_topics),
+            'iterations': int(self.mallet_iterations),
+            'threads': int(self.mallet_threads),
             'texts': sorted(texts),
             'ignore_ids': sorted(str(v) for v in ignore_ids),
             'centroid_mode': self.centroid_mode,
             'centroid_videos': int(self.centroid_videos or 0),
             'centroid_words': int(self.centroid_words or 0),
             'stat_word_count': int(self.stat_word_count or 0),
+            'max_tokens_per_channel': int(self.mallet_max_tokens_per_channel or 0),
             'filters': filter_sig,
         }
 
+        # ---- Try cache ----
         if sig_path.exists() and proportions_path.exists():
             try:
                 with open(sig_path, 'r', encoding='utf-8') as f:
@@ -937,21 +1146,38 @@ class TextClassifier(TextMetricsMixin):
             except Exception as exc:
                 print(f"  Warning: failed to load MALLET cache ({exc}); retraining")
 
+        # ---- Write the MALLET input file, one text at a time ----
+        #
+        # Use synthetic ASCII-only doc ids (tx_000000, tx_000001, ...) rather
+        # than the raw text names.  MALLET's import-file rewrites the doc
+        # source name when it contains whitespace or punctuation, which
+        # silently breaks any lookup keyed on the original text name.  With
+        # ids that MALLET leaves untouched, the mapping stays exact, and we
+        # persist the id -> text map alongside the proportions so cache hits
+        # skip the sampler entirely.
+        cap_note = (
+            f" | cap={self.mallet_max_tokens_per_channel:,} tokens/text"
+            if self.mallet_max_tokens_per_channel
+            else ""
+        )
         print(
-            f"  Training MALLET LDA: {self.mallet_num_topics} topics "
+            f"  Training MALLET LDA: {self.mallet_num_topics} topics, "
+            f"{self.mallet_iterations} iterations, "
+            f"{self.mallet_threads} threads, "
+            f"heap={self.mallet_memory}{cap_note} "
             f"(streaming input across {len(texts)} texts)"
         )
         filters = {k: v for k, v in filter_kwargs.items() if v is not None}
         written = 0
-        doc_map: Dict[str, str] = {}
+        doc_map: Dict[str, str] = {}  # safe_id -> text name
 
         try:
             with open(input_txt, 'w', encoding='utf-8') as f:
-                for tx in texts:
+                for n_seen, tx in enumerate(texts, start=1):
+                    if n_seen == 1 or n_seen % 50 == 0 or n_seen == len(texts):
+                        print(f"    Gathering MALLET tokens: {n_seen}/{len(texts)}")
                     try:
-                        tokens = self._get_centroid_tokens_for_mallet(
-                            tx, filters, ignore_ids
-                        )
+                        tokens = self._get_centroid_tokens_for_mallet(tx, filters, ignore_ids)
                     except Exception as exc:
                         print(f"    Warning: could not gather tokens for {tx}: {exc}")
                         continue
@@ -961,10 +1187,10 @@ class TextClassifier(TextMetricsMixin):
 
                     safe_id = f"tx_{written:06d}"
                     doc_map[safe_id] = tx
-                    f.write(safe_id)
-                    f.write('\t')
-                    f.write(' '.join(tokens))
-                    f.write('\n')
+                    # MALLET's default line regex is "name  label  data".
+                    # A dummy label column keeps the first real token from
+                    # being swallowed as the label.
+                    f.write(f"{safe_id}\tX\t{' '.join(tokens)}\n")
                     written += 1
                     del tokens
         except OSError as exc:
@@ -977,41 +1203,63 @@ class TextClassifier(TextMetricsMixin):
 
         print(f"    Wrote {written} documents to {input_txt.name}")
 
-        mallet_memory = os.environ.get('MALLET_MEMORY', '2g')
-        run_env = {**os.environ, 'MALLET_MEMORY': mallet_memory}
+        gc.collect()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+        log_path = cache_dir / "mallet_debug.log"
+        print(f"    MALLET log: {log_path}")
+
+        # ---- Run MALLET (import-file -> train-topics) ----
+        # Pass the heap size through the MALLET_MEMORY env var, which the
+        # bin/mallet launcher script turns into a JVM -Xmx argument.
+        run_env = {**os.environ, 'MALLET_MEMORY': self.mallet_memory}
+
+        # Skip import-file when the binary is already newer than the input
+        # file.  This makes retries after a training-only failure cheap --
+        # re-serialising the corpus is the slow part on big runs.
+        need_import = True
+        try:
+            if mallet_bin_file.exists():
+                need_import = mallet_bin_file.stat().st_mtime < input_txt.stat().st_mtime
+        except OSError:
+            need_import = True
 
         try:
-            subprocess.run(
-                [
-                    mallet_binary, 'import-file',
-                    '--input', str(input_txt),
-                    '--output', str(mallet_bin_file),
-                    '--keep-sequence',
-                    '--remove-stopwords',
-                ],
-                check=True, capture_output=True, env=run_env,
+            if need_import:
+                rc, tail_text = self._run_mallet_logged(
+                    [mallet_binary, 'import-file',
+                     '--input', str(input_txt),
+                     '--output', str(mallet_bin_file),
+                     '--keep-sequence',
+                     '--remove-stopwords'],
+                    run_env, log_path, 'import',
+                )
+                if rc != 0:
+                    self._report_mallet_failure(tail_text, log_path)
+                    return
+            else:
+                print(f"    Reusing cached binary {mallet_bin_file.name}")
+
+            rc, tail_text = self._run_mallet_logged(
+                [mallet_binary, 'train-topics',
+                 '--input', str(mallet_bin_file),
+                 '--num-topics', str(self.mallet_num_topics),
+                 '--num-iterations', str(self.mallet_iterations),
+                 '--num-threads', str(self.mallet_threads),
+                 '--optimize-interval', '10',
+                 '--random-seed', '20',
+                 '--output-doc-topics', str(doc_topics),
+                 '--output-topic-keys', str(topic_keys)],
+                run_env, log_path, 'train',
             )
-            subprocess.run(
-                [
-                    mallet_binary, 'train-topics',
-                    '--input', str(mallet_bin_file),
-                    '--num-topics', str(self.mallet_num_topics),
-                    '--num-iterations', '1000',
-                    '--optimize-interval', '10',
-                    '--output-doc-topics', str(doc_topics),
-                    '--output-topic-keys', str(topic_keys),
-                ],
-                check=True, capture_output=True, env=run_env,
-            )
-        except subprocess.CalledProcessError as exc:
-            stderr = ''
-            if getattr(exc, 'stderr', None):
-                try:
-                    stderr = exc.stderr.decode(errors='ignore')[:600]
-                except Exception:
-                    stderr = repr(exc.stderr)[:600]
-            print(f"  MALLET training failed: {stderr or exc}")
-            return
+            if rc != 0:
+                self._report_mallet_failure(tail_text, log_path)
+                return
         except FileNotFoundError as exc:
             print(f"  MALLET binary not executable: {exc}")
             return
@@ -1019,6 +1267,17 @@ class TextClassifier(TextMetricsMixin):
             print(f"  MALLET training failed: {exc}")
             return
 
+        # ---- Parse doc-topics.txt (line by line, streaming) ----
+        #
+        # MALLET 2.0.8+ writes --output-doc-topics as:
+        #
+        #   #doc<TAB>source<TAB>p_0<TAB>p_1<TAB>...<TAB>p_{N-1}
+        #   0<TAB>tx_000000<TAB>9.84E-6<TAB>3.04E-6<TAB>0.159<TAB>...
+        #   1<TAB>tx_000001<TAB>0.0152<TAB>2.05E-6<TAB>0.039<TAB>...
+        #
+        # Each topic proportion is its own tab-delimited column, as a bare
+        # float, in topic order.  Older MALLET builds packed them into a
+        # single space-separated column as "topic:proportion topic:proportion".
         def _all_float(tokens: List[str]) -> bool:
             if not tokens:
                 return False
@@ -1042,6 +1301,8 @@ class TextClassifier(TextMetricsMixin):
                     if len(parts) < 2:
                         continue
 
+                    # Locate the source column.  It is the one whose value
+                    # was registered in doc_map during input writing.
                     source_idx = -1
                     for i, part in enumerate(parts):
                         if part in doc_map:
@@ -1080,6 +1341,8 @@ class TextClassifier(TextMetricsMixin):
             return
 
         if not proportions:
+            # Diagnostics: dump the first few lines of doc-topics.txt so
+            # it is obvious what the parser was handed when it fails.
             print("  MALLET parse produced 0 documents; previewing doc-topics.txt:")
             try:
                 with open(doc_topics, 'r', encoding='utf-8') as f:
@@ -1092,8 +1355,9 @@ class TextClassifier(TextMetricsMixin):
                 print(f"    (could not preview file: {preview_exc})")
 
         self.mallet_topic_proportions = proportions
-        self.mallet_topic_labels = {}
 
+        # ---- Parse topic-keys.txt for human-readable labels ----
+        self.mallet_topic_labels = {}
         try:
             with open(topic_keys, 'r', encoding='utf-8') as f:
                 for line in f:
@@ -1109,6 +1373,7 @@ class TextClassifier(TextMetricsMixin):
         except OSError:
             pass
 
+        # ---- Persist cache ----
         try:
             with open(sig_path, 'w', encoding='utf-8') as f:
                 json.dump(cache_signature, f)
@@ -2740,6 +3005,9 @@ class TextClassifier(TextMetricsMixin):
         semantic_embeddings: Optional[List[List[float]]] = None,
         burrows_similarity: Optional[List[List[float]]] = None,
         fighting_words_unigrams: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
+        burrows_reduced: Optional[List[List[float]]] = None,
+        burrows_function_words: Optional[List[str]] = None,
+        burrows_word_frequencies: Optional[Dict[str, List[Optional[float]]]] = None,
     ):
         if low_token_texts is None:
             low_token_texts = set()
@@ -2751,6 +3019,12 @@ class TextClassifier(TextMetricsMixin):
             burrows_similarity = []
         if fighting_words_unigrams is None:
             fighting_words_unigrams = {}
+        if burrows_reduced is None:
+            burrows_reduced = []
+        if burrows_function_words is None:
+            burrows_function_words = []
+        if burrows_word_frequencies is None:
+            burrows_word_frequencies = {}
 
         exclude_from_hover = {
             'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
@@ -2802,7 +3076,44 @@ class TextClassifier(TextMetricsMixin):
 
             return '<br>'.join(wrapped_lines)
 
+        def read_palette(text: str, filenames: Tuple[str, ...]) -> List[str]:
+            channel_dir = (
+                self.processor.base_dir
+                / "data/input"
+                / sanitize_filename(text)
+            )
+            palette_path = next(
+                (channel_dir / filename for filename in filenames
+                 if (channel_dir / filename).exists()),
+                None,
+            )
+            if palette_path is None:
+                return []
+
+            try:
+                colors = [
+                    line.strip()
+                    for line in palette_path.read_text(encoding='utf-8').splitlines()
+                    if line.strip()
+                ]
+            except (OSError, UnicodeError) as exc:
+                print(f"Warning: unable to read {palette_path}: {exc}")
+                return []
+
+            hex_color = re.compile(r'^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$')
+            if not 2 <= len(colors) <= 4 or any(
+                not hex_color.fullmatch(color) for color in colors
+            ):
+                print(
+                    f"Warning: {palette_path} must contain 2-4 hex colors, "
+                    "one per line; ignoring it."
+                )
+                return []
+            return colors
+
         hover_texts = []
+        hover_panel_palettes = []
+        hover_text_palettes = []
         programmer_notes = {}
 
         for i, text in enumerate(texts):
@@ -2964,6 +3275,10 @@ class TextClassifier(TextMetricsMixin):
 
             text_content = wrap_long_lines(text_content)
             hover_texts.append(text_content)
+            hover_panel_palettes.append(
+                read_palette(text, ("hover_panel.txt", "hover_gradient.txt"))
+            )
+            hover_text_palettes.append(read_palette(text, ("hover_text.txt",)))
 
         full_token_indices = list(range(len(texts)))
         full_token_reduced = reduced
@@ -2971,9 +3286,15 @@ class TextClassifier(TextMetricsMixin):
         cluster_metric_keys = [
             key for key in metrics_data.keys()
             if key == 'cluster' or key.startswith('cluster_')
+            or key == 'burrows_cluster' or key.startswith('burrows_cluster_')
         ]
         cluster_metric_keys.sort(
-            key=lambda key: 1 if key == 'cluster' else int(key.split('_')[1])
+            key=lambda key: (
+                0 if key == 'cluster' else
+                1 if key.startswith('cluster_') else
+                2 if key == 'burrows_cluster' else
+                3
+            ,)
         )
 
         if (
@@ -3107,10 +3428,10 @@ class TextClassifier(TextMetricsMixin):
         for cluster_metric_key in cluster_metric_keys:
             if cluster_metric_key in self.cluster_metric_labels:
                 metric_names_dict[cluster_metric_key] = self.cluster_metric_labels[cluster_metric_key]
-            elif cluster_metric_key == 'cluster':
+            elif cluster_metric_key in ('cluster', 'burrows_cluster'):
                 metric_names_dict[cluster_metric_key] = 'Cluster 1 (default)'
             else:
-                cluster_index = int(cluster_metric_key.split('_')[1])
+                cluster_index = int(cluster_metric_key.rsplit('_', 1)[1])
                 metric_names_dict[cluster_metric_key] = f'Cluster {cluster_index}'
             metric_colorscale_dict[cluster_metric_key] = 'Turbo'
             metric_keys_list.append(cluster_metric_key)
@@ -3130,7 +3451,12 @@ class TextClassifier(TextMetricsMixin):
 
         for metric_name, metric_values in metrics_data.items():
             if metric_values is not None:
-                if metric_name == 'cluster' or metric_name.startswith('cluster_'):
+                if (
+                    metric_name == 'cluster'
+                    or metric_name.startswith('cluster_')
+                    or metric_name == 'burrows_cluster'
+                    or metric_name.startswith('burrows_cluster_')
+                ):
                     continue
                 metric_list = [
                     float(metric_values[i]) if i in full_token_indices else None
@@ -3160,6 +3486,8 @@ class TextClassifier(TextMetricsMixin):
             "__METRICS_JSON__": metrics_json_str,
             "__TITLES_JSON__": titles_json_str,
             "__TEXTS_JSON__": texts_json,
+            "__HOVER_PANEL_PALETTES_JSON__": safe_json_dumps(hover_panel_palettes),
+            "__HOVER_TEXT_PALETTES_JSON__": safe_json_dumps(hover_text_palettes),
             "__METRIC_NAMES_JSON__": json.dumps(metric_names_dict),
             "__METRIC_COLORScales_JSON__": json.dumps(metric_colorscale_dict),
             "__METRIC_KEYS_JSON__": json.dumps(metric_keys_list),
@@ -3170,6 +3498,15 @@ class TextClassifier(TextMetricsMixin):
             ),
             "__FIGHTING_WORDS_UNIGRAMS_JSON__": safe_json_dumps(fighting_words_unigrams),
             "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
+            # --- Experimental Burrows mode data --------------------------------
+            # These placeholders are populated unconditionally so the client can
+            # toggle the mirror Burrows tab at any time without re-running the
+            # pipeline.  If the corpus is too small to produce a stable Burrows
+            # layout, they are empty lists / dicts and the client falls back to
+            # hiding the Experimental button.
+            "__BURROWS_REDUCED_JSON__": safe_json_dumps(burrows_reduced),
+            "__BURROWS_FUNCTION_WORDS_JSON__": json.dumps(list(burrows_function_words)),
+            "__BURROWS_WORD_FREQUENCIES_JSON__": safe_json_dumps(burrows_word_frequencies),
         }
 
         custom_style_and_script = template
@@ -3197,6 +3534,165 @@ class TextClassifier(TextMetricsMixin):
         except Exception as e:
             print(f"Could not automatically open browser: {e}")
             print(f"Please manually open: {output_path}")
+
+    def _build_burrows_word_frequencies(
+        self,
+        successful: List[str],
+        style_profiles: Dict[str, np.ndarray],
+    ) -> Dict[str, List[Optional[float]]]:
+        """Build {function_word: [rate per successful text]} for the client.
+
+        Texts without a style profile receive ``None`` so the client can
+        exclude them from the bell curve and any per-cluster stats.
+        """
+        words = list(self.BURROWS_FUNCTION_WORDS)
+        n_words = len(words)
+        freqs: Dict[str, List[Optional[float]]] = {w: [] for w in words}
+
+        for tx in successful:
+            profile = style_profiles.get(tx)
+            for w_idx, w in enumerate(words):
+                if profile is None or w_idx >= n_words:
+                    freqs[w].append(None)
+                else:
+                    freqs[w].append(float(profile[w_idx]))
+
+        return freqs
+
+    def _build_burrows_layout(
+        self,
+        successful: List[str],
+        style_profiles: Dict[str, np.ndarray],
+    ) -> Optional[List[List[float]]]:
+        """Reduce Burrows distances to 2-D via precomputed-metric UMAP.
+
+        Returns ``None`` when there are fewer than two style profiles, which
+        tells the client to hide the Experimental button.
+        """
+        if len(style_profiles) < 2:
+            return None
+
+        distances, valid = self._burrows_distance_matrix(style_profiles, successful)
+        if distances is None or not valid:
+            return None
+
+        full = self._expand_burrows_distance_matrix(
+            len(successful), distances, valid
+        )
+
+        try:
+            reduced = self._burrows_reduce_dimensions(full, len(successful))
+        except Exception as exc:
+            print(f"  Warning: Burrows UMAP failed ({exc}); experimental tab disabled")
+            return None
+
+        return [
+            [float(reduced[i, 0]), float(reduced[i, 1])]
+            for i in range(len(successful))
+        ]
+
+    def _cluster_burrows_variants(
+        self,
+        distances: Optional[np.ndarray],
+        valid: List[int],
+        variant_count: int,
+        base_seed: int = 42,
+    ) -> Dict[str, List[Optional[int]]]:
+        """Cluster the texts that have Burrows profiles.
+
+        Burrows clustering must use the style distance matrix, rather than
+        semantic embeddings. HDBSCAN exports five variants; Leiden mirrors
+        the normal semantic resolution sweep.
+        """
+        labels_by_key: Dict[str, List[Optional[int]]] = {}
+        self.burrows_cluster_metric_labels = {}
+        n = len(self.successful)
+        if distances is None or len(valid) < 2:
+            return labels_by_key
+
+        compact = np.asarray(distances, dtype=np.float64)
+        compact = np.nan_to_num(compact, nan=0.0, posinf=1e6, neginf=0.0)
+        compact = np.maximum((compact + compact.T) * 0.5, 0.0)
+        np.fill_diagonal(compact, 0.0)
+        valid_count = len(valid)
+
+        def expand(labels: np.ndarray) -> List[Optional[int]]:
+            result: List[Optional[int]] = [None] * n
+            for index, text_index in enumerate(valid):
+                result[text_index] = int(labels[index])
+            return result
+
+        if self.cluster_method != 'leiden':
+            min_cluster_size = max(2, min(20, valid_count // 20 or 2))
+            min_samples = max(1, min_cluster_size // 2)
+            for variant_index in range(max(1, int(variant_count))):
+                key = 'burrows_cluster' if variant_index == 0 else f'burrows_cluster_{variant_index + 1}'
+                labels = None
+                if SklearnHDBSCAN is not None:
+                    try:
+                        labels = SklearnHDBSCAN(
+                            min_cluster_size=min_cluster_size,
+                            min_samples=min_samples,
+                            metric='precomputed',
+                        ).fit_predict(compact)
+                    except Exception as exc:
+                        print(f"    Warning: Burrows HDBSCAN failed ({exc})")
+                if labels is None or np.all(labels == -1):
+                    labels = KMeans(
+                        n_clusters=max(2, min(14, int(np.sqrt(valid_count)))),
+                        random_state=base_seed + variant_index,
+                        n_init=10,
+                    ).fit_predict(compact)
+                labels_by_key[key] = expand(np.asarray(labels))
+            return labels_by_key
+
+        if not LEIDEN_AVAILABLE:
+            return labels_by_key
+
+        try:
+            from sklearn.neighbors import kneighbors_graph
+        except ImportError:
+            return labels_by_key
+
+        k_eff = max(2, min(int(self.leiden_k_neighbors), valid_count - 1))
+        try:
+            graph = kneighbors_graph(
+                compact, k_eff, mode='connectivity',
+                metric='precomputed', include_self=False,
+            )
+            graph = graph.maximum(graph.T)
+            sources, targets = graph.nonzero()
+            edges = [(int(s), int(t)) for s, t in zip(sources, targets) if s < t]
+            if not edges:
+                return labels_by_key
+        except Exception as exc:
+            print(f"    Warning: Burrows Leiden graph failed ({exc})")
+            return labels_by_key
+
+        resolutions = (
+            [1.0] if variant_count <= 1 else np.linspace(
+                self.leiden_resolution_min,
+                self.leiden_resolution_max,
+                max(1, int(variant_count)),
+            ).tolist()
+        )
+        for index, resolution in enumerate(resolutions):
+            key = 'burrows_cluster' if index == 0 else f'burrows_cluster_{index + 1}'
+            try:
+                partition = la.find_partition(
+                    ig.Graph(n=valid_count, edges=edges, directed=False),
+                    la.RBConfigurationVertexPartition,
+                    resolution_parameter=float(resolution),
+                    seed=base_seed,
+                )
+                labels_by_key[key] = expand(np.asarray(partition.membership, dtype=int))
+                self.burrows_cluster_metric_labels[key] = (
+                    f'Burrows Leiden r={float(resolution):.2f}'
+                )
+            except Exception as exc:
+                print(f"    Warning: Burrows Leiden failed ({exc})")
+                break
+        return labels_by_key
 
     def run(
         self,
@@ -3238,16 +3734,19 @@ class TextClassifier(TextMetricsMixin):
 
                 if result.get('low_token_text', False):
                     low_token_texts.add(tx)
-                else:
-                    style_profile = result.get('_burrows_rate_profile')
-                    if style_profile is None and not self.no_metrics:
-                        fallback_filters = dict(filter_kwargs)
-                        fallback_filters['ignore_ids'] = ignore_ids
-                        style_profile = self._load_burrows_rate_profile(tx, fallback_filters)
+                style_profile = result.get('_burrows_rate_profile')
+                # Burrows profiles are independent of the statistical token
+                # threshold. Low-token texts still have video centroid tokens
+                # and must remain eligible for the style map.
+                if style_profile is None:
+                    fallback_filters = dict(filter_kwargs)
+                    fallback_filters['ignore_ids'] = ignore_ids
+                    style_profile = self._load_burrows_rate_profile(tx, fallback_filters)
 
-                    if style_profile is not None:
-                        style_profiles[tx] = style_profile
+                if style_profile is not None:
+                    style_profiles[tx] = style_profile
 
+                if not result.get('low_token_text', False):
                     for metric_name in metric_names:
                         if metric_name in result:
                             metrics_storage[metric_name][tx] = result[metric_name]
@@ -3257,6 +3756,13 @@ class TextClassifier(TextMetricsMixin):
         if not successful:
             print("\nError: No texts successfully processed")
             return
+
+        # Expose the successful texts in the same order the similarity
+        # matrices and cluster labels were built.  The gameologist export
+        # indexes into those matrices with this exact list; using the raw
+        # input list (args.texts) would misalign every row and column
+        # whenever any input failed to process.
+        self.successful = successful
 
         print(f"\nSuccessfully processed {len(successful)}/{len(texts)} texts")
 
@@ -3347,6 +3853,7 @@ class TextClassifier(TextMetricsMixin):
             variant_count=cluster_variant_count,
             base_seed=42,
         )
+        self.cluster_variant_labels = cluster_variant_labels
 
         metrics_data = {}
         for metric_name in metric_names:
@@ -3367,6 +3874,13 @@ class TextClassifier(TextMetricsMixin):
 
         self.similarity_matrix = cosine_similarity(emb_matrix)
 
+        # --- Burrows distance matrix (always computed) --------------------
+        # Used for: (a) burrows_cosine_disagreement, (b) the full similarity
+        # matrix shipped to the client, and (c) the experimental Burrows map.
+        burrows_distances, burrows_valid = self._burrows_distance_matrix(
+            style_profiles, successful
+        )
+
         if not self.no_metrics:
             disagreement = self._burrows_cosine_scores(
                 style_profiles, emb_matrix, successful
@@ -3375,12 +3889,6 @@ class TextClassifier(TextMetricsMixin):
                 [disagreement.get(text, 0.0) for text in successful],
                 dtype=float,
             )
-
-            burrows_distances, burrows_valid = self._burrows_distance_matrix(
-                style_profiles, successful
-            )
-        else:
-            burrows_distances, burrows_valid = None, []
 
         normalized_embeddings = emb_matrix / np.maximum(
             np.linalg.norm(emb_matrix, axis=1, keepdims=True), 1e-12
@@ -3420,9 +3928,9 @@ class TextClassifier(TextMetricsMixin):
             self.export_metrics_csv(successful, metrics_data, str(metrics_output))
 
         n_success = len(successful)
-        burrows_similarity_matrix = np.zeros((n_success, n_success), dtype=np.float32)
+        self.burrows_similarity_matrix = np.zeros((n_success, n_success), dtype=np.float32)
         for i in range(n_success):
-            burrows_similarity_matrix[i, i] = 1.0
+            self.burrows_similarity_matrix[i, i] = 1.0
 
         if burrows_distances is not None and burrows_valid:
             for row_pos, row_text_idx in enumerate(burrows_valid):
@@ -3430,7 +3938,38 @@ class TextClassifier(TextMetricsMixin):
                     if row_pos == col_pos:
                         continue
                     d = float(burrows_distances[row_pos, col_pos])
-                    burrows_similarity_matrix[row_text_idx, col_text_idx] = 1.0 / (1.0 + d)
+                    self.burrows_similarity_matrix[row_text_idx, col_text_idx] = 1.0 / (1.0 + d)
+
+        burrows_cluster_variants = self._cluster_burrows_variants(
+            burrows_distances,
+            burrows_valid,
+            variant_count=(cluster_variant_count if self.cluster_method == 'leiden' else 5),
+            base_seed=42,
+        )
+        for metric_key, labels in burrows_cluster_variants.items():
+            metrics_data[metric_key] = np.array(
+                [float(label) if label is not None else np.nan for label in labels],
+                dtype=float,
+            )
+        self.burrows_cluster_variant_labels = burrows_cluster_variants
+
+        burrows_reduced = self._build_burrows_layout(successful, style_profiles)
+        burrows_word_frequencies = self._build_burrows_word_frequencies(
+            successful, style_profiles
+        )
+        burrows_function_words = list(self.BURROWS_FUNCTION_WORDS)
+
+        if burrows_reduced is not None:
+            print(
+                f"  Burrows experimental map ready "
+                f"({len(style_profiles)}/{n_success} texts have style profiles)"
+            )
+        else:
+            print(
+                "  Burrows experimental map unavailable "
+                "(fewer than two texts have style profiles); "
+                "Experimental tab will be hidden"
+            )
 
         reduced = self.reduce_dimensions(emb_matrix, len(successful))
         focus_text = filter_kwargs.get('focus_text', '')
@@ -3445,13 +3984,16 @@ class TextClassifier(TextMetricsMixin):
             enable_annotations=annotations_enabled,
             focus_text=focus_text,
             semantic_embeddings=normalized_embeddings.tolist(),
-            burrows_similarity=burrows_similarity_matrix.tolist(),
+            burrows_similarity=self.burrows_similarity_matrix.tolist(),
             fighting_words_unigrams={
                 FIGHTING_WORDS_PEAK_METRIC: self._fighting_words_peak_unigrams,
                 FIGHTING_WORDS_FLOOR_METRIC: self._fighting_words_floor_unigrams,
                 FIGHTING_WORDS_PEAK_CENTROID_METRIC: self._fighting_words_peak_unigrams_centroid,
                 FIGHTING_WORDS_FLOOR_CENTROID_METRIC: self._fighting_words_floor_unigrams_centroid,
             },
+            burrows_reduced=burrows_reduced,
+            burrows_function_words=burrows_function_words,
+            burrows_word_frequencies=burrows_word_frequencies,
         )
 
 
@@ -3534,7 +4076,7 @@ Available metrics for --color-by:
         help='Also export one row per text with metric columns to a *_metrics.csv file',
     )
     parser.add_argument(
-        '--output-html', default='data/output/SBERTClustersHD.html',
+        '--output-html', default='data/output/CentroidsMap.html',
         help='Output HTML visualization file path',
     )
     parser.add_argument('--no-cache', action='store_true', help='Disable embedding cache')
@@ -3665,8 +4207,37 @@ Available metrics for --color-by:
     parser.add_argument(
         '--mallet-topics', type=int, default=0,
         help='Train a MALLET LDA model with this many topics '
-             '(requires MALLET installed; 0 disables). '
-             'Set MALLET_MEMORY env var (e.g. 12g) for large corpora.',
+             '(requires MALLET installed; 0 disables).',
+    )
+    parser.add_argument(
+        '--mallet-memory', type=str, default=None,
+        help='Java heap size for MALLET (e.g. 4g, 12g). Defaults to the '
+             'MALLET_MEMORY env var if set, otherwise "4g". MALLET needs '
+             'roughly 6-8 bytes per token of heap.',
+    )
+    parser.add_argument(
+        '--mallet-max-tokens-per-channel', type=int, default=None,
+        help='Cap the per-channel token stream fed to MALLET. Use when the '
+             'full corpus overruns the Java heap; e.g. 200000 fits a ~1.5 GB '
+             'corpus in ~8 GB of heap.',
+    )
+    parser.add_argument(
+        '--mallet-iterations', type=int, default=1000,
+        help='Gibbs sampling iterations for MALLET (default: 1000; try 200-500 for big corpora).',
+    )
+    parser.add_argument(
+        '--mallet-threads', type=int, default=None,
+        help='Threads for MALLET train-topics (default: min(8, CPU count)).',
+    )
+
+    parser.add_argument(
+        '--export-gameologist', action='store_true',
+        help='Export data for the gameologist sister project (requires 1500+ channels)',
+    )
+
+    parser.add_argument(
+        '--gameologist-dir', type=str, default=None,
+        help='Path to gameologist directory (default: ../gameologist)',
     )
 
     parser.add_argument(
@@ -3685,6 +4256,9 @@ Available metrics for --color-by:
 
     if args.mallet_topics < 0:
         parser.error('--mallet-topics must be zero or greater')
+
+    if args.mallet_max_tokens_per_channel is not None and args.mallet_max_tokens_per_channel <= 0:
+        parser.error('--mallet-max-tokens-per-channel must be greater than zero')
 
     if args.txt_depth < 0:
         parser.error('--txt-depth must be zero or greater')
@@ -3898,6 +4472,10 @@ Available metrics for --color-by:
         umap_min_dist=args.umap_min_dist,
         umap_epochs=args.umap_epochs,
         mallet_num_topics=args.mallet_topics,
+        mallet_memory=args.mallet_memory,
+        mallet_max_tokens_per_channel=args.mallet_max_tokens_per_channel,
+        mallet_iterations=args.mallet_iterations,
+        mallet_threads=args.mallet_threads,
     )
 
     classifier.active_focus_text = args.focus_text if args.focus_text else ''
@@ -3926,6 +4504,83 @@ Available metrics for --color-by:
         focus_text=args.focus_text,
         get_metrics_csv=args.get_metrics_csv,
     )
+
+    # Export for gameologist if requested
+    if args.export_gameologist:
+        if not GAMEOLOGIST_AVAILABLE:
+            print("Error: gameologist export requested but atlas_gameologist module not available")
+            return
+
+        # The similarity matrices are indexed by the *successful* texts
+        # (classifier.successful), NOT by args.texts.  If even one input
+        # failed to process, the two lists differ and using args.texts
+        # here would silently misalign every row and column of the
+        # exported relationships.  classifiers may also have re-sorted
+        # args.texts internally, further scrambling the order.
+        successful_texts = list(
+            getattr(classifier, 'successful', None)
+            or classifier.embeddings.keys()
+        )
+        n_successful = len(successful_texts)
+
+        if n_successful == 0:
+            print("Error: no channels processed successfully; nothing to export to gameologist")
+            return
+
+        similarity_matrix = classifier.similarity_matrix
+        burrows_similarity_matrix = classifier.burrows_similarity_matrix
+
+        if similarity_matrix is None or burrows_similarity_matrix is None:
+            print("Error: similarity matrices not available; skipping gameologist export")
+            return
+
+        if (
+            similarity_matrix.shape[0] != n_successful
+            or burrows_similarity_matrix.shape[0] != n_successful
+        ):
+            print(
+                f"Error: matrix shape mismatch "
+                f"(successful={n_successful}, "
+                f"semantic={similarity_matrix.shape[0]}, "
+                f"burrows={burrows_similarity_matrix.shape[0]})"
+            )
+            return
+
+        if n_successful < 1500:
+            print(
+                f"Warning: gameologist usually targets 1500+ channels; "
+                f"exporting {n_successful} channels instead.  The export "
+                f"will still work, but the sister project is designed "
+                f"around a larger corpus."
+            )
+
+        if args.gameologist_dir:
+            gameologist_dir = Path(args.gameologist_dir).expanduser().resolve()
+        else:
+            gameologist_dir = Path(__file__).resolve().parents[1] / "gameologist"
+
+        exporter = GameologistExporter(
+            centroids_dir=Path(__file__).resolve().parents[1],
+            gameologist_dir=gameologist_dir,
+        )
+
+        try:
+            exporter.export_all(
+                texts=successful_texts,
+                cluster_labels=None,
+                similarity_matrix=similarity_matrix,
+                burrows_similarity_matrix=burrows_similarity_matrix,
+                cluster_method=args.cluster_method,
+                leiden_resolution=1.5,
+                cluster_variant_labels=classifier.cluster_variant_labels,
+                cluster_metric_labels=classifier.cluster_metric_labels,
+                burrows_cluster_variant_labels=classifier.burrows_cluster_variant_labels,
+                burrows_cluster_metric_labels=classifier.burrows_cluster_metric_labels,
+            )
+        except Exception as exc:
+            import traceback
+            print(f"Error: gameologist export failed: {exc}")
+            traceback.print_exc()
 
 
 if __name__ == "__main__":

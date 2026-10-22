@@ -62,12 +62,14 @@ For YouTube-style input, the tool expects one directory per "text" (channel, boo
 data/input/
   my_channel/
     txt_files/
-      video1.txt
-      video2.txt
+      video1 [Video ID].txt
+      video2 [Video ID].txt
       ...
     metadata.json       (optional — YouTube-style fields)
     tag.txt             (optional — short text shown under the channel name in hover)
-    archive.txt         (you do not need this but recommend it if you are downloading directly into data/input)
+    hover_panel.txt     (optional — 2-4 hex colors for a top-to-bottom hover gradient, decorate hover for favorite channels)
+    hover_text.txt      (optional — 2-4 hex colors: text outline, text, then optional accents)
+    archive.txt
   another_channel/
     txt_files/
       ...
@@ -119,6 +121,23 @@ For now, the filters look for this format.
 Each `.txt` file is treated as one document. In video-centroid mode, the N most recent documents become the text's centroid; in word-centroid mode, the last N words across all documents do.
 
 For non-YouTube use, `--txt-directory` and `--nltk-corpus` accept alternative sources without this layout.
+
+### Converting downloaded subtitles
+
+The subtitle downloader writes WebVTT files under each channel's `vtt_files/`
+directory. Convert all available channels to VTX and TXT files with:
+
+```bash
+python3 core/batch_converter.py
+```
+
+To process selected channels or remove source VTT files only after verified
+conversion:
+
+```bash
+python3 core/batch_converter.py --channels channel_one channel_two
+python3 core/batch_converter.py --delete-vtt
+```
 
 ## CLI Usage
 
@@ -233,6 +252,14 @@ and `average_sentence_length` metrics.
 
 Each channel directory may also contain an optional `tag.txt`. Its short contents
 appear directly below the channel name in the visualization hover text.
+
+For custom hover styling, add `hover_panel.txt` and/or `hover_text.txt` to a
+channel directory. Put one `#RGB` or `#RRGGBB` color per line (2-4 colors).
+Panel colors blend from top to bottom in listed order. The first hover-text
+color is its outline and the second is the text color. The panel border uses
+the point's current cluster or metric color, so it remains identifiable when
+switching metrics. `hover_gradient.txt` is also accepted as a legacy alias for
+`hover_panel.txt`. Invalid palette files are ignored with a warning.
 
 ### Advanced Features
 
@@ -479,6 +506,11 @@ Interactive Plotly visualization with:
 
 - **CUDA out of memory**: Batch size auto-reduces; try smaller `--embedding-batch-size`
 - **spaCy not found**: Run `pip install spacy && python -m spacy download en_core_web_sm`
+- **Hugging Face model not found**: Centroids uses the local Hugging Face cache when
+  available and downloads missing model files automatically. Set
+  `ATLAS_HF_LOCAL_FILES_ONLY=1` to require cache-only loading for offline use.
+  Alternatively, pre-cache the configured embedding model (and `distilgpt2` when using
+  `--calculate-perplexity`) and copy the Hugging Face cache to the offline machine.
 - **MALLET not found**: Install MALLET and set `MALLET_HOME` or add to PATH
 - **Low token counts**: Use `--embeddings-only-low-token` to skip metrics
 - **Large datasets**: Use Leiden clustering with `--no-leiden-whiten` for homogeneous corpora
