@@ -519,21 +519,15 @@ Interactive Plotly visualization with:
 
 Guide for understanding the structure of data needed to use the YouTube channel part of the program.
 
-Download tool to help download YT videos with the correct structure.
-
 Design CSVs to work well with PowerBI and Tableau.
-
-In progress: Improving MALLET feature (Putting limits into place, making options to help deal with large corpora).
-
-In progress: Experimental mode to help find what function words are common, uncommon, or rare in a text and genre.
 
 Current: Learn about PyTest and Playwright to test functions and web display. 
 
-Actually getting findings from this tool.
+Current: Actually getting findings from this tool.
 
-## Issues
+## TODOs from suggestions
 
-Problem: Installing Centroids is painful because of mixed dependencies 
+**Problem:** Installing Centroids is painful because of mixed dependencies 
 such as Python packages, Java/MALLET, NLTK data, spaCy models, torch/SBERT
 
 Maybe use Docker to wrap it into a container? pyproject.toml + shell script to create venv and download models
