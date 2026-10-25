@@ -360,3 +360,5 @@ if __name__ == "__main__":
         delete_vtt=args.delete_vtt,
         force_channels=args.channels
     )
+
+# python3 centroids/core/batch_converter.py --delete-vtt

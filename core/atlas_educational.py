@@ -32,16 +32,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-
-# ============================================================================
-# LARGE EDUCATIONAL / ACADEMIC LEXICONS
-# ============================================================================
-
 EDUCATIONAL_LEXICONS: Dict[str, set] = {
-
-    # ------------------------------------------------------------------------
-    # GENERAL EDUCATION
-    # ------------------------------------------------------------------------
     "education": {
         "education", "educational", "school", "classroom", "teacher", "student",
         "learner", "learning", "teaching", "lesson", "course", "curriculum",
@@ -57,10 +48,7 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "experiment", "laboratory", "lab", "faculty", "department", "enrollment",
         "credential", "certificate", "degree", "distance", "online", "mooc",
     },
-
-    # ------------------------------------------------------------------------
-    # MATHEMATICS
-    # ------------------------------------------------------------------------
+     
     "mathematics": {
         "mathematics", "math", "mathematical", "number", "integer", "whole",
         "natural", "real", "complex", "rational", "irrational", "fraction",
@@ -77,10 +65,7 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "sphere", "statistics", "random", "distribution", "mean", "median",
         "variance", "standard", "deviation", "regression", "hypothesis",
     },
-
-    # ------------------------------------------------------------------------
-    # STATISTICS / DATA
-    # ------------------------------------------------------------------------
+     
     "statistics_data": {
         "statistics", "statistical", "data", "dataset", "variable", "observation",
         "sample", "population", "parameter", "estimate", "estimator", "mean",
@@ -97,9 +82,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "correlation", "causation", "confounder", "missing", "imputation",
     },
 
-    # ------------------------------------------------------------------------
-    # COMPUTER SCIENCE / PROGRAMMING
-    # ------------------------------------------------------------------------
     "computer_science": {
         "computer", "computing", "computer science", "algorithm", "algorithms",
         "program", "programming", "code", "coding", "software", "hardware",
@@ -117,10 +99,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "functional", "concurrency", "parallel", "distributed", "virtualization",
         "container", "docker", "cloud", "computational", "simulation",
     },
-
-    # ------------------------------------------------------------------------
-    # AI / MACHINE LEARNING / NLP
-    # ------------------------------------------------------------------------
     "ai_machine_learning": {
         "artificial", "intelligence", "ai", "machine", "learning", "deep",
         "neural", "network", "model", "training", "train", "validation", "test",
@@ -138,9 +116,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "syntax", "token", "vector", "dimension", "representation",
     },
 
-    # ------------------------------------------------------------------------
-    # CYBERSECURITY
-    # ------------------------------------------------------------------------
     "cybersecurity": {
         "security", "cybersecurity", "cyber", "privacy", "authentication",
         "authorization", "identity", "password", "credential", "encryption",
@@ -155,10 +130,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "key", "public", "private", "secret", "token", "session", "injection",
         "sql", "xss", "csrf", "backup", "recovery",
     },
-
-    # ------------------------------------------------------------------------
-    # PHYSICS
-    # ------------------------------------------------------------------------
     "physics": {
         "physics", "physical", "matter", "energy", "force", "motion", "mass",
         "weight", "velocity", "speed", "acceleration", "momentum", "impulse",
@@ -173,10 +144,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "rotation", "oscillation", "resonance", "refraction", "reflection",
         "diffraction", "interference",
     },
-
-    # ------------------------------------------------------------------------
-    # CHEMISTRY
-    # ------------------------------------------------------------------------
     "chemistry": {
         "chemistry", "chemical", "atom", "molecule", "element", "compound",
         "mixture", "solution", "solute", "solvent", "reaction", "reactant",
@@ -190,10 +157,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "chromatography", "distillation", "solubility", "thermochemistry",
         "kinetics", "activation", "energy", "enthalpy", "entropy",
     },
-
-    # ------------------------------------------------------------------------
-    # BIOLOGY
-    # ------------------------------------------------------------------------
     "biology": {
         "biology", "biological", "organism", "cell", "tissue", "organ",
         "organism", "species", "population", "community", "ecosystem", "biome",
@@ -210,9 +173,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "predator", "prey", "food", "web", "symbiosis", "parasite",
     },
 
-    # ------------------------------------------------------------------------
-    # GENETICS / MOLECULAR BIOLOGY
-    # ------------------------------------------------------------------------
     "genetics_molecular_biology": {
         "genetics", "genetic", "gene", "genome", "genomic", "dna", "rna",
         "mrna", "trna", "rrna", "chromosome", "chromatin", "nucleotide",
@@ -227,9 +187,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "blast", "genomics", "variant", "annotation",
     },
 
-    # ------------------------------------------------------------------------
-    # MICROBIOLOGY / IMMUNOLOGY
-    # ------------------------------------------------------------------------
     "microbiology_immunology": {
         "microbiology", "microbe", "microbial", "bacteria", "bacterium",
         "archaea", "fungus", "fungi", "yeast", "virus", "viral", "pathogen",
@@ -243,9 +200,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "gut", "commensal", "symbiosis", "virulence", "toxin", "diagnostic",
     },
 
-    # ------------------------------------------------------------------------
-    # MEDICINE / HEALTH / PUBLIC HEALTH
-    # ------------------------------------------------------------------------
     "medicine_health": {
         "medicine", "medical", "health", "healthcare", "patient", "clinical",
         "doctor", "physician", "nurse", "nursing", "hospital", "clinic",
@@ -261,9 +215,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "case", "control", "biomarker", "prognosis", "etiology",
     },
 
-    # ------------------------------------------------------------------------
-    # FITNESS / EXERCISE / SPORTS SCIENCE
-    # ------------------------------------------------------------------------
     "fitness_exercise": {
         "fitness", "exercise", "workout", "training", "athlete", "athletic",
         "sport", "sports", "strength", "conditioning", "cardio", "aerobic",
@@ -277,10 +228,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "running", "cycling", "swimming", "walking", "injury", "rehab",
         "biomechanics", "kinesiology", "physiology", "performance",
     },
-
-    # ------------------------------------------------------------------------
-    # NUTRITION
-    # ------------------------------------------------------------------------
     "nutrition": {
         "nutrition", "nutritional", "food", "diet", "dietary", "calorie",
         "calories", "energy", "protein", "carbohydrate", "carbs", "fat",
@@ -294,9 +241,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "vegetable", "fruit", "legume", "grain", "processed", "fermented",
     },
 
-    # ------------------------------------------------------------------------
-    # NEUROSCIENCE / PSYCHOLOGY
-    # ------------------------------------------------------------------------
     "neuroscience_psychology": {
         "psychology", "psychological", "behavior", "behavioral", "cognition",
         "cognitive", "brain", "neuron", "neural", "synapse", "neurotransmitter",
@@ -311,9 +255,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "plasticity", "neuroplasticity", "lesion", "electrophysiology",
     },
 
-    # ------------------------------------------------------------------------
-    # EARTH SCIENCE / GEOLOGY
-    # ------------------------------------------------------------------------
     "earth_science_geology": {
         "earth", "geology", "geological", "rock", "mineral", "crystal",
         "sediment", "sedimentary", "igneous", "metamorphic", "magma", "lava",
@@ -326,9 +267,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "seismology", "geochemistry", "paleoclimate", "carbon", "cycle",
     },
 
-    # ------------------------------------------------------------------------
-    # PALEONTOLOGY / EVOLUTIONARY HISTORY
-    # ------------------------------------------------------------------------
     "paleontology": {
         "paleontology", "palaeontology", "fossil", "fossils", "fossilization",
         "dinosaur", "dinosaurs", "theropod", "sauropod", "ornithischian",
@@ -342,10 +280,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "fossil", "dating", "radiometric", "jurassic", "cretaceous", "triassic",
         "permian", "cenozoic", "mesozoic", "paleozoic", "prehistoric",
     },
-
-    # ------------------------------------------------------------------------
-    # ASTRONOMY / SPACE
-    # ------------------------------------------------------------------------
     "astronomy_space": {
         "astronomy", "astronomical", "astrophysics", "space", "universe",
         "galaxy", "galaxies", "star", "stellar", "planet", "planetary",
@@ -358,10 +292,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "radiation", "relativity", "quantum", "rocket", "spacecraft",
         "satellite", "mission", "launch", "planet", "atmosphere",
     },
-
-    # ------------------------------------------------------------------------
-    # ENVIRONMENTAL SCIENCE / CLIMATE
-    # ------------------------------------------------------------------------
     "environment_climate": {
         "environment", "environmental", "ecology", "ecosystem", "biodiversity",
         "habitat", "conservation", "sustainability", "sustainable", "climate",
@@ -375,9 +305,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "emission", "mitigation", "adaptation", "resilience", "ecosystem",
     },
 
-    # ------------------------------------------------------------------------
-    # OCEANOGRAPHY / MARINE SCIENCE
-    # ------------------------------------------------------------------------
     "oceanography_marine": {
         "ocean", "marine", "sea", "seawater", "saltwater", "coast", "coastal",
         "shore", "beach", "tide", "tidal", "current", "wave", "coral", "reef",
@@ -389,10 +316,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "vent", "oceanography", "marine", "biology", "acidification", "carbon",
         "current", "bathymetry", "sonar", "submersible", "remotely",
     },
-
-    # ------------------------------------------------------------------------
-    # ENGINEERING
-    # ------------------------------------------------------------------------
     "engineering": {
         "engineering", "engineer", "design", "prototype", "system", "mechanical",
         "electrical", "civil", "chemical", "aerospace", "industrial",
@@ -407,9 +330,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "construction", "thermal", "fluid", "aerodynamics",
     },
 
-    # ------------------------------------------------------------------------
-    # ELECTRONICS / EMBEDDED / ROBOTICS
-    # ------------------------------------------------------------------------
     "electronics_embedded_robotics": {
         "electronics", "electronic", "circuit", "microcontroller", "microprocessor",
         "embedded", "firmware", "hardware", "sensor", "actuator", "motor",
@@ -422,9 +342,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "computer", "vision", "navigation", "actuator", "mechanical", "robot",
     },
 
-    # ------------------------------------------------------------------------
-    # SOCIAL SCIENCE / SOCIOLOGY
-    # ------------------------------------------------------------------------
     "sociology": {
         "sociology", "sociological", "society", "social", "culture", "community",
         "group", "institution", "organization", "class", "status", "identity",
@@ -437,10 +354,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "quantitative", "institution", "modernity", "globalization", "media",
         "social", "movement", "collective", "behavior", "network", "cohort",
     },
-
-    # ------------------------------------------------------------------------
-    # ANTHROPOLOGY
-    # ------------------------------------------------------------------------
     "anthropology": {
         "anthropology", "anthropological", "culture", "cultural", "ethnography",
         "ethnographic", "society", "community", "kinship", "family", "ritual",
@@ -454,9 +367,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "biological", "anthropology", "linguistic", "anthropology",
     },
 
-    # ------------------------------------------------------------------------
-    # ECONOMICS / BUSINESS / FINANCE
-    # ------------------------------------------------------------------------
     "economics": {
         "economics", "economic", "economy", "market", "markets", "supply",
         "demand", "price", "cost", "revenue", "profit", "loss", "consumer",
@@ -481,9 +391,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "management", "leadership", "human", "resources", "recruiting",
     },
 
-    # ------------------------------------------------------------------------
-    # POLITICAL SCIENCE / CIVICS
-    # ------------------------------------------------------------------------
     "political_science_civics": {
         "politics", "political", "government", "governance", "state", "nation",
         "citizen", "citizenship", "democracy", "republic", "election", "voting",
@@ -497,10 +404,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "freedom", "justice", "representation", "constitution", "institution",
         "comparative", "politics", "public", "opinion",
     },
-
-    # ------------------------------------------------------------------------
-    # LAW / CRIMINOLOGY
-    # ------------------------------------------------------------------------
     "law_criminology": {
         "law", "legal", "lawyer", "attorney", "court", "judge", "jury",
         "trial", "case", "statute", "legislation", "constitution", "regulation",
@@ -513,9 +416,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "felony", "fraud", "theft", "assault", "ethics", "compliance",
     },
 
-    # ------------------------------------------------------------------------
-    # HISTORY
-    # ------------------------------------------------------------------------
     "history": {
         "history", "historical", "ancient", "medieval", "modern", "period",
         "era", "century", "millennium", "empire", "kingdom", "dynasty",
@@ -528,9 +428,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "causation", "continuity", "change", "context", "historian",
     },
 
-    # ------------------------------------------------------------------------
-    # ARCHAEOLOGY
-    # ------------------------------------------------------------------------
     "archaeology": {
         "archaeology", "archaeological", "archaeologist", "excavation",
         "excavate", "site", "artifact", "artefact", "pottery", "ceramic",
@@ -543,9 +440,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "preservation", "conservation", "museum", "heritage", "site",
     },
 
-    # ------------------------------------------------------------------------
-    # PHILOSOPHY / LOGIC / ETHICS
-    # ------------------------------------------------------------------------
     "philosophy_logic_ethics": {
         "philosophy", "philosophical", "philosopher", "ethics", "ethical",
         "morality", "moral", "virtue", "justice", "reason", "reasoning",
@@ -558,10 +452,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "political", "philosophy", "utilitarianism", "deontology", "virtue",
         "nihilism", "existentialism", "rationalism", "empiricism", "dualism",
     },
-
-    # ------------------------------------------------------------------------
-    # RELIGION / THEOLOGY / MYTHOLOGY
-    # ------------------------------------------------------------------------
     "religion_theology_mythology": {
         "religion", "religious", "theology", "theological", "faith", "belief",
         "god", "gods", "deity", "divine", "sacred", "holy", "spiritual",
@@ -575,9 +465,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "meditation", "monastic", "reformation",
     },
 
-    # ------------------------------------------------------------------------
-    # LINGUISTICS / LANGUAGE
-    # ------------------------------------------------------------------------
     "linguistics": {
         "linguistics", "linguistic", "language", "speech", "speaker", "word",
         "vocabulary", "lexicon", "grammar", "syntax", "semantics", "pragmatics",
@@ -591,9 +478,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "predictability", "embedding", "sentiment", "discourse", "narrative",
     },
 
-    # ------------------------------------------------------------------------
-    # LITERATURE / WRITING / RHETORIC
-    # ------------------------------------------------------------------------
     "literature_writing_rhetoric": {
         "literature", "literary", "novel", "poem", "poetry", "poet", "fiction",
         "nonfiction", "story", "narrative", "character", "plot", "setting",
@@ -606,10 +490,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "essay", "thesis", "paragraph", "draft", "revision", "editing",
         "citation", "bibliography",
     },
-
-    # ------------------------------------------------------------------------
-    # CULTURE / MEDIA / COMMUNICATION
-    # ------------------------------------------------------------------------
     "culture_media_communication": {
         "culture", "cultural", "media", "communication", "journalism", "news",
         "press", "newspaper", "broadcast", "television", "radio", "podcast",
@@ -622,9 +502,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "misinformation", "disinformation", "source", "credibility", "context",
     },
 
-    # ------------------------------------------------------------------------
-    # ART / ART HISTORY / DESIGN
-    # ------------------------------------------------------------------------
     "art_design": {
         "art", "artist", "artistic", "artwork", "painting", "drawing",
         "sculpture", "photography", "printmaking", "ceramic", "textile",
@@ -637,10 +514,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "baroque", "portrait", "landscape", "still", "life", "typography",
         "layout", "interface", "user", "experience", "ux", "ui",
     },
-
-    # ------------------------------------------------------------------------
-    # MUSIC
-    # ------------------------------------------------------------------------
     "music": {
         "music", "musical", "song", "composer", "composition", "melody",
         "harmony", "rhythm", "beat", "tempo", "meter", "key", "scale",
@@ -653,10 +526,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "staff", "clef", "treble", "bass", "counterpoint", "improvisation",
         "arrangement", "production", "mixing", "mastering",
     },
-
-    # ------------------------------------------------------------------------
-    # GEOGRAPHY / GIS
-    # ------------------------------------------------------------------------
     "geography_gis": {
         "geography", "geographic", "geographical", "map", "mapping", "cartography",
         "cartographic", "gis", "spatial", "location", "place", "region",
@@ -670,9 +539,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "geospatial", "analysis", "location",
     },
 
-    # ------------------------------------------------------------------------
-    # AGRICULTURE / FOOD SCIENCE
-    # ------------------------------------------------------------------------
     "agriculture_food_science": {
         "agriculture", "agricultural", "farming", "farm", "crop", "soil",
         "seed", "plant", "harvest", "irrigation", "fertilizer", "pesticide",
@@ -685,9 +551,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "sensory", "flavor", "taste", "texture", "agroecology", "crop",
     },
 
-    # ------------------------------------------------------------------------
-    # GENERAL SCIENTIFIC METHOD / RESEARCH
-    # ------------------------------------------------------------------------
     "scientific_method_research": {
         "science", "scientific", "research", "researcher", "question",
         "hypothesis", "theory", "model", "experiment", "experimental",
@@ -702,9 +565,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "causality", "correlation", "mechanism", "prediction", "replicate",
     },
 
-    # ------------------------------------------------------------------------
-    # ACADEMIC / RESEARCH LANGUAGE
-    # ------------------------------------------------------------------------
     "academic_discourse": {
         "define", "definition", "concept", "principle", "theory", "framework",
         "approach", "method", "methodology", "evidence", "example", "illustrate",
@@ -719,9 +579,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "distinguish", "identify", "describe", "summarize",
     },
 
-    # ------------------------------------------------------------------------
-    # TUTORIAL / EXPLANATION LANGUAGE
-    # ------------------------------------------------------------------------
     "tutorial_explanation": {
         "tutorial", "guide", "lesson", "learn", "learning", "explain",
         "explanation", "understand", "understanding", "step", "steps",
@@ -734,10 +591,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "strategy", "method", "technique", "apply", "application", "real",
         "world", "example", "practice", "test", "check", "answer",
     },
-
-    # ------------------------------------------------------------------------
-    # CODING TUTORIAL LANGUAGE / SOFTWARE DEVELOPMENT
-    # ------------------------------------------------------------------------
     "programming_tutorial": {
         "python", "java", "javascript", "typescript", "c", "cpp", "csharp",
         "rust", "go", "ruby", "php", "swift", "kotlin", "code", "coding",
@@ -752,9 +605,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "commit", "branch", "merge", "deploy", "deployment", "terminal",
     },
 
-    # ------------------------------------------------------------------------
-    # GENERAL STEM / ENGINEERING CONCEPTS
-    # ------------------------------------------------------------------------
     "stem_general": {
         "science", "technology", "engineering", "mathematics", "stem",
         "experiment", "model", "system", "measurement", "data", "variable",
@@ -767,11 +617,6 @@ EDUCATIONAL_LEXICONS: Dict[str, set] = {
         "device", "system", "model", "solution", "problem", "experiment",
     },
 }
-
-
-# ============================================================================
-# PHRASE / DISCOURSE PATTERNS
-# ============================================================================
 
 EDUCATIONAL_PHRASES: Dict[str, List[str]] = {
     "definition_phrases": [
@@ -874,20 +719,10 @@ EDUCATIONAL_PHRASES: Dict[str, List[str]] = {
     ],
 }
 
-
-# ============================================================================
-# COMPILED PATTERNS
-# ============================================================================
-
 PHRASE_PATTERNS: Dict[str, List[re.Pattern]] = {
     name: [re.compile(pattern, re.IGNORECASE) for pattern in patterns]
     for name, patterns in EDUCATIONAL_PHRASES.items()
 }
-
-
-# ============================================================================
-# METRIC CONFIGURATION
-# ============================================================================
 
 EDUCATIONAL_METRIC_CONFIGS: Dict[str, Dict[str, Any]] = {}
 
@@ -937,10 +772,7 @@ EDUCATIONAL_METRIC_CONFIGS.update({
     },
 })
 
-
-# ============================================================================
 # MIXIN
-# ============================================================================
 
 class EducationalMetricsMixin:
     """Compute methods for the broad educational metrics."""
@@ -1020,12 +852,7 @@ class EducationalMetricsMixin:
         words = self._educational_runtime_words(tokens)
         lexicon = set().union(*(EDUCATIONAL_LEXICONS[name] for name in tutorial_fields))
         return float(sum(1 for word in words if word in lexicon))
-
-
-# ============================================================================
-# REGISTRATION
-# ============================================================================
-
+ 
 def register_educational_metrics(metric_config: Any, classifier_cls: Any) -> None:
     """
     Register all educational metrics into the existing metric registry.
@@ -1042,12 +869,7 @@ def register_educational_metrics(metric_config: Any, classifier_cls: Any) -> Non
             or method_name.startswith("_compute_")
         ):
             setattr(classifier_cls, method_name, method)
-
-
-# ============================================================================
-# OPTIONAL STANDALONE ACCESS
-# ============================================================================
-
+ 
 def get_educational_lexicons() -> Dict[str, set]:
     """Return the domain lexicons for inspection or external tooling."""
     return EDUCATIONAL_LEXICONS

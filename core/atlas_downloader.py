@@ -28,7 +28,7 @@ class SubtitleDownloader(tk.Toplevel):
         self.max_downloads = 300
         self.current_downloads = 0
         self.batch_filter_handles = []
-        self.batch_download_number = 150
+        self.batch_download_number = 50
         
         # Threading
         self.worker_thread = None
@@ -696,17 +696,24 @@ class SubtitleDownloader(tk.Toplevel):
         
         command = [
             self.get_yt_dlp_path(),
-            "--write-auto-sub",
-            "--sub-lang", "en",
+            "--write-auto-subs",
+            "--sub-langs", "en",
             "--skip-download",
+            "-f", "all",
+            #"--sub-format", "vtt",
             "--convert-subs", "vtt",
             "--print-json",
             "--download-archive", archive_file,
             "--no-warnings",
             "--force-write-archive",
             "--no-overwrites",
-            #"--sleep-subtitles", "1",
-            "--extractor-args", "youtube:player-client=default,mweb",
+            "--sleep-subtitles", "0.1",
+            #"--extractor-args", "youtube:player-client=default,mweb",
+            "--extractor-args", "youtube:player_client=default,web_safari",
+            #"--extractor-args", "youtube:player_client=mweb,web_safari",
+            "--js-runtimes", "node",    
+            "--no-check-formats", 
+            #"--extractor-args", "youtube:player_client=tv_downgraded,ios,default", 
             "-o", output_template,
             #"--cookies-from-browser", "firefox",
             "--max-downloads", str(self.max_downloads),
