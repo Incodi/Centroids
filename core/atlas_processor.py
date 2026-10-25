@@ -112,14 +112,28 @@ class TextProcessor:
             return
 
         print("Loading perplexity model...")
-        perplexity_tokenizer = AutoTokenizer.from_pretrained(
-            model_name,
-            local_files_only=True,
-        )
-        perplexity_model = AutoModelForCausalLM.from_pretrained(
-            model_name,
-            local_files_only=True,
-        )
+        try:
+            perplexity_tokenizer = AutoTokenizer.from_pretrained(
+                model_name,
+                local_files_only=huggingface_local_files_only(model_name),
+            )
+            perplexity_model = AutoModelForCausalLM.from_pretrained(
+                model_name,
+                local_files_only=huggingface_local_files_only(model_name),
+            )
+        except OSError as exc:
+            offline = huggingface_local_files_only(model_name)
+            mode = (
+                'The model is not available in the local Hugging Face cache.'
+                if offline
+                else 'Hugging Face could not download the model.'
+            )
+            raise RuntimeError(
+                f'Unable to load perplexity model "{model_name}". {mode} '
+                'Set ATLAS_HF_LOCAL_FILES_ONLY=0 with internet access to '
+                'download it, or pre-cache the model before enabling '
+                'perplexity.'
+            ) from exc
         perplexity_model.eval()
 
         if torch.cuda.is_available():

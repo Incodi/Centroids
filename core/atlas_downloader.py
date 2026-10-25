@@ -2129,4 +2129,4 @@ if __name__ == "__main__":
 
     root.mainloop()
 
-    #caffeinate -i python3 src/dloader.py
+    #caffeinate -i python3 core/atlas_downloader.py
