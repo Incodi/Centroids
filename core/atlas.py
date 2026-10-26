@@ -1,0 +1,4672 @@
+import argparse
+import csv
+import gc
+import hashlib
+import importlib
+import inspect
+import json
+import logging
+import math
+import os
+import re
+import shutil
+import subprocess
+import threading
+import time
+import webbrowser
+from collections import Counter, defaultdict, deque
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
+
+import numpy as np
+
+logging.getLogger('torch.distributed.elastic.multiprocessing.redirects').setLevel(logging.ERROR)
+logging.getLogger('torch.utils._pytree').setLevel(logging.ERROR)
+
+import torch
+from scipy.stats import rankdata
+from scipy.spatial.distance import cdist
+from sentence_transformers import SentenceTransformer
+import umap
+
+try:
+    from sklearn.cluster import HDBSCAN as SklearnHDBSCAN
+except ImportError:
+    SklearnHDBSCAN = None
+
+from sklearn.cluster import KMeans
+from sklearn.metrics.pairwise import cosine_similarity
+from sklearn.preprocessing import StandardScaler
+from lexicalrichness import LexicalRichness
+
+try:
+    import enchant
+    ENCHANT_AVAILABLE = True
+    enchant_dict = None
+    enchant_word_check_cache = {}
+except ImportError:
+    enchant = None
+    ENCHANT_AVAILABLE = False
+    enchant_dict = None
+    enchant_word_check_cache = {}
+
+from plotly import graph_objects as go
+
+try:
+    from atlas_gameologist import GameologistExporter
+    GAMEOLOGIST_AVAILABLE = True
+except ImportError:
+    GameologistExporter = None
+    GAMEOLOGIST_AVAILABLE = False
+
+from helpers.atlas_config import *  # noqa
+from helpers.atlas_config import (
+    _format_trimmed_decimal,
+    _is_word_count_metric_config,
+)
+from helpers.atlas_cache import SimpleCache
+from metricsmixin.atlas_metrics import TextMetricsMixin
+from helpers.atlas_processor import TextProcessor
+import helpers.atlas_config as cfg
+
+try:
+    import igraph as ig
+    import leidenalg as la
+    LEIDEN_AVAILABLE = True
+except ImportError:
+    ig = None
+    la = None
+    LEIDEN_AVAILABLE = False
+
+_WORD_RUN = re.compile(r"\w+")
+_SEQ = r"\w+(?: \w+)*"
+_PURE_TERMS_RE = re.compile(rf"^\\b(?:\(\?:)?({_SEQ}(?:\|{_SEQ})*)\)?\\b$")
+_pure_terms_cache: Dict[Any, Optional[Dict[int, frozenset]]] = {}
+_HEX_COLOR_RE = re.compile(r'^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$')
+
+_HOVER_EXCLUDED = {
+    'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
+    'imperative_exclamation_count', 'academic_word_density',
+    'article_count_raw', 'conjunction_count_raw', 'vulnerability',
+    'family_exclamations', 'pronoun_article_ratio',
+    'deictic_spatial_temporal', 'elaboration_explanation_ratio',
+    'narration_continuation_ratio',
+    'insult', 'bodily_humor', 'dis_ratio',
+    'word_burstiness', 'semantic_disparity', 'guppa', 'pronoun_switching',
+    'compression', 'moving_lzma_cr', 'normalized_compression_ratio',
+    'window_normalized_lzma_cr',
+    'vader_positivity', 'vader_volatility',
+    'vader_positivity_centroid', 'vader_volatility_centroid',
+    'fighting_words_peak_z1', 'fighting_words_floor_z1000',
+    'fighting_words_peak_z1_centroid', 'fighting_words_floor_z1000_centroid',
+}
+
+
+def _ambiguous(alts) -> bool:
+    alts = list(alts)
+    for u in alts:
+        for v in alts:
+            lu, lv = len(u), len(v)
+            for s in range(1, lu):
+                if lu - s <= lv and u[s:] == v[:lu - s]:
+                    return True
+            if u != v and lu < lv and any(v[i:i + lu] == u for i in range(lv - lu + 1)):
+                return True
+    return False
+
+
+def _pure_terms(pattern):
+    try:
+        return _pure_terms_cache[pattern]
+    except KeyError:
+        pass
+
+    terms = None
+    src = getattr(pattern, 'pattern', None)
+
+    if isinstance(src, str) and not (pattern.flags & re.VERBOSE):
+        m = _PURE_TERMS_RE.match(src)
+        if m:
+            has_open_wrapper = src.startswith('\\b(?:')
+            has_close_wrapper = src.endswith(')\\b')
+            wrapper_state_matches = (has_open_wrapper == has_close_wrapper)
+
+            if wrapper_state_matches:
+                lower = bool(pattern.flags & re.IGNORECASE)
+                alts = {
+                    tuple(w.lower() if lower else w for w in a.split(' '))
+                    for a in m.group(1).split('|')
+                }
+                if not _ambiguous(alts):
+                    by_k: Dict[int, set] = {}
+                    for a in alts:
+                        by_k.setdefault(len(a), set()).add(a)
+                    terms = {k: frozenset(v) for k, v in by_k.items()}
+
+    _pure_terms_cache[pattern] = terms
+    return terms
+
+
+def _round_list(arr, decimals: int = 5):
+    return np.round(np.asarray(arr, dtype=np.float64), decimals).tolist()
+
+
+class TextClassifier(TextMetricsMixin):
+
+    CROSS_CHANNEL_METRICS = {'burrows_cosine_disagreement'}
+
+    _CORPUS_METRICS = CROSS_CHANNEL_METRICS | {
+        FIGHTING_WORDS_PEAK_METRIC,
+        FIGHTING_WORDS_FLOOR_METRIC,
+        FIGHTING_WORDS_PEAK_CENTROID_METRIC,
+        FIGHTING_WORDS_FLOOR_CENTROID_METRIC,
+    }
+
+    BURROWS_FUNCTION_WORDS = tuple(sorted({
+        'i', 'you', 'he', 'it', 'we', 'they',
+        'me', 'him', 'us', 'them',
+        'my', 'your', 'his', 'its', 'our', 'their', 'mine', 'yours', 'ours', 'theirs',
+        'myself', 'yourself', 'himself', 'themselves',
+        'be', 'is', 'am', 'are', 'was', 'were', 'been', 'being',
+        'have', 'has', 'had', 'having',
+        'do', 'does', 'did', 'doing',
+        'will', 'would', 'should', 'can', 'could', 'may', 'might', 'must',
+        'to', 'of', 'and', 'a', 'in', 'that', 'for', 'not', 'on', 'with', 'as', 'at',
+        'but', 'by', 'from', 'or', 'an', 'if', 'about', 
+        'after', 'because', 'any', 'than', 'into', 'through', 'before', 
+        'this', 'these', 'those', 'there', 'what', 'so', 'who', 'which', 'when',
+        'no', 'only', 'other', 'some', 'then', 'now', 'look', 'come', 'go', 'get',
+        'take', 'see', 'think', 'also', 'use', 'how', 'even', 'want', 'give',
+        'most', 'each', 'every', 'both', 'few', 'more', 'such', 'own', 'same', 'too',
+        'very', 'just', 'here', 'why', 'once', 'the',
+        'oh', 'yeah', 'yes', 'okay', 'like', 'well', 'uh', 'um', 'right',
+        'mhm', 'next', 'again',
+    }))
+
+    BURROWS_CONTRACTIONS = {
+        "i'm": "i am", "i've": "i have", "i'd": "i would", "i'll": "i will",
+        "you're": "you are", "you've": "you have", "you'd": "you would", "you'll": "you will",
+        "he's": "he is", "he'd": "he would", "he'll": "he will",
+        "she's": "he is", "he'd": "he would", "he'll": "he will",
+        "it's": "it is", "it'd": "it would", "it'll": "it will",
+        "we're": "we are", "we've": "we have", "we'd": "we would", "we'll": "we will",
+        "they're": "they are", "they've": "they have", "they'd": "they would", "they'll": "they will",
+        "that's": "that is", "that'd": "that would", "that'll": "that will",
+        "there's": "there is", "there'd": "there would", "there'll": "there will",
+        "here's": "here is", "what's": "what is", "who's": "who is", "how's": "how is",
+        "isn't": "is not", "aren't": "are not", "wasn't": "was not", "weren't": "were not",
+        "don't": "do not", "doesn't": "does not", "didn't": "did not",
+        "can't": "can not", "couldn't": "could not", "won't": "will not", "wouldn't": "would not",
+        "shouldn't": "should not", "mustn't": "must not", "let's": "let us",
+        "y'all": "you all",
+        # we are going to make all gendered pronouns into one token for Burrows distance.
+        # this prevents female writers from being clustered together and properly placed in a niche.
+        # but we will have to use the male version of the word due to the commonality of it in texts.
+        "her": "him",
+        "she": "he",
+        "herself": "himself",
+        "okay": "ok",
+    }
+
+    @classmethod
+    def get_word_count_metric_names(cls) -> List[str]:
+        selected = set()
+        for metric_name, config in MetricConfig.METRICS.items():
+            compute_method = config.get('compute_method', '')
+            if metric_name.endswith('_count'):
+                selected.add(metric_name)
+                continue
+            if compute_method.startswith('_compute'):
+                method = getattr(cls, compute_method, None)
+                if method is None:
+                    continue
+                try:
+                    src = inspect.getsource(method)
+                except Exception:
+                    src = ''
+                if 'PATTERNS' in src or 're.' in src:
+                    selected.add(metric_name)
+        return sorted(selected)
+
+    def _target_metrics(
+        self,
+        include_global_metrics: bool = False,
+        skip_centroid_duplicates: bool = False,
+        skip_video_centroid_only: bool = False,
+    ) -> List[str]:
+        if getattr(self, 'no_metrics', False):
+            return []
+
+        if self.word_counts_only:
+            names = self.get_word_count_metric_names()
+        else:
+            names = MetricConfig.get_metric_names()
+
+        fw = (
+            FIGHTING_WORDS_PEAK_METRIC,
+            FIGHTING_WORDS_FLOOR_METRIC,
+            FIGHTING_WORDS_PEAK_CENTROID_METRIC,
+            FIGHTING_WORDS_FLOOR_CENTROID_METRIC,
+        )
+        if not (include_global_metrics and getattr(self, 'compute_fighting_words', False)):
+            names = [n for n in names if n not in fw]
+
+        names = [n for n in names if n not in self.CROSS_CHANNEL_METRICS]
+
+        if not self.processor.external_documents:
+            names = [
+                n for n in names
+                if not MetricConfig.METRICS.get(n, {}).get('sentence_metric', False)
+            ]
+
+        if skip_centroid_duplicates:
+            names = [n for n in names if not MetricConfig.is_centroid_duplicate(n)]
+        if skip_video_centroid_only:
+            names = [n for n in names if not MetricConfig.is_video_centroid_only(n)]
+
+        return names
+
+    @classmethod
+    def _burrows_profile(cls, tokens: List[str]) -> np.ndarray:
+        profile = np.zeros(len(cls.BURROWS_FUNCTION_WORDS), dtype=np.float64)
+        if not tokens:
+            return profile
+
+        word_indices = {word: i for i, word in enumerate(cls.BURROWS_FUNCTION_WORDS)}
+
+        expanded = []
+        for token in tokens:
+            expanded.extend(cls.BURROWS_CONTRACTIONS.get(token, token).split())
+
+        for token in expanded:
+            idx = word_indices.get(token)
+            if idx is not None:
+                profile[idx] += 1.0
+
+        return profile / len(expanded)
+
+    @classmethod
+    def _burrows_dist(
+        cls,
+        profiles: Dict[str, np.ndarray],
+        texts: List[str],
+    ) -> Tuple[Optional[np.ndarray], List[int]]:
+        valid = [i for i, text in enumerate(texts) if text in profiles]
+        if len(valid) < 2:
+            return None, []
+
+        mat = np.vstack([profiles[texts[i]] for i in valid])
+        mu = mat.mean(axis=0)
+        sd = mat.std(axis=0, ddof=0)
+        sd[sd == 0] = 1e-12
+        z = (mat - mu) / sd
+
+        return cdist(z, z, 'cityblock') / z.shape[1], valid
+
+    @classmethod
+    def _burrows_scores(
+        cls,
+        dist: Optional[np.ndarray],
+        valid: List[int],
+        emb: np.ndarray,
+        texts: List[str],
+    ) -> Dict[str, float]:
+        scores: Dict[str, float] = {text: float('nan') for text in texts}
+        if dist is None or len(valid) < 3:
+            return scores
+
+        norm = emb / np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-12)
+        sem_dist = 1.0 - norm @ norm.T
+
+        for row, ti in enumerate(valid):
+            peers = [p for p in range(len(valid)) if p != row]
+            if len(peers) < 2:
+                continue
+            sr = rankdata(dist[row, peers], method='average')
+            mr = rankdata(
+                sem_dist[ti, [valid[p] for p in peers]],
+                method='average',
+            )
+            sc = sr - sr.mean()
+            mc = mr - mr.mean()
+            denom = np.linalg.norm(sc) * np.linalg.norm(mc)
+            rho = float(sc @ mc / denom) if denom else 0.0
+            scores[texts[ti]] = float(1.0 - rho)
+
+        return scores
+
+    @classmethod
+    def _semantic_capitals(
+        cls,
+        emb: np.ndarray,
+        labels: List[Optional[int]],
+        texts: List[str],
+    ) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"world": None, "byId": {}}
+        if not texts or emb.shape[0] == 0:
+            return out
+
+        norms = np.linalg.norm(emb, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        normalized = emb / norms
+
+        gc = emb.mean(axis=0)
+        gn = float(np.linalg.norm(gc))
+        if gn > 0:
+            gc = gc / gn
+        out["world"] = texts[int(np.argmax(normalized @ gc))]
+
+        members_by_id: Dict[int, List[int]] = {}
+        for i, lab in enumerate(labels):
+            if lab is None:
+                continue
+            try:
+                cid = int(lab)
+            except (TypeError, ValueError):
+                continue
+            members_by_id.setdefault(cid, []).append(i)
+
+        for cid, members in members_by_id.items():
+            if not members:
+                continue
+            sub = emb[members]
+            centroid = sub.mean(axis=0)
+            cn = float(np.linalg.norm(centroid))
+            if cn > 0:
+                centroid = centroid / cn
+            sub_n = sub / norms[members]
+            best = int(np.argmax(sub_n @ centroid))
+            out["byId"][str(cid)] = texts[members[best]]
+
+        return out
+
+    @classmethod
+    def _burrows_capitals(
+        cls,
+        dist: Optional[np.ndarray],
+        valid: List[int],
+        labels: List[Optional[int]],
+        texts: List[str],
+    ) -> Dict[str, Any]:
+        out: Dict[str, Any] = {"world": None, "byId": {}}
+        if dist is None or not valid:
+            return out
+
+        def row_means(sub: np.ndarray) -> np.ndarray:
+            finite = np.isfinite(sub)
+            sums = np.where(finite, sub, 0.0).sum(axis=1)
+            counts = finite.sum(axis=1)
+            return np.where(counts > 0, sums / np.maximum(counts, 1), np.inf)
+
+        out["world"] = texts[valid[int(np.argmin(row_means(dist)))]]
+
+        cluster_pos: Dict[int, List[int]] = {}
+        for pos, ti in enumerate(valid):
+            lab = labels[ti]
+            if lab is None:
+                continue
+            try:
+                cid = int(lab)
+            except (TypeError, ValueError):
+                continue
+            cluster_pos.setdefault(cid, []).append(pos)
+
+        for cid, positions in cluster_pos.items():
+            if not positions:
+                continue
+            sub = dist[np.ix_(positions, positions)]
+            best = int(np.argmin(row_means(sub)))
+            out["byId"][str(cid)] = texts[valid[positions[best]]]
+
+        return out
+
+    def _load_burrows_profile(
+        self, text: str, filter_kwargs: Dict[str, Any]
+    ) -> Optional[np.ndarray]:
+        filters = {k: v for k, v in filter_kwargs.items() if v is not None}
+        ignore_ids = filter_kwargs.get('ignore_ids', set())
+
+        if self.centroid_mode == 'video':
+            files = self.processor._get_filtered_files(text, filters, ignore_ids)
+            if not files:
+                return None
+            result = self.processor.load_video_centroids(
+                text, self.centroid_videos, filters, ignore_ids,
+                max_accumulated_tokens=self.stat_word_count,
+                precomputed_files=files,
+                need_embeddings=False,
+                need_stat_corpus=True,
+                need_centroid_tokens=True,
+            )
+            if not result:
+                return None
+            stat_tokens, centroid_tokens = result[2], result[3]
+            tokens = stat_tokens if stat_tokens else centroid_tokens
+            return self._burrows_profile(tokens) if tokens else None
+
+        result = self.processor.get_tokens(text, filters, ignore_ids)
+        if not result:
+            return None
+        tokens = result[0]
+        if self.centroid_mode == 'word' and self.centroid_words > 0:
+            tokens = tokens[-self.centroid_words:]
+        return self._burrows_profile(tokens)
+
+    @classmethod
+    def _expand_burrows_dist(
+        cls,
+        n: int,
+        distances: np.ndarray,
+        valid: List[int],
+    ) -> np.ndarray:
+        full = np.full((n, n), np.nan, dtype=np.float64)
+        for r, row in enumerate(valid):
+            for c, col in enumerate(valid):
+                full[row, col] = distances[r, c]
+
+    @classmethod
+    def _expand_burrows_distance_matrix(
+        cls,
+        n: int,
+        distances: np.ndarray,
+        valid: List[int],
+    ) -> np.ndarray:
+        """Expand a compact valid-subset distance matrix to an n×n symmetric matrix.
+
+        Texts without a style profile receive a large fill distance so UMAP
+        pushes them to the periphery rather than smearing the whole layout.
+        """
+        full = np.full((n, n), np.nan, dtype=np.float64)
+        for r_idx, row in enumerate(valid):
+            for c_idx, col in enumerate(valid):
+                full[row, col] = distances[r_idx, c_idx]
+
+        finite_mask = np.isfinite(full)
+        if finite_mask.any():
+            fill_value = float(np.nanmax(full)) * 1.2
+        else:
+            fill_value = 1.0
+
+        full[np.isnan(full)] = fill_value
+        np.fill_diagonal(full, 0.0)
+
+        # Force exact symmetry (the diagonal is already 0)
+        full = (full + full.T) * 0.5
+        np.fill_diagonal(full, 0.0)
+
+        return full.astype(np.float32)
+
+    def _burrows_reduce_dimensions(
+        self,
+        distances: np.ndarray,
+        n: int,
+    ) -> np.ndarray:
+        """Run UMAP on a precomputed Burrows distance matrix."""
+        if n == 0:
+            return np.zeros((0, 2), dtype=np.float32)
+
+        if n == 1:
+            return np.zeros((1, 2), dtype=np.float32)
+
+        if n == 2:
+            d = float(distances[0, 1])
+            return np.array([[0.0, 0.0], [d, 0.0]], dtype=np.float32)
+
+        n_neighbors = min(5 if n <= 30 else 50, n - 1)
+        if self.umap_neighbors is not None:
+            n_neighbors = min(self.umap_neighbors, n - 1)
+        n_neighbors = max(2, n_neighbors)
+
+        reducer = umap.UMAP(
+            n_components=2,
+            metric='precomputed',
+            n_neighbors=n_neighbors,
+            min_dist=self.umap_min_dist,
+            init='spectral',
+            random_state=20,
+            n_jobs=1,
+            verbose=False,
+            n_epochs=self.umap_epochs,
+            low_memory=False,
+        )
+        return reducer.fit_transform(distances)
+
+    def _metric_is_eligible(self, name: str) -> bool:
+        return MetricConfig.is_metric_eligible(
+            name,
+            enable_spacy=self.enable_spacy,
+            needs_perplexity_model=self.processor.needs_perplexity_model,
+            enable_ngram_entropy=self.enable_ngram_entropy,
+            fast_mode=self.fast_mode,
+        )
+
+    def _skipped(self, name: str) -> bool:
+        return not self._eligible(name)
+
+    def _metric_needs_compute(self, name: str, cached_metrics: Dict[str, Any]) -> bool:
+        if name not in cached_metrics:
+            return self._metric_is_eligible(name)
+        if cached_metrics[name] is not None:
+            return False
+        return self._eligible(name)
+
+    @staticmethod
+    def _summarize(names: List[str], max_items: Optional[int] = 16) -> str:
+        if not names:
+            return "none"
+        uniq = sorted(set(names))
+        if max_items is None or max_items <= 0 or len(uniq) <= max_items:
+            return ', '.join(uniq)
+        return f"{', '.join(uniq[:max_items])} ... (+{len(uniq) - max_items} more)"
+
+    def _print_summary(self, values: Dict[str, Any], source: str) -> None:
+        if not values:
+            return
+
+        done = sorted(n for n, v in values.items() if v is not None)
+        skipped = sorted(n for n, v in values.items() if v is None)
+
+        print(f"    Metrics finished: {len(done)}/{len(values)} [{source}]")
+
+        embed_m = [n for n in done if 'embedding' in n]
+        wc_m = [
+            n for n in done
+            if _is_word_count_metric_config(n, MetricConfig.METRICS.get(n, {}))
+        ]
+        other = [n for n in done if n not in set(wc_m) | set(embed_m)]
+
+        if wc_m:
+            print(f"      • Word counts: {len(wc_m)}")
+        if embed_m:
+            print(f"      • Embedding metrics: {len(embed_m)}")
+        if other:
+            print(f"      • Other metrics: {len(other)}")
+
+        if word_count_metrics:
+            print(f"      • Word counts: {len(word_count_metrics)}")
+        if embedding_metrics:
+            print(f"      • Embedding metrics: {len(embedding_metrics)}")
+        if other_metrics:
+            print(f"      • Other metrics: {len(other_metrics)}")
+
+        category_buckets: Dict[str, List[str]] = defaultdict(list)
+        for metric_name in completed:
+            category = MetricConfig.METRICS.get(metric_name, {}).get(
+                'category', 'Uncategorized'
+            )
+            category_buckets[str(category)].append(metric_name)
+
+        for category_name in sorted(category_buckets):
+            names_in_category = category_buckets[category_name]
+            print(f"      • {category_name}: {len(names_in_category)}")
+
+        if skipped:
+            print(f"      • Skipped/unavailable: {len(skipped)}")
+
+    @staticmethod
+    def _embed_device() -> str:
+        if torch.cuda.is_available():
+            return 'cuda'
+        if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available():
+            return 'mps'
+        return 'cpu'
+
+    def _encode(self, texts: List[str]) -> np.ndarray:
+        if not texts:
+            return np.array([], dtype=np.float32)
+
+        batch = max(1, int(self.embedding_batch_size))
+        while True:
+            try:
+                return self.model.encode(
+                    texts,
+                    batch_size=batch,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                    normalize_embeddings=False,
+                )
+            except RuntimeError as e:
+                msg = str(e)
+                oom = (
+                    'Invalid buffer size' in msg
+                    or 'out of memory' in msg.lower()
+                    or 'CUDA out of memory' in msg
+                )
+                if not oom or batch <= 1:
+                    raise
+                batch = max(1, batch // 2)
+                self.embedding_batch_size = batch
+                print(
+                    f"    Warning: embedding encode memory pressure, "
+                    f"retrying with batch_size={batch}"
+                )
+
+    def __init__(
+        self,
+        use_cache: bool = True,
+        active_metric: Optional[str] = None,
+        enable_spacy: bool = False,
+        enable_ngram_entropy: bool = False,
+        fast_mode: bool = False,
+        word_counts_only: bool = False,
+        force_latest_cache: bool = False,
+        embedding_model: Optional[str] = None,
+        embedding_chunk_size: Optional[int] = None,
+        embedding_min_chunk: Optional[int] = None,
+        embedding_batch_size: Optional[int] = None,
+        no_metrics: bool = False,
+        compute_fighting_words: bool = False,
+        compute_fighting_words_floor: Optional[bool] = None,
+        centroid_mode: Optional[str] = None,
+        centroid_videos: int = 10,
+        centroid_words: int = 1000000,
+        stat_word_count: int = 1000000,
+        cluster_method: str = 'hdbscan',
+        leiden_resolution_min: float = 0.3,
+        leiden_resolution_max: float = 2.0,
+        leiden_k_neighbors: int = 20,
+        leiden_whiten: bool = True,
+        umap_neighbors: Optional[int] = None,
+        umap_min_dist: float = 0.1,
+        umap_epochs: int = 200,
+        tomotopy_num_topics: int = 0,
+        tomotopy_iterations: int = 1000,
+        tomotopy_threads: Optional[int] = None,
+    ):
+        self.embedding_model_name = resolve_embedding_model_name(embedding_model)
+        try:
+            self.model = SentenceTransformer(
+                self.embedding_model_name,
+                local_files_only=huggingface_local_files_only(
+                    self.embedding_model_name
+                ),
+            )
+        except OSError as exc:
+            offline = huggingface_local_files_only(self.embedding_model_name)
+            mode = (
+                'The model is not available in the local Hugging Face cache.'
+                if offline
+                else 'Hugging Face could not download the model.'
+            )
+            raise RuntimeError(
+                f'Unable to load embedding model '
+                f'"{self.embedding_model_name}". {mode} '
+                'Set ATLAS_HF_LOCAL_FILES_ONLY=0 with internet access to '
+                'download it, or pre-cache the model before running Centroids.'
+            ) from exc
+        profile = get_embedding_model_profile(self.embedding_model_name)
+        self.embedding_device = self._detect_embedding_device()
+
+        profile = get_embedding_model_profile(self.embedding_model_name)
+        self.embedding_device = self._embed_device()
+
+        detected_ctx = int(getattr(self.model, 'max_seq_length', 0) or 0)
+        self.embedding_context_window = (
+            detected_ctx if detected_ctx > 0 else profile['context_window']
+        )
+
+        practical = max(16, int(profile.get(
+            f"practical_max_tokens_{self.embedding_device}",
+            profile['chunk_target'],
+        )))
+
+        if embedding_chunk_size is None:
+            chunk = profile['chunk_target']
+            if self.embedding_context_window > 0:
+                chunk = min(chunk, max(16, self.embedding_context_window - 8))
+            chunk = min(int(chunk), practical)
+        else:
+            chunk = int(embedding_chunk_size)
+            if self.embedding_context_window > 0:
+                chunk = min(chunk, max(16, self.embedding_context_window - 8))
+
+        if embedding_min_chunk is None:
+            embedding_min_chunk = profile['min_chunk']
+        if chunk is not None and embedding_min_chunk is not None:
+            embedding_min_chunk = min(int(embedding_min_chunk), int(chunk))
+
+        self.embedding_batch_size = int(embedding_batch_size or profile['batch_size'])
+        if self.embedding_device == 'cpu':
+            self.embedding_batch_size = min(self.embedding_batch_size, 8)
+        elif self.embedding_device == 'mps':
+            self.embedding_batch_size = min(self.embedding_batch_size, 16)
+
+        self.embedding_cache_signature: Dict[str, Any] = {
+            'embedding_model': self.embedding_model_name,
+            'embedding_context_window': int(self.embedding_context_window),
+            'embedding_chunk_size': int(chunk),
+            'embedding_min_chunk': int(embedding_min_chunk),
+        }
+
+        print(
+            f"Embedding model: {self.embedding_model_name} "
+            f"| device={self.embedding_device} "
+            f"| context={self.embedding_context_window} "
+            f"| chunk={int(chunk)} "
+            f"| min_chunk={int(embedding_min_chunk)} "
+            f"| batch={self.embedding_batch_size}"
+        )
+
+        self.base_dir = Path(__file__).resolve().parents[1]
+        self.cache = SimpleCache(self.base_dir / "cache" / "metrics") if use_cache else None
+        self.active_metric = active_metric
+        self.enable_spacy = enable_spacy
+        self.enable_ngram_entropy = enable_ngram_entropy
+        self.fast_mode = fast_mode
+        self.word_counts_only = word_counts_only
+        self.no_metrics = no_metrics
+        self.force_latest_cache = force_latest_cache
+        self.compute_fighting_words = (
+            compute_fighting_words
+            if compute_fighting_words_floor is None
+            else compute_fighting_words_floor
+        )
+
+        self._fighting_words_unigrams: Dict[str, Counter] = {}
+        self._fighting_words_token_counts: Dict[str, int] = {}
+        self._fighting_words_unigrams_centroid: Dict[str, Counter] = {}
+        self._fighting_words_token_counts_centroid: Dict[str, int] = {}
+        self._fighting_words_peak_unigrams: Dict[str, str] = {}
+        self._fighting_words_floor_unigrams: Dict[str, str] = {}
+        self._fighting_words_peak_unigrams_centroid: Dict[str, str] = {}
+        self._fighting_words_floor_unigrams_centroid: Dict[str, str] = {}
+        self._centroid_equals_stat: Dict[str, bool] = {}
+        self._current_text_name: Optional[str] = None
+        self._current_video_count: int = 0
+
+        self.centroid_mode = centroid_mode
+        self.centroid_videos = centroid_videos
+        self.centroid_words = centroid_words
+        self.stat_word_count = stat_word_count
+
+        self.tomotopy_num_topics: int = int(tomotopy_num_topics or 0)
+        self.tomotopy_iterations: int = max(1, int(tomotopy_iterations or 1000))
+        self.tomotopy_threads: int = max(1, int(tomotopy_threads or min(8, os.cpu_count() or 1)))
+        self.tomotopy_topic_proportions: Dict[str, Dict[int, float]] = {}
+        self.tomotopy_topic_labels: Dict[int, str] = {}
+
+        self.cluster_method = (cluster_method or 'hdbscan').lower()
+        self.leiden_resolution_min = float(leiden_resolution_min)
+        self.leiden_resolution_max = float(leiden_resolution_max)
+        self.leiden_k_neighbors = int(leiden_k_neighbors)
+        self.leiden_whiten = bool(leiden_whiten)
+        self.umap_neighbors = None if umap_neighbors is None else int(umap_neighbors)
+        self.umap_min_dist = float(umap_min_dist)
+        self.umap_epochs = int(umap_epochs)
+        self.cluster_metric_labels: Dict[str, str] = {}
+        self.burrows_cluster_metric_labels: Dict[str, str] = {}
+
+        needs_perplexity = (
+            active_metric and MetricConfig.requires_perplexity_model(active_metric)
+        )
+
+        self.processor = TextProcessor(
+            self.base_dir,
+            chunk_size=int(chunk),
+            min_chunk=int(embedding_min_chunk),
+            needs_perplexity_model=needs_perplexity,
+            enable_spacy=enable_spacy,
+            model_tokenizer=getattr(self.model, 'tokenizer', None),
+            model_context_window=self.embedding_context_window,
+        )
+
+        self.processor._model = self.model
+        self.processor.embedding_batch_size = self.embedding_batch_size
+        self.processor.embedding_model_name_for_cache = self.embedding_model_name
+        self.processor._encode_fn = self._encode
+
+        self.embeddings: Dict[str, np.ndarray] = {}
+        self.similarity_matrix: Optional[np.ndarray] = None
+        self.burrows_similarity_matrix: Optional[np.ndarray] = None
+        self.cluster_variant_labels: Dict[str, List[Optional[int]]] = {}
+        self.burrows_cluster_variant_labels: Dict[str, List[Optional[int]]] = {}
+        self._scaler_cache = None
+        self._video_centroid_cache: Dict[str, Tuple[List[str], List[np.ndarray], List[str]]] = {}
+
+        self._runtime_cache_tokens_ref: Optional[List[str]] = None
+        self._runtime_cache_len: int = -1
+        self._runtime_cache_text: Optional[str] = None
+        self._runtime_cache_text_lower: Optional[str] = None
+        self._runtime_cache_text_bytes: Optional[bytes] = None
+        self._runtime_cache_counter: Optional[Counter] = None
+        self._runtime_cache_pattern_counts: Dict[Any, int] = {}
+        self._runtime_cache_pattern_prefixes: Dict[int, Optional[str]] = {}
+        self._runtime_cache_dynamic_counts: Dict[str, float] = {}
+        self._runtime_cache_spacy_stats: Optional[Dict[str, int]] = None
+        self._runtime_cache_oov_split: Optional[Tuple[float, float, float, float]] = None
+        self._runtime_cache_lzma_full: Optional[Tuple[int, int]] = None
+        self._runtime_cache_lzma_windows: Optional[List[Tuple[int, int, int]]] = None
+        self._runtime_cache_pieces: Optional[Counter] = None
+        self._runtime_cache_edges: Optional[Tuple] = None
+
+        self.validate_metric_wiring()
+
+    def _reset_fw(self) -> None:
+        for attr in (
+            '_fighting_words_peak_unigrams',
+            '_fighting_words_floor_unigrams',
+            '_fighting_words_peak_unigrams_centroid',
+            '_fighting_words_floor_unigrams_centroid',
+        ):
+            setattr(self, attr, {})
+        self._fw_peak_cache: Dict[str, Optional[float]] = {}
+        self._fw_floor_cache: Dict[str, Optional[float]] = {}
+        self._fw_peak_centroid_cache: Dict[str, Optional[float]] = {}
+        self._fw_floor_centroid_cache: Dict[str, Optional[float]] = {}
+
+    @classmethod
+    def validate_metric_wiring(cls) -> None:
+        bad = []
+        for name, cfg_ in MetricConfig.METRICS.items():
+            if name in cls._CORPUS_METRICS:
+                continue
+            m = cfg_.get('compute_method', '')
+            if m == '_compute_dynamic_token_count':
+                fb = DYNAMIC_COUNT_FALLBACK_METHODS.get(name)
+                ok = (
+                    name in SIMPLE_COLOR_PATTERN_MAP
+                    or name in DYNAMIC_PATTERN_METRIC_MAP
+                    or name in DYNAMIC_TOKEN_SET_METRIC_MAP
+                    or name in (
+                        'right_count', 'unique_words_count', 'unique_oov_count',
+                        'total_oov_count', 'unique_non_oov_count', 'total_non_oov_count',
+                    )
+                    or (fb and fb != '_compute_dynamic_token_count' and hasattr(cls, fb))
+                )
+            elif m.startswith('_compute'):
+                ok = hasattr(cls, m)
+            else:
+                ok = m in ('calculate_perplexity', 'compute_vader_sentiment')
+            if not ok:
+                bad.append(name)
+        if bad:
+            print(
+                f"WARNING: {len(bad)} metrics have no resolvable compute path: "
+                f"{sorted(bad)}"
+            )
+
+    def _compute_avg_words_per_video(self, tokens: List[str]) -> Optional[float]:
+        n = self._current_video_count
+        if not tokens or n <= 0:
+            return None
+        return len(tokens) / n
+
+    @staticmethod
+    def _compute_burrows_cosine_disagreement(tokens: List[str]) -> None:
+        return None
+
+    def _precompute_fw(
+        self,
+        texts: List[str],
+        filter_kwargs: Dict[str, Any],
+        ignore_ids: set,
+    ) -> None:
+        self._fw_peak_cache = {}
+        self._fw_floor_cache = {}
+        self._fw_peak_centroid_cache = {}
+        self._fw_floor_centroid_cache = {}
+
+        if not texts:
+            return
+
+        filters = {k: v for k, v in filter_kwargs.items() if v is not None}
+
+        unigrams: Dict[str, Counter] = {}
+        counts: Dict[str, int] = {}
+        unigrams_c: Dict[str, Counter] = {}
+        counts_c: Dict[str, int] = {}
+
+        print(f"  Fighting-words: pre-scanning {len(texts)} texts...")
+
+        for n_seen, tx in enumerate(texts, start=1):
+            if n_seen == 1 or n_seen % 50 == 0 or n_seen == len(texts):
+                print(f"    Pre-scan: {n_seen}/{len(texts)}")
+
+            try:
+                result = self.processor.get_tokens(tx, filters, ignore_ids)
+            except Exception as exc:
+                print(f"    Warning: pre-scan tokenize failed for {tx}: {exc}")
+                continue
+
+            if not result:
+                continue
+            tokens = result[0]
+            if not tokens:
+                continue
+
+            unigrams[tx] = Counter(tokens)
+            counts[tx] = len(tokens)
+
+            if self.centroid_mode == 'video':
+                try:
+                    files = self.processor._get_filtered_files(tx, filters, ignore_ids)
+                except Exception:
+                    files = None
+
+                if files:
+                    try:
+                        cap = self.tomotopy_max_tokens_per_channel
+                        accumulate = (
+                            min(self.stat_word_count, cap)
+                            if cap and self.stat_word_count
+                            else (cap or self.stat_word_count)
+                        )
+                        cres = self.processor.load_video_centroids(
+                            tx, self.centroid_videos, filters, ignore_ids,
+                            max_accumulated_tokens=accumulate,
+                            precomputed_files=files,
+                            need_embeddings=False,
+                            need_stat_corpus=False,
+                            need_centroid_tokens=True,
+                        )
+                    except Exception:
+                        cres = None
+
+                    if cres and cres[3]:
+                        unigrams_c[tx] = Counter(cres[3])
+                        counts_c[tx] = len(cres[3])
+                    else:
+                        unigrams_c[tx] = unigrams[tx]
+                        counts_c[tx] = counts[tx]
+                else:
+                    unigrams_c[tx] = unigrams[tx]
+                    counts_c[tx] = counts[tx]
+            elif self.centroid_mode == 'word':
+                tc = tokens
+                if self.centroid_words and len(tokens) > self.centroid_words:
+                    tc = tokens[-self.centroid_words:]
+                unigrams_c[tx] = Counter(tc)
+                counts_c[tx] = len(tc)
+            else:
+                unigrams_c[tx] = unigrams[tx]
+                counts_c[tx] = counts[tx]
+
+        if not unigrams:
+            print("  Fighting-words precompute: no texts tokenized; skipping")
+            return
+
+        peak_values, peak_uni = self._fw_values(
+            texts, FIGHTING_WORDS_PEAK_RANK, unigrams, counts
+        )
+        floor_values, floor_uni = self._fw_values(
+            texts, FIGHTING_WORDS_FLOOR_RANK, unigrams, counts
+        )
+        self._fw_peak_cache = peak_values
+        self._fw_floor_cache = floor_values
+        self._fighting_words_peak_unigrams = peak_uni
+        self._fighting_words_floor_unigrams = floor_uni
+
+        any_separate = any(
+            unigrams_c.get(tx) is not unigrams.get(tx)
+            for tx in texts if tx in unigrams
+        )
+
+        if any_separate:
+            peak_c, peak_uni_c = self._fw_values(
+                texts, FIGHTING_WORDS_PEAK_RANK, unigrams_c, counts_c
+            )
+            floor_c, floor_uni_c = self._fw_values(
+                texts, FIGHTING_WORDS_FLOOR_RANK, unigrams_c, counts_c
+            )
+            self._fw_peak_centroid_cache = peak_c
+            self._fw_floor_centroid_cache = floor_c
+            self._fighting_words_peak_unigrams_centroid = peak_uni_c
+            self._fighting_words_floor_unigrams_centroid = floor_uni_c
+        else:
+            self._fw_peak_centroid_cache = dict(peak_values)
+            self._fw_floor_centroid_cache = dict(floor_values)
+            self._fighting_words_peak_unigrams_centroid = dict(peak_uni)
+            self._fighting_words_floor_unigrams_centroid = dict(floor_uni)
+
+        n_peak = sum(1 for v in self._fw_peak_cache.values() if v is not None)
+        n_floor = sum(1 for v in self._fw_floor_cache.values() if v is not None)
+        print(
+            f"  Fighting-words precompute: peak {n_peak}/{len(texts)}, "
+            f"floor {n_floor}/{len(texts)}"
+        )
+
+    def _fw_values(
+        self,
+        texts: List[str],
+        rank: int,
+        use_centroid: bool = False,
+    ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[str]]]:
+        if not texts:
+            return {}, {}
+
+        source_unigrams = (
+            self._fighting_words_unigrams_centroid
+            if use_centroid
+            else self._fighting_words_unigrams
+        )
+        source_counts = (
+            self._fighting_words_token_counts_centroid
+            if use_centroid
+            else self._fighting_words_token_counts
+        )
+
+        counters: Dict[str, Counter] = {}
+        token_counts: Dict[str, int] = {}
+
+        for text in texts:
+            c = unigrams.get(text)
+            n = counts.get(text, 0)
+            if c is None or n <= 0:
+                continue
+            counters[text] = c
+            token_counts[text] = n
+
+        if not counters:
+            return {text: None for text in texts}, {text: None for text in texts}
+
+        total_counts = Counter()
+        total_tokens = 0
+        for text, c in counters.items():
+            total_counts.update(c)
+            total_tokens += token_counts[text]
+
+        floors: Dict[str, Optional[float]] = {}
+        unigrams: Dict[str, Optional[str]] = {}
+
+        for text in texts:
+            focus = counters.get(text)
+            n_focus = token_counts.get(text, 0)
+            if focus is None or n_focus <= 0:
+                floors[text] = None
+                unigrams[text] = None
+                continue
+
+            n_rest = total_tokens - n_focus
+            if n_rest <= 0:
+                floors[text] = None
+                unigrams[text] = None
+                continue
+
+            rest = total_counts - focus
+            candidates = [
+                phrase for phrase, c in focus.items()
+                if c >= FIGHTING_WORDS_FLOOR_MIN_COUNT
+            ]
+            if not candidates:
+                floors[text] = None
+                unigrams[text] = None
+                continue
+
+            V = len(candidates)
+            z_score_pairs: List[Tuple[float, str]] = []
+
+            for phrase in candidates:
+                f_focus = focus[phrase]
+                f_rest = rest.get(phrase, 0)
+                p_focus = (
+                    (f_focus + FIGHTING_WORDS_FLOOR_ALPHA)
+                    / (n_focus + FIGHTING_WORDS_FLOOR_ALPHA * V)
+                )
+                p_rest = (
+                    (f_rest + FIGHTING_WORDS_FLOOR_ALPHA)
+                    / (n_rest + FIGHTING_WORDS_FLOOR_ALPHA * V)
+                )
+                log_odds = math.log(p_focus) - math.log(p_rest)
+                var = (
+                    (1.0 / (f_focus + FIGHTING_WORDS_FLOOR_ALPHA))
+                    + (1.0 / (f_rest + FIGHTING_WORDS_FLOOR_ALPHA))
+                )
+                z_score = log_odds / math.sqrt(variance)
+                z_score_pairs.append((z_score, phrase))
+
+            if not z_score_pairs:
+                floors[text] = None
+                unigrams[text] = None
+                continue
+
+            z_score_pairs.sort(reverse=True, key=lambda x: x[0])
+            rank_index = min(rank, len(z_score_pairs)) - 1
+            floors[text] = float(z_score_pairs[rank_index][0])
+            unigrams[text] = z_score_pairs[rank_index][1]
+
+        return floors, unigrams
+
+    def _compute_fighting_words_floor_values(
+        self,
+        texts: List[str],
+        use_centroid: bool = False,
+    ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[str]]]:
+        return self._compute_fighting_words_values(
+            texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=use_centroid
+        )
+
+    def _get_centroid_tokens_for_tomotopy(
+        self,
+        text: str,
+        filters: Dict,
+        ignore_ids: set,
+    ) -> List[str]:
+        if self.centroid_mode == 'video':
+            files = self.processor._get_filtered_files(text, filters, ignore_ids)
+            if not files:
+                return []
+
+            cap = self.tomotopy_max_tokens_per_channel
+            accumulate = (
+                min(self.stat_word_count, cap) if cap and self.stat_word_count else (cap or self.stat_word_count)
+            )
+            result = self.processor.load_video_centroids(
+                text, self.centroid_videos, filters, ignore_ids,
+                max_accumulated_tokens=accumulate,
+                precomputed_files=files,
+                need_embeddings=False,
+                need_stat_corpus=False,
+                need_centroid_tokens=True,
+            )
+            return (result[3] or []) if result else []
+
+        result = self.processor.get_tokens(text, filters, ignore_ids)
+        if not result:
+            return []
+        tokens = result[0]
+        if self.centroid_mode == 'word' and self.centroid_words and self.centroid_words > 0:
+            tokens = tokens[-self.centroid_words:]
+        return tokens
+
+    def _run_mallet_logged(
+        self, cmd: List[str], env: Dict[str, str], log_path: Path,
+        stage: str, heartbeat_seconds: int = 30,
+    ) -> Tuple[int, str]:
+        """Run a MALLET command, streaming output to a log file and printing
+        a heartbeat so a long run never looks frozen."""
+        started = time.time()
+        tail: deque = deque(maxlen=80)
+        last_line = ['(no output yet)']
+
+        with open(log_path, 'a', encoding='utf-8') as log:
+            log.write(f"\n===== {stage} | {' '.join(cmd)} =====\n")
+            log.flush()
+
+            proc = subprocess.Popen(
+                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                stdin=subprocess.DEVNULL, env=env, text=True,
+                errors='ignore', bufsize=1,
+            )
+
+            def pump() -> None:
+                for line in proc.stdout:
+                    log.write(line)
+                    log.flush()
+                    stripped = line.rstrip()
+                    if stripped:
+                        tail.append(stripped)
+                        last_line[0] = stripped
+
+            reader = threading.Thread(target=pump, daemon=True)
+            reader.start()
+
+            next_beat = started + heartbeat_seconds
+            try:
+                while proc.poll() is None:
+                    time.sleep(1.0)
+                    if time.time() >= next_beat:
+                        print(
+                            f"    [{stage}] running {time.time() - started:,.0f}s | "
+                            f"last: {last_line[0][:110]}"
+                        )
+                        next_beat += heartbeat_seconds
+            except KeyboardInterrupt:
+                proc.kill()
+                raise
+            finally:
+                reader.join(timeout=5)
+
+        print(f"    [{stage}] finished in {time.time() - started:,.0f}s (exit={proc.returncode})")
+        return proc.returncode, '\n'.join(tail)
+
+    def _report_mallet_failure(self, stderr_text: str, log_path: Path) -> None:
+        if 'OutOfMemoryError' in stderr_text or 'Java heap space' in stderr_text:
+            print(f"  MALLET ran out of Java heap at heap={self.mallet_memory}.")
+            print(
+                "  Increase --mallet-memory (e.g. 12g) or lower "
+                "--mallet-max-tokens-per-channel (e.g. 200000)."
+            )
+        else:
+            print(f"  MALLET failed. Last output:\n{stderr_text[-600:]}")
+        print(f"  Full log: {log_path}")
+
+    def _train_mallet_topics(
+        self,
+        texts: List[str],
+        ignore_ids: set,
+        filter_kwargs: Dict[str, Any],
+    ) -> None:
+        """Train MALLET LDA on the centroid corpus of every successful text.
+
+        Streaming design: only one text's centroid tokens are held in memory
+        at a time; they are written to the MALLET input file and then freed
+        immediately.  Result proportions and top-word labels are cached under
+        ``cache/mallet/`` keyed on the text list + filters, so re-running the
+        pipeline skips the sampler entirely.
+
+        Heap size comes from ``self.mallet_memory`` (CLI flag > MALLET_MEMORY
+        env var > 4g default).  When that is still not enough for a given
+        corpus, ``self.mallet_max_tokens_per_channel`` caps the per-channel
+        token stream so MALLET remains trainable on constrained machines.
+
+        Populates:
+            self.mallet_topic_proportions: {text: {topic_id: proportion}}
+            self.mallet_topic_labels:      {topic_id: "top eight words"}
+        """
+        if self.mallet_num_topics <= 0:
+            return
+
+        if not texts:
+            return
+
+        # ---- Locate the MALLET binary ----
+        mallet_binary: Optional[str] = shutil.which('mallet')
+        if not mallet_binary:
+            mallet_home = os.environ.get('MALLET_HOME')
+            if mallet_home:
+                candidate = Path(mallet_home) / 'bin' / 'mallet'
+                if candidate.exists():
+                    mallet_binary = str(candidate)
+
+        if not mallet_binary:
+            print(
+                "  MALLET not found; skipping topic modeling. "
+                "Install it (brew install mallet, or set MALLET_HOME to a "
+                "MALLET install directory)."
+            )
+            return
+
+        # ---- Cache path setup ----
+        cache_dir = self.base_dir / "cache" / "mallet"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        input_txt = cache_dir / "texts_input.txt"
+        bin_file = cache_dir / "texts.mallet"
+        doc_topics = cache_dir / "doc_topics.txt"
+        topic_keys = cache_dir / "topic_keys.txt"
+        sig_path = cache_dir / "signature.json"
+        proportions_path = cache_dir / "proportions.json"
+        labels_path = cache_dir / "labels.json"
+        doc_map_path = cache_dir / "doc_map.json"
+
+        # Signature is intentionally limited to inputs that actually affect
+        # the MALLET output.  The token cap IS included because changing it
+        # changes the corpus MALLET sees.
+        filter_sig: Dict[str, Any] = {}
+        for key in sorted(CACHE_FILTER_KEYS):
+            if key in ('centroid_mode', 'centroid_videos', 'centroid_words', 'stat_word_count'):
+                continue
+            v = filter_kwargs.get(key)
+            if v is None:
+                continue
+            filter_sig[key] = str(v)
+
+        sig = {
+            'num_topics': int(self.mallet_num_topics),
+            'iterations': int(self.mallet_iterations),
+            'threads': int(self.mallet_threads),
+            'texts': sorted(texts),
+            'ignore_ids': sorted(str(v) for v in ignore_ids),
+            'centroid_mode': self.centroid_mode,
+            'centroid_videos': int(self.centroid_videos or 0),
+            'centroid_words': int(self.centroid_words or 0),
+            'stat_word_count': int(self.stat_word_count or 0),
+            'max_tokens_per_channel': int(self.mallet_max_tokens_per_channel or 0),
+            'filters': filter_sig,
+        }
+
+        # ---- Try cache ----
+        if sig_path.exists() and proportions_path.exists():
+            try:
+                with open(sig_path, 'r', encoding='utf-8') as f:
+                    saved = json.load(f)
+                if saved == sig:
+                    with open(proportions_path, 'r', encoding='utf-8') as f:
+                        props = json.load(f)
+                    self.mallet_topic_proportions = {
+                        tx: {int(k): float(v) for k, v in topics.items()}
+                        for tx, topics in props.items()
+                    }
+                    if labels_path.exists():
+                        try:
+                            with open(labels_path, 'r', encoding='utf-8') as f:
+                                labels = json.load(f)
+                            self.mallet_topic_labels = {
+                                int(k): str(v) for k, v in labels.items()
+                            }
+                        except Exception:
+                            self.mallet_topic_labels = {}
+                    print(
+                        f"  MALLET topics loaded from cache "
+                        f"({len(self.mallet_topic_proportions)} texts, "
+                        f"{self.mallet_num_topics} topics)"
+                    )
+                    return
+            except Exception as exc:
+                print(f"  Warning: failed to load MALLET cache ({exc}); retraining")
+
+        # ---- Write the MALLET input file, one text at a time ----
+        #
+        # Use synthetic ASCII-only doc ids (tx_000000, tx_000001, ...) rather
+        # than the raw text names.  MALLET's import-file rewrites the doc
+        # source name when it contains whitespace or punctuation, which
+        # silently breaks any lookup keyed on the original text name.  With
+        # ids that MALLET leaves untouched, the mapping stays exact, and we
+        # persist the id -> text map alongside the proportions so cache hits
+        # skip the sampler entirely.
+        cap_note = (
+            f" | cap={self.mallet_max_tokens_per_channel:,} tokens/text"
+            if self.mallet_max_tokens_per_channel
+            else ""
+        )
+        print(
+            f"  Training MALLET LDA: {self.mallet_num_topics} topics, "
+            f"{self.mallet_iterations} iterations, "
+            f"{self.mallet_threads} threads, "
+            f"heap={self.mallet_memory}{cap_note} "
+            f"(streaming input across {len(texts)} texts)"
+        )
+        filters = {k: v for k, v in filter_kwargs.items() if v is not None}
+        written = 0
+        doc_map: Dict[str, str] = {}  # safe_id -> text name
+
+        try:
+            with open(input_txt, 'w', encoding='utf-8') as f:
+                for n_seen, tx in enumerate(texts, start=1):
+                    if n_seen == 1 or n_seen % 50 == 0 or n_seen == len(texts):
+                        print(f"    Gathering MALLET tokens: {n_seen}/{len(texts)}")
+                    try:
+                        tokens = self._get_centroid_tokens_for_mallet(tx, filters, ignore_ids)
+                    except Exception as exc:
+                        print(f"    Warning: could not gather tokens for {tx}: {exc}")
+                        continue
+                    if not tokens:
+                        continue
+                    safe_id = f"tx_{written:06d}"
+                    doc_map[safe_id] = tx
+                    # MALLET's default line regex is "name  label  data".
+                    # A dummy label column keeps the first real token from
+                    # being swallowed as the label.
+                    f.write(f"{safe_id}\tX\t{' '.join(tokens)}\n")
+                    written += 1
+                    del tokens
+        except OSError as exc:
+            print(f"  MALLET input write failed: {exc}")
+            return
+
+        if written == 0:
+            print("  MALLET skipped: no texts produced centroid tokens")
+            return
+
+        print(f"    Wrote {written} documents to {input_txt.name}")
+
+        gc.collect()
+        try:
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+            elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
+                torch.mps.empty_cache()
+        except Exception:
+            pass
+        log_path = cache_dir / "mallet_debug.log"
+        print(f"    MALLET log: {log_path}")
+
+        # ---- Run MALLET (import-file -> train-topics) ----
+        # Pass the heap size through the MALLET_MEMORY env var, which the
+        # bin/mallet launcher script turns into a JVM -Xmx argument.
+        run_env = {**os.environ, 'MALLET_MEMORY': self.mallet_memory}
+
+        # Skip import-file when the binary is already newer than the input
+        # file.  This makes retries after a training-only failure cheap --
+        # re-serialising the corpus is the slow part on big runs.
+        need_import = True
+        try:
+            if mallet_bin_file.exists():
+                need_import = mallet_bin_file.stat().st_mtime < input_txt.stat().st_mtime
+        except OSError:
+            need_import = True
+
+        try:
+            if need_import:
+                rc, tail_text = self._run_mallet_logged(
+                    [mallet_binary, 'import-file',
+                     '--input', str(input_txt),
+                     '--output', str(mallet_bin_file),
+                     '--keep-sequence',
+                     '--remove-stopwords'],
+                    run_env, log_path, 'import',
+                )
+                if rc != 0:
+                    self._report_mallet_failure(tail_text, log_path)
+                    return
+            else:
+                print(f"    Reusing cached binary {mallet_bin_file.name}")
+
+            rc, tail_text = self._run_mallet_logged(
+                [mallet_binary, 'train-topics',
+                 '--input', str(mallet_bin_file),
+                 '--num-topics', str(self.mallet_num_topics),
+                 '--num-iterations', str(self.mallet_iterations),
+                 '--num-threads', str(self.mallet_threads),
+                 '--optimize-interval', '10',
+                 '--random-seed', '20',
+                 '--output-doc-topics', str(doc_topics),
+                 '--output-topic-keys', str(topic_keys)],
+                run_env, log_path, 'train',
+            )
+            if rc != 0:
+                self._report_mallet_failure(tail_text, log_path)
+                return
+        except FileNotFoundError as exc:
+            print(f"  MALLET binary not executable: {exc}")
+            return
+        except Exception as exc:
+            print(f"  MALLET training failed: {exc}")
+            return
+
+        # ---- Parse doc-topics.txt (line by line, streaming) ----
+        #
+        # MALLET 2.0.8+ writes --output-doc-topics as:
+        #
+        #   #doc<TAB>source<TAB>p_0<TAB>p_1<TAB>...<TAB>p_{N-1}
+        #   0<TAB>tx_000000<TAB>9.84E-6<TAB>3.04E-6<TAB>0.159<TAB>...
+        #   1<TAB>tx_000001<TAB>0.0152<TAB>2.05E-6<TAB>0.039<TAB>...
+        #
+        # Each topic proportion is its own tab-delimited column, as a bare
+        # float, in topic order.  Older MALLET builds packed them into a
+        # single space-separated column as "topic:proportion topic:proportion".
+        def _all_float(tokens: List[str]) -> bool:
+            if not tokens:
+                return False
+            for tok in tokens:
+                try:
+                    float(tok)
+                except ValueError:
+                    return False
+            return True
+
+        proportions: Dict[str, Dict[int, float]] = {}
+        try:
+            with open(doc_topics, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.rstrip('\n')
+                    if not line or line.startswith('#'):
+                        continue
+                    parts = line.split('\t')
+                    if len(parts) < 2:
+                        continue
+
+                    # Locate the source column.  It is the one whose value
+                    # was registered in doc_map during input writing.
+                    source_idx = -1
+                    for i, part in enumerate(parts):
+                        if part in doc_map:
+                            src_idx = i
+                            break
+                    if src_idx < 0:
+                        if parts[0] in doc_map:
+                            src_idx = 0
+                        else:
+                            continue
+                    source = parts[src_idx]
+                    text_name = doc_map.get(source, source)
+                    tail = parts[src_idx + 1:]
+                    text_topics: Dict[int, float] = {}
+                    if _all_float(tail):
+                        for tid, tok in enumerate(tail):
+                            text_topics[tid] = float(tok)
+                    elif len(tail) == 1 and ':' in tail[0]:
+                        for entry in tail[0].split():
+                            if ':' not in entry:
+                                continue
+                            head, _, val = entry.partition(':')
+                            try:
+                                text_topics[int(head)] = float(val)
+                            except ValueError:
+                                continue
+                    if text_topics:
+                        proportions[text_name] = text_topics
+        except OSError as exc:
+            print(f"  MALLET doc-topics read failed: {exc}")
+            return
+
+        if not proportions:
+            # Diagnostics: dump the first few lines of doc-topics.txt so
+            # it is obvious what the parser was handed when it fails.
+            print("  MALLET parse produced 0 documents; previewing doc-topics.txt:")
+            try:
+                with open(doc_topics, 'r', encoding='utf-8') as f:
+                    for _ in range(5):
+                        preview = f.readline()
+                        if not preview:
+                            break
+                        print(f"    {preview.rstrip(chr(10))!r}")
+            except Exception as exc:
+                print(f"    (could not preview file: {exc})")
+
+        self.mallet_topic_proportions = proportions
+
+        # ---- Parse topic-keys.txt for human-readable labels ----
+        self.mallet_topic_labels = {}
+        try:
+            with open(topic_keys, 'r', encoding='utf-8') as f:
+                for line in f:
+                    parts = line.rstrip('\n').split('\t')
+                    if len(parts) < 3:
+                        continue
+                    try:
+                        tid = int(parts[0])
+                    except ValueError:
+                        continue
+                    self.mallet_topic_labels[tid] = ' '.join(parts[2].split()[:8])
+        except OSError:
+            pass
+
+        # ---- Persist cache ----
+        try:
+            with open(sig_path, 'w', encoding='utf-8') as f:
+                json.dump(sig, f)
+            with open(proportions_path, 'w', encoding='utf-8') as f:
+                json.dump(self.mallet_topic_proportions, f)
+            with open(labels_path, 'w', encoding='utf-8') as f:
+                json.dump({str(k): v for k, v in self.mallet_topic_labels.items()}, f)
+            with open(doc_map_path, 'w', encoding='utf-8') as f:
+                json.dump(doc_map, f)
+        except Exception as exc:
+            print(f"  Warning: failed to write MALLET cache: {exc}")
+
+        matched = sum(1 for tx in texts if tx in self.mallet_topic_proportions)
+        print(
+            f"  MALLET topics trained; matched {matched}/{len(texts)} texts "
+            f"({len(self.mallet_topic_proportions)} docs parsed)"
+        )
+
+    def _ensure_runtime_cache_for_tokens(self, tokens: List[str]) -> None:
+        if (
+            getattr(self, '_runtime_cache_tokens_ref', None) is not tokens
+            or getattr(self, '_runtime_cache_len', -1) != len(tokens)
+        ):
+            self._runtime_cache_tokens_ref = tokens
+            self._runtime_cache_len = len(tokens)
+            self._runtime_cache_text = None
+            self._runtime_cache_text_lower = None
+            self._runtime_cache_text_bytes = None
+            self._runtime_cache_counter = None
+            self._runtime_cache_pattern_counts = {}
+            self._runtime_cache_pattern_prefixes = {}
+            self._runtime_cache_dynamic_counts = {}
+            self._runtime_cache_spacy_stats = None
+            self._runtime_cache_oov_split = None
+            self._runtime_cache_lzma_full = None
+            self._runtime_cache_lzma_windows = None
+            self._runtime_cache_pieces = None
+            self._runtime_cache_edges = None
+
+    def _clear_runtime_cache(self) -> None:
+        self._runtime_cache_tokens_ref = None
+        self._runtime_cache_len = -1
+        self._runtime_cache_text = None
+        self._runtime_cache_text_lower = None
+        self._runtime_cache_text_bytes = None
+        self._runtime_cache_counter = None
+        self._runtime_cache_pattern_counts = {}
+        self._runtime_cache_pattern_prefixes = {}
+        self._runtime_cache_dynamic_counts = {}
+        self._runtime_cache_spacy_stats = None
+        self._runtime_cache_oov_split = None
+        self._runtime_cache_lzma_full = None
+        self._runtime_cache_lzma_windows = None
+        self._runtime_cache_pieces = None
+        self._runtime_cache_edges = None
+
+    def _get_runtime_text(self, tokens: List[str]) -> str:
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_text is None:
+            self._runtime_cache_text = ' '.join(tokens)
+        return self._runtime_cache_text
+
+    def _get_runtime_text_bytes(self, tokens: List[str]) -> bytes:
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_text_bytes is None:
+            self._runtime_cache_text_bytes = self._get_runtime_text(tokens).encode('utf-8', errors='ignore')
+        return self._runtime_cache_text_bytes
+
+    def _get_runtime_text_lower(self, tokens: List[str]) -> str:
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_text_lower is None:
+            self._runtime_cache_text_lower = self._get_runtime_text(tokens).lower()
+        return self._runtime_cache_text_lower
+
+    @staticmethod
+    def _extract_required_literal_prefix(pattern_obj: Any) -> Optional[str]:
+        src = getattr(pattern_obj, 'pattern', None)
+        if src is None:
+            return None
+        if isinstance(src, bytes):
+            try:
+                src = src.decode('utf-8', errors='ignore')
+            except Exception:
+                return None
+        if not isinstance(src, str):
+            return None
+
+        depth, i, n = 0, 0, len(src)
+        while i < n:
+            ch = src[i]
+            if ch == '\\':
+                i += 2
+                continue
+            if ch in '([':
+                depth += 1
+            elif ch in ')]':
+                depth -= 1
+            elif ch == '|' and depth == 0:
+                return None
+            i += 1
+
+        i = 0
+        while i < n and src[i] in '^$':
+            i += 1
+        while i + 1 < n and src[i] == '\\' and src[i + 1] == 'b':
+            i += 2
+
+        chars: List[str] = []
+        while i < n and src[i].isalnum():
+            chars.append(src[i].lower())
+            i += 1
+        if chars and i < n and src[i] in '?*{':
+            chars.pop()
+
+        prefix = ''.join(chars)
+        return prefix if len(prefix) >= 4 else None
+
+    def _get_runtime_token_counter(self, tokens: List[str]) -> Counter:
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_counter is None:
+            self._runtime_cache_counter = Counter(tokens)
+        return self._runtime_cache_counter
+
+    def _get_runtime_word_pieces(self, tokens: List[str]) -> Counter:
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_pieces is None:
+            pieces: Counter = Counter()
+            for tok, c in self._get_runtime_token_counter(tokens).items():
+                for w in _WORD_RUN.findall(tok):
+                    pieces[w] += c
+            self._runtime_cache_pieces = pieces
+        return self._runtime_cache_pieces
+
+    def _runtime_edges(
+        self, tokens: List[str]
+    ) -> Tuple[List[str], List[str], Dict[int, Counter]]:
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_edges is None:
+            first, last = {}, {}
+            for tok in self._get_runtime_token_counter(tokens):
+                runs = _WORD_RUN.findall(tok)
+                first[tok] = runs[0] if runs else ''
+                last[tok] = runs[-1] if runs else ''
+            self._runtime_cache_edges = (
+                [last[t] for t in tokens],
+                [first[t] for t in tokens],
+                {},
+            )
+        return self._runtime_cache_edges
+
+    def _get_runtime_ngram_counts(self, tokens: List[str], k: int) -> Counter:
+        last_seq, first_seq, by_k = self._runtime_edges(tokens)
+        c = by_k.get(k)
+        if c is None:
+            mids = [tokens[j:] for j in range(1, k - 1)]
+            c = Counter(zip(last_seq, *mids, first_seq[k - 1:]))
+            by_k[k] = c
+        return c
+
+    def _fast_count(self, tokens: List[str], terms: Dict[int, frozenset]) -> int:
+        total = 0
+        for k, words in terms.items():
+            if k == 1:
+                pieces = self._get_runtime_word_pieces(tokens)
+                total += sum(pieces.get(w[0], 0) for w in words)
+            else:
+                c = self._get_runtime_ngram_counts(tokens, k)
+                total += sum(c.get(w, 0) for w in words)
+        return total
+
+    def _get_runtime_spacy_stats(self, tokens: List[str]) -> Optional[Dict[str, int]]:
+        if not self.enable_spacy:
+            return None
+
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_spacy_stats is not None:
+            return self._runtime_cache_spacy_stats
+
+        if cfg.spacy_nlp is None:
+            try:
+                import spacy
+                cfg.spacy_nlp = spacy.load("en_core_web_sm")
+            except (ModuleNotFoundError, ImportError, OSError):
+                from helpers.atlas_config import _install_spacy_model
+                _install_spacy_model()
+                if cfg.spacy_nlp is None:
+                    return None
+            except Exception:
+                return None
+
+        try:
+            text = self._get_runtime_text(tokens)
+            if len(text) + 1 > getattr(cfg.spacy_nlp, 'max_length', 1_000_000):
+                cfg.spacy_nlp.max_length = len(text) + 1
+            doc = cfg.spacy_nlp(text, disable=['parser', 'ner'])
+            content_tags = {'NOUN', 'VERB', 'ADJ', 'ADV'}
+            total_valid = 0
+            total_content = 0
+            gerund = 0
+            imperative = 0
+            for token in doc:
+                if not token.is_punct and not token.is_space:
+                    total_valid += 1
+                    if token.pos_ in content_tags:
+                        total_content += 1
+                if token.tag_ == 'VBG':
+                    gerund += 1
+                if token.pos_ == 'VERB' and token.tag_ == 'VB':
+                    if (
+                        token.i == 0
+                        or doc[token.i - 1].is_punct
+                        or doc[token.i - 1].pos_ == 'CCONJ'
+                    ):
+                        imperative += 1
+            stats = {
+                'total_valid': int(total_valid),
+                'total_content': int(total_content),
+                'gerund_count': int(gerund),
+                'imperative_count': int(imperative),
+            }
+            self._runtime_cache_spacy_stats = stats
+            return stats
+        except Exception:
+            return None
+
+    def _compute_pattern_count(self, tokens: List[str], patterns: List) -> float:
+        if not tokens:
+            return 0.0
+
+        self._ensure_runtime_cache_for_tokens(tokens)
+        count = 0
+        text = self._get_runtime_text(tokens)
+        pattern_cache: Dict[Tuple[int, bool], int] = self._runtime_cache_pattern_counts
+        prefix_cache: Dict[int, Optional[str]] = self._runtime_cache_pattern_prefixes
+
+        pending = list(patterns) if isinstance(patterns, (list, tuple, set)) else [patterns]
+        while pending:
+            pat = pending.pop()
+            if isinstance(pat, (list, tuple, set)):
+                pending.extend(pat)
+                continue
+            if not hasattr(pat, 'findall'):
+                continue
+
+            terms = _pure_terms(pat)
+            if terms is not None:
+                count += self._fast_count(tokens, terms)
+                continue
+
+            pid = id(pat)
+            if pid not in prefix_cache:
+                prefix_cache[pid] = self._extract_required_literal_prefix(pat)
+            req = prefix_cache.get(pid)
+            if req:
+                if req not in self._get_runtime_text_lower(tokens):
+                    continue
+
+            try:
+                key = (id(pat), False)
+                c = pattern_cache.get(key)
+                if c is None:
+                    c = len(pat.findall(text))
+                    pattern_cache[key] = c
+                count += c
+            except TypeError:
+                key = (id(pat), True)
+                c = pattern_cache.get(key)
+                if c is None:
+                    c = len(pat.findall(self._get_runtime_text_bytes(tokens)))
+                    pattern_cache[key] = c
+                count += c
+
+        return float(count)
+
+    def _compute_dynamic_token_count(self, tokens: List[str], metric_name: str) -> float:
+        if not tokens:
+            return 0.0
+
+        self._ensure_runtime_cache_for_tokens(tokens)
+        cache: Dict[str, float] = self._runtime_cache_dynamic_counts
+        if metric_name in cache:
+            return cache[metric_name]
+
+        if metric_name in SIMPLE_COLOR_PATTERN_MAP:
+            v = self._compute_pattern_count(tokens, SIMPLE_COLOR_PATTERN_MAP[metric_name])
+            cache[metric_name] = v
+            return v
+
+        if metric_name == 'right_count':
+            base = self._compute_pattern_count(tokens, DYNAMIC_PATTERN_METRIC_MAP['right_count'])
+            text = self._get_runtime_text(tokens)
+            ar = len(re.findall(r'\ball\s+right\b', text, re.IGNORECASE))
+            v = float(max(0.0, base - ar))
+            cache[metric_name] = v
+            return v
+
+        if metric_name in DYNAMIC_PATTERN_METRIC_MAP:
+            v = self._compute_pattern_count(tokens, DYNAMIC_PATTERN_METRIC_MAP[metric_name])
+            cache[metric_name] = v
+            return v
+
+        if metric_name == 'unique_words_count':
+            return self._compute_unique_words_count(tokens)
+
+        if metric_name in (
+            'unique_oov_count', 'total_oov_count',
+            'unique_non_oov_count', 'total_non_oov_count',
+        ):
+            uo, to, un, tn = self._compute_oov_split_counts(tokens)
+            if metric_name == 'unique_oov_count':
+                return uo
+            if metric_name == 'total_oov_count':
+                return to
+            if metric_name == 'unique_non_oov_count':
+                return un
+            return tn
+
+        forms = DYNAMIC_TOKEN_SET_METRIC_MAP.get(metric_name)
+        if forms is not None:
+            tc = self._get_runtime_token_counter(tokens)
+            v = float(sum(tc.get(f, 0) for f in forms))
+            cache[metric_name] = v
+            return v
+
+        fb = DYNAMIC_COUNT_FALLBACK_METHODS.get(metric_name)
+        if fb and fb != '_compute_dynamic_token_count':
+            method = getattr(self, fb, None)
+            if method is not None:
+                v = method(tokens)
+                cache[metric_name] = float(v)
+                return v
+
+        return 0.0
+
+    def _compute_unique_words_count(self, tokens: List[str]) -> float:
+        if not tokens:
+            return 0.0
+        uniq = set()
+        for token in tokens:
+            cleaned = token.lower().strip("'\".,!?;:()[]{}")
+            if len(cleaned) < 2:
+                continue
+            if not re.fullmatch(r"[a-z]+(?:'[a-z]+)?", cleaned):
+                continue
+            uniq.add(cleaned)
+        return float(len(uniq))
+
+    def _compute_oov_split_counts(
+        self, tokens: List[str]
+    ) -> Tuple[float, float, float, float]:
+        if not tokens:
+            return 0.0, 0.0, 0.0, 0.0
+
+        self._ensure_runtime_cache_for_tokens(tokens)
+        if self._runtime_cache_oov_split is not None:
+            return self._runtime_cache_oov_split
+
+        try:
+            global enchant_dict, enchant_word_check_cache
+            if not ENCHANT_AVAILABLE:
+                self._runtime_cache_oov_split = (0.0, 0.0, 0.0, 0.0)
+                return self._runtime_cache_oov_split
+            if enchant_dict is None:
+                try:
+                    enchant_dict = enchant.Dict("en_US")
+                except Exception:
+                    self._runtime_cache_oov_split = (0.0, 0.0, 0.0, 0.0)
+                    return self._runtime_cache_oov_split
+
+            counts = self._get_runtime_token_counter(tokens)
+            if not counts:
+                self._runtime_cache_oov_split = (0.0, 0.0, 0.0, 0.0)
+                return self._runtime_cache_oov_split
+
+            cache = enchant_word_check_cache
+            if len(cache) > 1_000_000:
+                cache.clear()
+            check = enchant_dict.check
+
+            total_oov = 0
+            unique_oov = 0
+            total_non = 0
+            unique_non = 0
+            for cleaned, count in counts.items():
+                L = len(cleaned)
+                if L == 0 or L > 30 or not cleaned.isascii():
+                    total_oov += count
+                    unique_oov += 1
+                    continue
+                cand = cleaned.replace("'", "") if "'" in cleaned else cleaned
+                if not cand or not cand.isalpha():
+                    total_oov += count
+                    unique_oov += 1
+                    continue
+                val = cache.get(cleaned)
+                if val is None:
+                    try:
+                        val = bool(check(cleaned))
+                    except Exception:
+                        val = False
+                    cache[cleaned] = val
+                if val:
+                    total_non += count
+                    unique_non += 1
+                else:
+                    total_oov += count
+                    unique_oov += 1
+
+            self._runtime_cache_oov_split = (
+                float(unique_oov), float(total_oov),
+                float(unique_non), float(total_non),
+            )
+            return self._runtime_cache_oov_split
+        except Exception:
+            return 0.0, 0.0, 0.0, 0.0
+
+    def _compute_oov_counts(self, tokens: List[str]) -> Tuple[float, float]:
+        try:
+            uo, to, _, _ = self._compute_oov_split_counts(tokens)
+            return uo, to
+        except Exception:
+            return 0.0, 0.0
+
+    def _all_metrics(self, tokens: List[str], chunks: List[str]) -> Dict[str, Any]:
+        names = [
+            n for n in self._target_metrics()
+            if not MetricConfig.is_centroid_metric(n)
+        ]
+        return self._metrics(tokens, chunks, names)
+
+    def _metric_subset(
+        self, tokens: List[str], chunks: List[str], metric_names: List[str]
+    ) -> Dict[str, Any]:
+        return self._metrics(tokens, chunks, metric_names)
+
+    def _compute_specific_metrics(
+        self,
+        tokens: List[str],
+        chunks: List[str],
+        chunk_embs: Optional[np.ndarray],
+        metric_names: List[str],
+    ) -> Dict[str, Any]:
+        return self._metrics(tokens, chunks, metric_names)
+
+    def _metrics(
+        self, tokens: List[str], chunks: List[str], metric_names: List[str]
+    ) -> Dict[str, Any]:
+        metrics = {}
+        total = len(metric_names)
+        interval = 25 if total >= 100 else (10 if total >= 30 else 0)
+        started = time.time()
+
+        joined: Optional[str] = None
+        freq: Optional[Counter] = None
+        lex: Optional[LexicalRichness] = None
+
+        try:
+            for index, name in enumerate(metric_names, start=1):
+                if name not in MetricConfig.METRICS:
+                    continue
+                cfg_ = MetricConfig.METRICS[name]
+                if self._skipped(name):
+                    metrics[name] = None
+                else:
+                    method = cfg_.get('compute_method', '')
+                    t0 = time.time()
+                    if name in ('word_burstiness', 'hapax_ratio', 'dis_ratio') and freq is None:
+                        freq = Counter(tokens) if tokens else Counter()
+                    if name in ('MATTR', 'yules_k', 'MATTR_centroid') and lex is None:
+                        if joined is None:
+                            joined = ' '.join(tokens) if tokens else ''
+                        lex = LexicalRichness(joined) if joined else None
+                    metrics[name] = self._one_metric(name, cfg_, tokens, chunks, freq, lex)
+                    elapsed = time.time() - t0
+                    if elapsed >= 8.0:
+                        print(f"      slow metric: {name} ({elapsed:.1f}s, method={method})")
+                if interval and (index % interval == 0 or index == total):
+                    print(
+                        f"      progress: {index}/{total} metrics "
+                        f"({time.time() - started:.1f}s)"
+                    )
+            return metrics
+        finally:
+            self._clear_runtime_cache()
+
+    def _one_metric(
+        self,
+        name: str,
+        cfg_: Dict,
+        tokens: List[str],
+        chunks: List[str],
+        freq: Optional[Counter],
+        lex: Optional[LexicalRichness],
+    ) -> Any:
+        try:
+            m = cfg_['compute_method']
+            if m.startswith('_compute'):
+                method = getattr(self, m)
+                if name.startswith('letter_') and name.endswith('_count'):
+                    return method(tokens, letter=name.split('_')[1])
+                if m == '_compute_dynamic_token_count':
+                    return method(tokens, metric_name=name)
+                if name in ('word_burstiness', 'hapax_ratio', 'dis_ratio'):
+                    return method(tokens, freq_counter=freq)
+                if name in ('MATTR', 'yules_k', 'MATTR_centroid'):
+                    return method(tokens, lex=lex)
+                if m == '_compute_MTLD_score':
+                    return method(tokens)
+                kw = {k: cfg_[k] for k in ('lexicon_key', 'phrase_key') if k in cfg_}
+                return method(tokens, **kw)
+            if m == 'calculate_perplexity':
+                return self.processor.calculate_perplexity(chunks)
+            if m == 'compute_vader_sentiment':
+                return self.processor.compute_vader_sentiment(chunks)[
+                    cfg_.get('result_index', 0)
+                ]
+            print(f"    Warning: Unknown compute method '{m}' for '{name}'")
+            return None
+        except Exception as e:
+            print(f"    Error computing {name}: {e}")
+            return None
+
+    @staticmethod
+    def _low_token_result(
+        mean_emb: np.ndarray, token_count: int, file_count: int
+    ) -> Dict[str, Any]:
+        return {
+            'mean_emb': mean_emb,
+            'token_count': token_count,
+            'chunk_count': 0,
+            'file_count': file_count,
+            'low_token_text': True,
+        }
+
+    @staticmethod
+    def _token_lists_are_identical(a: List[str], b: List[str]) -> bool:
+        if a is b:
+            return True
+        if a is None or b is None:
+            return False
+        if len(a) != len(b):
+            return False
+        return a == b
+
+    def _cache_filters(
+        self,
+        filters: Dict,
+        centroid_extras: Optional[Dict[str, Any]] = None,
+    ) -> Dict:
+        cf = {k: v for k, v in filters.items() if k in CACHE_FILTER_KEYS}
+        if centroid_extras:
+            cf.update(centroid_extras)
+        cf.update(self.embedding_cache_signature)
+        cf['metric_signature'] = hashlib.md5(
+            ','.join(sorted(MetricConfig.get_metric_names())).encode('utf-8')
+        ).hexdigest()[:12]
+        return cf
+
+    def process_text(
+        self,
+        text: str,
+        ignore_ids: Optional[set] = None,
+        **filter_kwargs,
+    ) -> Optional[Dict]:
+        if ignore_ids is None:
+            ignore_ids = set()
+
+        self._current_video_count = 0
+
+        if not validate_text_name(text):
+            print(f"\nError: Invalid text name '{text}' rejected for security")
+            return None
+
+        print(f"Processing: {text}")
+        filters = {k: v for k, v in filter_kwargs.items() if v is not None}
+        cache_filters = self._cache_filters(filters)
+
+        safe = sanitize_filename(text)
+        txt_dir = self.processor.base_dir / "data/input" / safe / "txt_files"
+        if not txt_dir.exists() and not self.processor.has_external_document(text):
+            print(f"  Skipped: {text} (no txt_files directory)")
+            return None
+
+        if self.centroid_mode:
+            return self._centroid_text(text, filters, ignore_ids, **filter_kwargs)
+
+        result = self.processor.get_tokens(text, filters, ignore_ids)
+        if not result:
+            return None
+
+        tokens, txt_dir, file_count, video_ids = result
+        style_profile = self._burrows_profile(tokens)
+        emb_only_low = filter_kwargs.get('embeddings_only_low_token', False)
+
+        self._centroid_equals_stat[text] = True
+
+        min_total = filters.get('min_tokens_total', 0)
+        if len(tokens) < min_total:
+            if emb_only_low:
+                print(
+                    f"  Low tokens: {text} ({len(tokens):,} tokens, "
+                    f"minimum is {min_total:,}) - generating embeddings only"
+                )
+                cached_emb = cached_mean = cached_chunks = None
+                if self.cache:
+                    cached = self.cache.load(
+                        text, cache_filters, video_ids,
+                        enable_spacy=self.enable_spacy,
+                        needs_perplexity_model=self.processor.needs_perplexity_model,
+                        enable_ngram_entropy=self.enable_ngram_entropy,
+                        fast_mode=self.fast_mode,
+                        expected_token_count=len(tokens),
+                        embeddings_only=True,
+                        force_latest_cache=self.force_latest_cache,
+                    )
+                    if cached is not None:
+                        cached_emb = cached.get('embeddings')
+                        cached_mean = cached.get('mean_emb')
+                        cached_chunks = cached.get('chunks')
+
+                if cached_chunks is not None and cached_emb is not None:
+                    chunks = cached_chunks
+                    chunk_embs = cached_emb
+                    mean_emb = (
+                        cached_mean
+                        if cached_mean is not None
+                        else np.mean(chunk_embs, axis=0).astype(np.float32)
+                    )
+                    print(f"  Cached: {text} (using cached embeddings)")
+                else:
+                    chunks = self.processor.chunk(tokens)
+                    if not chunks:
+                        print(f"  Skipped: {text} (no chunks generated)")
+                        return None
+                    chunk_embs = self._encode(chunks)
+                    mean_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
+
+                rd = {
+                    'mean_emb': mean_emb,
+                    'token_count': len(tokens),
+                    'chunk_count': len(chunks),
+                    'file_count': file_count,
+                    'low_token_text': True,
+                }
+                if self.cache and (cached_chunks is None or cached_emb is None):
+                    self.cache.save(
+                        text, cache_filters, rd, video_ids,
+                        len(tokens), len(chunks),
+                        chunk_embs=chunk_embs, mean_emb=mean_emb, chunks=chunks,
+                        enable_spacy=self.enable_spacy,
+                        needs_perplexity_model=self.processor.needs_perplexity_model,
+                        enable_ngram_entropy=self.enable_ngram_entropy,
+                        fast_mode=self.fast_mode,
+                    )
+                print(
+                    f"  Complete: {text} ({len(tokens):,} tokens, "
+                    f"{len(chunks)} chunks, {file_count} files) [embeddings only]"
+                )
+                return rd
+
+            print(
+                f"  Skipped: {text} ({len(tokens):,} tokens, minimum is {min_total:,})"
+            )
+            return None
+
+        cached_metrics: Dict[str, Any] = {}
+        missing: List[str] = []
+        cached_emb = cached_mean = cached_chunks = None
+        target = self._target_metrics(skip_centroid_duplicates=True)
+
+        if self.cache:
+            cached = self.cache.load(
+                text, cache_filters, video_ids,
+                enable_spacy=self.enable_spacy,
+                needs_perplexity_model=self.processor.needs_perplexity_model,
+                enable_ngram_entropy=self.enable_ngram_entropy,
+                fast_mode=self.fast_mode,
+                expected_token_count=len(tokens),
+                embeddings_only=self.no_metrics,
+                force_latest_cache=self.force_latest_cache,
+            )
+            if cached is not None:
+                cached_metrics = cached.get('metrics', {})
+                cached_emb = cached.get('embeddings')
+                cached_mean = cached.get('mean_emb')
+                cached_chunks = cached.get('chunks')
+                missing = [
+                    m for m in target
+                    if self._needs_compute(m, cached_metrics)
+                ]
+            else:
+                missing = list(target)
+
+        if cached_chunks is not None and cached_emb is not None:
+            chunks = cached_chunks
+            chunk_embs = cached_emb
+            mean_emb = cached_mean
+            print(f"  Cached: {text} (using cached embeddings)")
+        else:
+            chunks = self.processor.chunk(tokens)
+            if not chunks:
+                print(f"  Skipped: {text} (no chunks generated)")
+                return None
+            chunk_embs = self._encode(chunks)
+            mean_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
+
+        report_values: Dict[str, Any] = {}
+        report_src = 'computed'
+
+        if missing:
+            print(f"    -> Computing {len(missing)} new metrics")
+            new = self._metric_subset(tokens, chunks, missing)
+            all_metrics = {**cached_metrics, **new}
+            report_values = new
+        elif cached_metrics:
+            all_metrics = cached_metrics
+            report_values = cached_metrics
+            report_src = 'cache'
+        else:
+            all_metrics = self._all_metrics(tokens, chunks)
+            report_values = all_metrics
+
+        if not self.no_metrics:
+            self._print_summary(report_values, report_src)
+
+        rd = {
+            'mean_emb': mean_emb,
+            'token_count': len(tokens),
+            'chunk_count': len(chunks),
+            'file_count': file_count,
+            '_burrows_rate_profile': style_profile,
+            **all_metrics,
+        }
+
+        if self.cache:
+            self.cache.save(
+                text, cache_filters, rd, video_ids,
+                len(tokens), len(chunks),
+                chunk_embs=chunk_embs, mean_emb=mean_emb, chunks=chunks,
+                enable_spacy=self.enable_spacy,
+                needs_perplexity_model=self.processor.needs_perplexity_model,
+                enable_ngram_entropy=self.enable_ngram_entropy,
+                fast_mode=self.fast_mode,
+            )
+
+        comp = all_metrics.get('compression')
+        if isinstance(comp, (float, int)):
+            print(
+                f"  Complete: {text} ({len(tokens):,} tokens, {len(chunks)} chunks, "
+                f"{file_count} files, CR: {_format_trimmed_decimal(float(comp), 4)})"
+            )
+        else:
+            print(
+                f"  Complete: {text} ({len(tokens):,} tokens, "
+                f"{len(chunks)} chunks, {file_count} files)"
+            )
+
+        return rd
+
+    def _centroid_text(
+        self,
+        text: str,
+        filters: Dict,
+        ignore_ids: Optional[set] = None,
+        **filter_kwargs,
+    ):
+        if ignore_ids is None:
+            ignore_ids = set()
+
+        print(f"Processing (centroid mode={self.centroid_mode}): {text}")
+
+        cache_filters = self._cache_filters(
+            filters,
+            centroid_extras={
+                'centroid_mode': self.centroid_mode,
+                'centroid_videos': int(self.centroid_videos),
+                'centroid_words': int(self.centroid_words),
+                'stat_word_count': int(self.stat_word_count),
+            },
+        )
+
+        if self.centroid_mode == 'video':
+            return self._centroid_video(text, filters, ignore_ids, cache_filters)
+        if self.centroid_mode == 'word':
+            return self._centroid_word(text, filters, ignore_ids, cache_filters)
+
+        print(f"  Skipped: {text} (unknown centroid mode: {self.centroid_mode})")
+        return None
+
+    def _centroid_video(
+        self, text: str, filters: Dict, ignore_ids: set, cache_filters: Dict
+    ):
+        min_stat = (
+            int(self.stat_word_count)
+            if (self.stat_word_count and self.stat_word_count > 0)
+            else 0
+        )
+        cap = min_stat if min_stat > 0 else None
+        enforce_min = (not self.no_metrics) and min_stat > 0
+
+        files = self.processor._get_filtered_files(text, filters, ignore_ids)
+        if not files:
+            print(f"  Skipped: {text} (no txt_files directory or no files passed filters)")
+            return None
+
+        vids_for_cache = [extract_video_id(f.name) for _, f in files]
+        n_files = len(vids_for_cache)
+
+        target = self._target_metrics()
+        stat_names = [m for m in target if not MetricConfig.is_centroid_metric(m)]
+        centroid_names = [m for m in target if MetricConfig.is_centroid_metric(m)]
+
+        cached_metrics: Dict[str, Any] = {}
+        text_emb: Optional[np.ndarray] = None
+        cached_low: Optional[bool] = None
+        missing: List[str] = list(target)
+
+        ckw = dict(
+            enable_spacy=self.enable_spacy,
+            needs_perplexity_model=self.processor.needs_perplexity_model,
+            enable_ngram_entropy=self.enable_ngram_entropy,
+            fast_mode=self.fast_mode,
+        )
+
+        if self.cache:
+            cached = self.cache.load(
+                text, cache_filters, vids_for_cache,
+                embeddings_only=self.no_metrics,
+                force_latest_cache=self.force_latest_cache,
+                expected_token_count=token_cap,
+                **cache_kwargs,
+            )
+            if cached is not None and cached.get('mean_emb') is not None:
+                text_emb = cached['mean_emb']
+                cached_metrics = cached.get('metrics', {}) or {}
+                cached_tokens = cached.get('token_count', 0)
+                cached_low = bool(enforce_min and cached_tokens < min_stat)
+
+                needed = (
+                    [m for m in target if MetricConfig.is_centroid_metric(m)]
+                    if cached_low
+                    else list(target)
+                )
+                missing = [m for m in needed if self._needs_compute(m, cached_metrics)]
+
+                if self.no_metrics or (not missing and not self.compute_fighting_words):
+                    if not self.no_metrics:
+                        self._print_summary(cached_metrics, 'cache')
+                    result_metrics = dict(cached_metrics)
+                    if cached_low:
+                        for m in stat_names:
+                            result_metrics.pop(m, None)
+                    print(f"  Complete: {text} ({cached_tokens:,} tokens, cached)")
+                    return {
+                        'mean_emb': text_emb,
+                        'token_count': cached_tokens,
+                        'chunk_count': 0,
+                        'file_count': n_files,
+                        'low_token_text': bool(cached_low),
+                        '_centroid_only': bool(cached_low),
+                        **({} if self.no_metrics else result_metrics),
+                    }
+
+                missing_summary = self._summarize_metric_names(
+                    missing_metrics, max_items=None
+                )
+                print(
+                    f"    -> {len(missing_metrics)} metrics missing from cache: "
+                    f"{missing_summary}"
+                )
+
+                uncached_by_fast_mode = [
+                    name for name in missing_metrics
+                    if self.fast_mode and name in ('ngram_entropy_2', 'ngram_entropy_3')
+                ]
+                if uncached_by_fast_mode:
+                    print(
+                        "    -> Not persisted because --fast-mode excludes: "
+                        f"{self._summarize_metric_names(uncached_by_fast_mode, max_items=None)}"
+                    )
+
+        result = self.processor.load_video_centroids(
+            text, self.centroid_videos, filters, ignore_ids,
+            max_accumulated_tokens=cap,
+            precomputed_files=files,
+            need_embeddings=text_emb is None,
+            need_stat_corpus=True,
+            need_centroid_tokens=True,
+        )
+        if not result:
+            print(f"  Skipped: {text} (no video centroids)")
+            return None
+
+        video_ids, video_embeddings, stat_tokens, centroid_tokens, avg_words = result
+
+        if text_emb is None:
+            if not video_embeddings:
+                print(f"  Skipped: {text} (no embeddings)")
+                return None
+            text_emb = np.mean(video_embeddings, axis=0).astype(np.float32)
+            video_embeddings.clear()
+
+        centroid_eq = self._token_lists_are_identical(centroid_tokens, stat_tokens)
+        self._centroid_equals_stat[text] = centroid_eq
+        is_low = bool(enforce_min and len(stat_tokens) < min_stat)
+
+        self._current_video_count = len(video_ids)
+
+        chunks: List[str] = []
+        stat_metrics: Dict[str, Any] = {}
+        centroid_metrics: Dict[str, Any] = {}
+
+        if not self.no_metrics and centroid_tokens:
+            c_missing = [m for m in missing if m in centroid_names]
+            if centroid_eq and not is_low:
+                c_missing = [
+                    m for m in c_missing
+                    if not MetricConfig.is_centroid_duplicate(m)
+                ]
+            if is_low:
+                for m in missing:
+                    if m in ('ngram_entropy_2', 'ngram_entropy_3') and m not in c_missing:
+                        c_missing.append(m)
+            if c_missing:
+                needs_chunks = any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in c_missing
+                )
+                c_chunks = (
+                    self.processor.chunk(centroid_tokens) if needs_chunks else []
+                )
+                print(
+                    f"    -> Computing {len(c_missing)} centroid metrics "
+                    f"from {len(centroid_tokens):,} tokens"
+                )
+                centroid_metrics = self._metrics(
+                    centroid_tokens, c_chunks, c_missing
+                )
+
+        if (
+            'avg_words_per_video' in centroid_names
+            and 'avg_words_per_video' not in cached_metrics
+        ):
+            centroid_metrics['avg_words_per_video'] = avg_words
+
+        self._current_video_count = 0
+
+        if not self.no_metrics and not is_low and stat_tokens:
+            s_missing = [m for m in missing if m in stat_names]
+            if s_missing:
+                needs_chunks = any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in s_missing
+                )
+                s_chunks = self.processor.chunk(stat_tokens) if needs_chunks else []
+                if needs_chunks:
+                    chunks = s_chunks
+                print(
+                    f"    -> Computing {len(s_missing)} stat metrics "
+                    f"from {len(stat_tokens):,} tokens"
+                )
+                stat_metrics = self._metrics(stat_tokens, s_chunks, s_missing)
+
+        new_metrics = {**stat_metrics, **centroid_metrics}
+        if new_metrics:
+            self._print_summary(new_metrics, 'computed')
+
+        all_metrics = {**cached_metrics, **new_metrics}
+        if is_low:
+            for m in stat_names:
+                all_metrics.pop(m, None)
+
+        tokens_for_burrows = stat_tokens if stat_tokens else centroid_tokens
+
+        rd = {
+            'mean_emb': text_emb,
+            'token_count': len(stat_tokens),
+            'chunk_count': len(chunks),
+            'file_count': n_files,
+            '_burrows_rate_profile': self._burrows_profile(tokens_for_burrows),
+            '_centroid_equals_stat': centroid_eq,
+            '_centroid_only': is_low,
+            **all_metrics,
+        }
+
+        if self.cache:
+            self.cache.save(
+                text, cache_filters, rd, vids_for_cache,
+                len(stat_tokens), len(chunks),
+                chunk_embs=None, mean_emb=text_emb, chunks=None,
+                **ckw,
+            )
+
+        if is_low:
+            print(f"  Complete: {text} ({len(stat_tokens):,} tokens, centroid metrics only)")
+        else:
+            print(
+                f"  Complete: {text} ({len(stat_tokens):,} tokens, "
+                f"{len(video_ids) or n_files} videos)"
+            )
+
+        return rd
+
+    def _centroid_word(
+        self, text: str, filters: Dict, ignore_ids: set, cache_filters: Dict
+    ):
+        result = self.processor.get_tokens(text, filters, ignore_ids)
+        if not result:
+            return None
+
+        tokens, txt_dir, file_count, video_ids = result
+
+        centroid_tokens = (
+            tokens[-self.centroid_words:]
+            if len(tokens) > self.centroid_words
+            else tokens
+        )
+        stat_tokens = tokens
+        centroid_eq = self._token_lists_are_identical(centroid_tokens, stat_tokens)
+        self._centroid_equals_stat[text] = centroid_eq
+
+        chunks = self.processor.chunk(centroid_tokens)
+        if not chunks and centroid_tokens:
+            chunks = [' '.join(centroid_tokens)]
+        if not chunks:
+            print(f"  Skipped: {text} (no chunks generated)")
+            return None
+
+        chunk_embs = self._encode(chunks)
+        text_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
+
+        all_metrics = {}
+
+        if not self.no_metrics:
+            target = self._target_metrics(
+                skip_centroid_duplicates=centroid_eq,
+                skip_video_centroid_only=True,
+            )
+            stat_names = [m for m in target if not MetricConfig.is_centroid_metric(m)]
+            centroid_names = [m for m in target if MetricConfig.is_centroid_metric(m)]
+
+            if target:
+                n_tokens = len(centroid_tokens)
+                uniq = len(set(centroid_tokens))
+                ttr = uniq / n_tokens if n_tokens else 0.0
+                print(
+                    f"    -> Stats corpus: {n_tokens:,} tokens, "
+                    f"{uniq:,} unique (TTR={ttr:.4f}), "
+                    f"centroid_words_cap={self.centroid_words:,}, "
+                    f"chunks={len(chunks):,}"
+                )
+                print(
+                    f"    -> Computing {len(target)} metrics "
+                    f"from {len(centroid_tokens):,} tokens"
+                )
+
+                s_chunks: List[str] = []
+                if any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in stat_names
+                ):
+                    s_chunks = self.processor.chunk(stat_tokens) or [' '.join(stat_tokens)]
+
+                stat_metrics = (
+                    self._metrics(stat_tokens, s_chunks, stat_names)
+                    if stat_names else {}
+                )
+
+                c_chunks: List[str] = []
+                if any(
+                    MetricConfig.METRICS.get(m, {}).get('compute_method')
+                    in ('calculate_perplexity', 'compute_vader_sentiment')
+                    for m in centroid_names
+                ):
+                    c_chunks = self.processor.chunk(centroid_tokens) or [' '.join(centroid_tokens)]
+
+                centroid_metrics = (
+                    self._metrics(centroid_tokens, c_chunks, centroid_names)
+                    if centroid_names else {}
+                )
+
+                all_metrics = {**stat_metrics, **centroid_metrics}
+                self._print_summary(all_metrics, 'computed')
+
+        rd = {
+            'mean_emb': text_emb,
+            'token_count': len(stat_tokens),
+            'chunk_count': len(chunks),
+            'file_count': file_count,
+            'chunk_embs': chunk_embs,
+            '_burrows_rate_profile': self._burrows_profile(centroid_tokens),
+            '_centroid_equals_stat': centroid_eq,
+            **all_metrics,
+        }
+
+        if self.cache:
+            self.cache.save(
+                text, cache_filters, rd, video_ids,
+                len(stat_tokens), len(chunks),
+                chunk_embs=chunk_embs, mean_emb=text_emb, chunks=chunks,
+                enable_spacy=self.enable_spacy,
+                needs_perplexity_model=self.processor.needs_perplexity_model,
+                enable_ngram_entropy=self.enable_ngram_entropy,
+                fast_mode=self.fast_mode,
+            )
+
+        print(f"  Complete: {text} ({len(stat_tokens):,} tokens, {len(chunks)} chunks)")
+        return rd
+
+    def reduce_dims(self, embeddings: np.ndarray, n_texts: int) -> np.ndarray:
+        if self._scaler_cache is None:
+            self._scaler_cache = StandardScaler()
+
+        embeddings = np.ascontiguousarray(
+            self._scaler_cache.fit_transform(embeddings), dtype=np.float32
+        )
+
+        if n_texts < 3:
+            if embeddings.shape[1] >= 2:
+                return embeddings[:, :2]
+            pad = np.zeros((embeddings.shape[0], 2 - embeddings.shape[1]), dtype=np.float32)
+            return np.hstack([embeddings, pad])
+
+        if self.umap_neighbors is None:
+            k = min(5 if n_texts <= 30 else 50, n_texts - 1)
+        else:
+            k = min(self.umap_neighbors, n_texts - 1)
+        k = max(2, k)
+
+        return umap.UMAP(
+            n_components=2,
+            metric='cosine',
+            n_neighbors=k,
+            min_dist=self.umap_min_dist,
+            init='spectral',
+            random_state=20,
+            n_jobs=1,
+            verbose=False,
+            n_epochs=self.umap_epochs,
+            low_memory=False,
+        ).fit_transform(embeddings)
+
+    def _cluster_default(
+        self,
+        embeddings: np.ndarray,
+        idx: List[int],
+        random_seed: int = 42,
+        variant_index: int = 0,
+    ) -> Tuple[List[Optional[int]], str]:
+        labels_out: List[Optional[int]] = [None] * len(embeddings)
+        if not idx:
+            return labels_out, 'HDBSCAN'
+        if len(idx) == 1:
+            labels_out[idx[0]] = 0
+            return labels_out, 'HDBSCAN'
+
+        sub = embeddings[idx]
+
+        norms = np.linalg.norm(sub, axis=1, keepdims=True)
+        norms[norms == 0] = 1.0
+        normalized = sub / norms
+
+        min_size = max(2, min(20, len(idx) // 20 or 2))
+        min_samples = max(1, min_size // 2)
+
+        inp = normalized
+        if variant_index > 0:
+            try:
+                rng = np.random.default_rng(random_seed + variant_index * 1009)
+                std = float(np.std(normalized))
+                jitter = rng.normal(
+                    0.0, max(1e-6, std * 1e-2), size=normalized.shape
+                ).astype(np.float32)
+                inp = normalized + jitter
+            except Exception:
+                inp = normalized
+
+        labels: Optional[np.ndarray] = None
+        algo = 'HDBSCAN'
+        if SklearnHDBSCAN is not None:
+            try:
+                labels = SklearnHDBSCAN(
+                    min_cluster_size=min_size,
+                    min_samples=min_samples,
+                    metric='euclidean',
+                ).fit_predict(inp)
+            except Exception as exc:
+                print(f"    Warning: HDBSCAN failed ({exc})")
+                labels = None
+
+        if labels is None or np.all(labels == -1):
+            algo = 'KMeans'
+            fallback = max(2, min(14, int(np.sqrt(len(idx)))))
+            print(
+                f"    Note: HDBSCAN returned all-noise or failed; "
+                f"falling back to KMeans (variant {variant_index}, seed {random_seed})"
+            )
+            labels = KMeans(
+                n_clusters=fallback,
+                random_state=random_seed,
+                n_init=10,
+            ).fit_predict(inp)
+
+        for k, ti in enumerate(idx):
+            labels_out[ti] = int(labels[k])
+        return labels_out, algo
+
+    def _cluster_leiden(
+        self,
+        embeddings: np.ndarray,
+        idx: List[int],
+        resolution: float = 1.0,
+        random_seed: int = 42,
+    ) -> Tuple[List[Optional[int]], str]:
+        labels_out: List[Optional[int]] = [None] * len(embeddings)
+        if not idx:
+            return labels_out, 'HDBSCAN'
+        if len(idx) == 1:
+            labels_out[idx[0]] = 0
+            return labels_out, 'HDBSCAN'
+
+        if not LEIDEN_AVAILABLE:
+            print("    Warning: leidenalg/igraph not available — falling back to HDBSCAN")
+            return self._cluster_default(embeddings, idx, random_seed=random_seed)
+
+        try:
+            from sklearn.decomposition import PCA
+            from sklearn.neighbors import kneighbors_graph
+        except ImportError as exc:
+            print(f"    Warning: sklearn dependency missing for Leiden ({exc}) — falling back to HDBSCAN")
+            return self._cluster_default(embeddings, idx, random_seed=random_seed)
+
+        X = embeddings[idx].astype(np.float32)
+        n = X.shape[0]
+
+        if self.leiden_whiten and X.shape[1] > 1:
+            k = min(256, X.shape[1] - 1, n - 1)
+            if k >= 2:
+                try:
+                    X = PCA(
+                        n_components=k, whiten=True, random_state=random_seed,
+                    ).fit_transform(X).astype(np.float32)
+                except Exception as exc:
+                    print(f"    Warning: PCA whitening failed ({exc}); using raw embeddings")
+
+        k_eff = max(2, min(int(self.leiden_k_neighbors), n - 1))
+        A = None
+        for metric in ('cosine', 'euclidean'):
+            try:
+                A = kneighbors_graph(
+                    X, k_eff, mode='connectivity',
+                    metric=metric, include_self=False,
+                )
+                A = A.maximum(A.T)
+                break
+            except Exception as exc:
+                print(f"    Warning: k-NN graph with metric={metric} failed ({exc})")
+                A = None
+
+        if A is None:
+            print("    Warning: could not build k-NN graph — falling back to HDBSCAN")
+            return self._cluster_default(embeddings, idx, random_seed=random_seed)
+
+        try:
+            sources, targets = A.nonzero()
+            edges = [(int(s), int(t)) for s, t in zip(sources, targets) if s < t]
+            if not edges:
+                print("    Warning: k-NN graph produced no edges — falling back to HDBSCAN")
+                return self._cluster_default(embeddings, idx, random_seed=random_seed)
+            g = ig.Graph(n=n, edges=edges, directed=False)
+            partition = la.find_partition(
+                g,
+                la.RBConfigurationVertexPartition,
+                resolution_parameter=float(resolution),
+                seed=random_seed,
+            )
+            labels = np.asarray(partition.membership, dtype=int)
+        except Exception as exc:
+            print(f"    Warning: Leiden failed ({exc}) — falling back to HDBSCAN")
+            return self._cluster_default(embeddings, idx, random_seed=random_seed)
+
+        for k, ti in enumerate(idx):
+            labels_out[ti] = int(labels[k])
+        return labels_out, 'Leiden'
+
+    def _cluster_variants(
+        self,
+        embeddings: np.ndarray,
+        idx: List[int],
+        variant_count: int = 11,
+        base_seed: int = 42,
+    ) -> Dict[str, List[Optional[int]]]:
+        if self.cluster_method == 'leiden':
+            return self._cluster_variants_leiden(
+                embeddings, idx, variant_count=variant_count, base_seed=base_seed,
+            )
+
+        total = max(1, int(variant_count))
+        variants: Dict[str, List[Optional[int]]] = {}
+        labels_map: Dict[str, str] = {}
+        for vi in range(total):
+            key = 'cluster' if vi == 0 else f'cluster_{vi + 1}'
+            labels, algo = self._cluster_default(
+                embeddings, idx,
+                random_seed=base_seed + vi, variant_index=vi,
+            )
+            variants[key] = labels
+            labels_map[key] = (
+                f'{algo} (default)' if vi == 0
+                else f'{algo} variant {vi + 1}'
+            )
+        self.cluster_metric_labels = labels_map
+        return variants
+
+    def _cluster_variants_leiden(
+        self,
+        embeddings: np.ndarray,
+        idx: List[int],
+        variant_count: int = 11,
+        base_seed: int = 42,
+    ) -> Dict[str, List[Optional[int]]]:
+        total = max(1, int(variant_count))
+        if total == 1:
+            resolutions = [float(self.leiden_resolution_min)]
+        else:
+            resolutions = np.linspace(
+                self.leiden_resolution_min,
+                self.leiden_resolution_max,
+                total,
+            ).tolist()
+
+        variants: Dict[str, List[Optional[int]]] = {}
+        labels_map: Dict[str, str] = {}
+        for i, res in enumerate(resolutions):
+            key = 'cluster' if i == 0 else f'cluster_{i + 1}'
+            labels, algo = self._cluster_leiden(
+                embeddings, idx, resolution=float(res), random_seed=base_seed,
+            )
+            variants[key] = labels
+            if algo == 'Leiden':
+                labels_map[key] = f'Leiden r={res:.2f}'
+            else:
+                labels_map[key] = f'{algo} r={res:.2f} (Leiden fallback)'
+        self.cluster_metric_labels = labels_map
+        return variants
+
+    def export_csv(self, texts: List[str], output: str, n: int = 100):
+        if self.similarity_matrix is None:
+            return
+
+        print(f"\nExporting to {output}...")
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            header = ['Text']
+            for i in range(1, n + 1):
+                header.extend([f'Closest {i}', f'Closest {i} Similarity'])
+            for i in range(1, n + 1):
+                header.extend([f'Farthest {i}', f'Farthest {i} Similarity'])
+            if self.compute_fighting_words:
+                header.extend(['Fighting Words Peak Unigram', 'Fighting Words Floor Unigram'])
+            writer.writerow(header)
+
+            for i, text in enumerate(texts):
+                sims = self.similarity_matrix[i].copy()
+                sorted_idx = np.argsort(sims)[::-1]
+                sorted_idx = [k for k in sorted_idx if k != i]
+                avail = min(n, len(sorted_idx))
+                closest = [(texts[k], sims[k]) for k in sorted_idx[:avail]]
+                farthest = [(texts[k], sims[k]) for k in sorted_idx[-avail:][::-1]]
+
+                row = [text]
+                for j in range(n):
+                    if j < len(closest):
+                        row.extend([closest[j][0], _format_trimmed_decimal(closest[j][1], 4)])
+                    else:
+                        row.extend(['', ''])
+                for j in range(n):
+                    if j < len(farthest):
+                        row.extend([farthest[j][0], _format_trimmed_decimal(farthest[j][1], 4)])
+                    else:
+                        row.extend(['', ''])
+                if self.compute_fighting_words:
+                    row.extend([
+                        self._fighting_words_peak_unigrams.get(text, ''),
+                        self._fighting_words_floor_unigrams.get(text, '')
+                    ])
+                writer.writerow(row)
+
+        print(f"  Exported: {output_path.absolute()}")
+
+    def export_metrics_csv(
+        self,
+        texts: List[str],
+        metrics_data: Dict[str, np.ndarray],
+        output: str,
+    ):
+        output_path = Path(output)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        metric_names = [
+            name for name in MetricConfig.get_metric_names()
+            if name in metrics_data and metrics_data[name] is not None
+        ]
+        channel_mode = not self.processor.external_documents
+
+        with open(output_path, 'w', newline='', encoding='utf-8') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Text', *metric_names])
+            for index, text in enumerate(texts):
+                label = text
+                if channel_mode and not METRICS_CSV_FULL_CHANNEL_NAMES:
+                    label = text[:5]
+                row = [label]
+                for metric_name in metric_names:
+                    value = metrics_data[metric_name][index]
+                    row.append(
+                        '' if value is None or np.isnan(value)
+                        else _format_trimmed_decimal(float(value), 6)
+                    )
+                writer.writerow(row)
+
+        print(f"  Exported metrics: {output_path.absolute()}")
+
+    def visualize(
+        self,
+        texts: List[str],
+        metrics_data: Dict[str, np.ndarray],
+        active_metric: Optional[str] = None,
+        output_html: str = ".html",
+        low_token_texts: Optional[set] = None,
+        enable_annotations: bool = False,
+        focus_text: Optional[str] = None,
+        semantic_embeddings: Optional[List[List[float]]] = None,
+        burrows_similarity: Optional[List[List[float]]] = None,
+        fighting_words_unigrams: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
+        burrows_reduced: Optional[List[List[float]]] = None,
+        burrows_function_words: Optional[List[str]] = None,
+        burrows_word_frequencies: Optional[Dict[str, List[Optional[float]]]] = None,
+    ):
+        if low_token_texts is None:
+            low_token_texts = set()
+        if focus_text is None:
+            focus_text = self.active_focus_text if hasattr(self, 'active_focus_text') else ''
+        if semantic_embeddings is None:
+            semantic_embeddings = []
+        if burrows_similarity is None:
+            burrows_similarity = []
+        if fighting_words_unigrams is None:
+            fighting_words_unigrams = {}
+        if burrows_reduced is None:
+            burrows_reduced = []
+        if burrows_function_words is None:
+            burrows_function_words = []
+        if burrows_word_frequencies is None:
+            burrows_word_frequencies = {}
+
+        exclude_from_hover = {
+            'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
+            'imperative_exclamation_count', 'academic_word_density',
+            'article_count_raw', 'conjunction_count_raw', 'vulnerability',
+            'family_exclamations', 'pronoun_article_ratio',
+            'deictic_spatial_temporal', 'elaboration_explanation_ratio',
+            'narration_continuation_ratio',
+            'insult', 'bodily_humor', 'dis_ratio',
+            'word_burstiness', 'semantic_disparity', 'guppa', 'pronoun_switching',
+            'compression', 'moving_lzma_cr', 'normalized_compression_ratio',
+            'window_normalized_lzma_cr',
+            'vader_positivity', 'vader_volatility',
+            'vader_positivity_centroid', 'vader_volatility_centroid',
+            'fighting_words_peak_z1', 'fighting_words_floor_z1000',
+            'fighting_words_peak_z1_centroid', 'fighting_words_floor_z1000_centroid',
+        }
+        exclude_from_hover.update({
+            metric_name for metric_name in MetricConfig.METRICS
+            if metric_name.endswith('_count')
+            or metric_name.endswith('_density')
+            or metric_name.startswith('mallet_topic_')
+        })
+        return excluded
+
+    def _fmt_hover(self, name: str, display: str, value) -> Optional[str]:
+        if name in (
+            'MTLD', 'TTR', 'MATTR', 'yules_k',
+            'hapax_ratio',
+            'avg_word_length', 'semantic_disparity',
+            'burrows_cosine_disagreement',
+            'MTLD_centroid', 'MATTR_centroid',
+            'ngram_entropy_2', 'ngram_entropy_3',
+        ):
+            return f"{display}: {_format_trimmed_decimal(value, 4)}<br>"
+        if name in ('perplexity', 'tfidf_distinctiveness'):
+            return f"{display}: {value:.2f}<br>"
+        if name == 'flesch_kincaid':
+            return f"{display}: {value:.1f}<br>"
+        if isinstance(value, float) and not float(value).is_integer():
+            return f"{display}: {_format_trimmed_decimal(value, 4)}<br>"
+        return f"{display}: {int(value)}<br>"
+
+                    for word in words:
+                        word_len = len(word) + (1 if current_line else 0)
+                        if current_length + word_len > max_length and current_line:
+                            wrapped_lines.append(' '.join(current_line))
+                            current_line = [word]
+                            current_length = len(word)
+                        else:
+                            current_line.append(word)
+                            current_length += word_len
+
+                    if current_line:
+                        wrapped_lines.append(' '.join(current_line))
+                else:
+                    wrapped_lines.append(line)
+
+            return '<br>'.join(wrapped_lines)
+
+        def read_palette(text: str, filenames: Tuple[str, ...]) -> List[str]:
+            channel_dir = (
+                self.processor.base_dir
+                / "data/input"
+                / sanitize_filename(text)
+            )
+            palette_path = next(
+                (channel_dir / filename for filename in filenames
+                 if (channel_dir / filename).exists()),
+                None,
+            )
+            if palette_path is None:
+                return []
+
+            try:
+                colors = [
+                    line.strip()
+                    for line in palette_path.read_text(encoding='utf-8').splitlines()
+                    if line.strip()
+                ]
+            except (OSError, UnicodeError) as exc:
+                print(f"Warning: unable to read {palette_path}: {exc}")
+                return []
+
+            hex_color = re.compile(r'^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$')
+            if not 2 <= len(colors) <= 4 or any(
+                not hex_color.fullmatch(color) for color in colors
+            ):
+                print(
+                    f"Warning: {palette_path} must contain 2-4 hex colors, "
+                    "one per line; ignoring it."
+                )
+                return []
+            return colors
+
+        hover_texts = []
+        hover_panel_palettes = []
+        hover_text_palettes = []
+        programmer_notes = {}
+
+        for i, text in enumerate(texts):
+            tag = ''
+            try:
+                tag_path = (
+                    self.processor.base_dir
+                    / "data/input"
+                    / sanitize_filename(text)
+                    / "tag.txt"
+                )
+                if tag_path.exists():
+                    tag = tag_path.read_text(encoding='utf-8').strip()
+            except (OSError, UnicodeError):
+                pass
+
+            col = f"<b>{text}</b><br>"
+            if tag:
+                col += f"{escape_html_attribute(tag)}<br>"
+            col += (
+                f"X: {_format_trimmed_decimal(reduced[i, 0], 4)}<br>"
+                f"Y: {_format_trimmed_decimal(reduced[i, 1], 4)}<br>"
+            )
+
+            if text not in low_token_texts:
+                for name, values in metrics_data.items():
+                    if (
+                        values is None
+                        or name in excluded
+                        or name.startswith('cluster')
+                        or name.startswith('burrows_cluster')
+                    ):
+                        continue
+                    v = values[i]
+                    if v is None or np.isnan(v):
+                        continue
+                    display = MetricConfig.METRICS.get(name, {}).get('name', name)
+                    line = self._fmt_hover(name, display, v)
+                    if line:
+                        col += line
+
+            hover_out.append(self._wrap_hover(col))
+            panel_palettes.append(
+                self._read_palette(text, ("hover_panel.txt", "hover_gradient.txt"))
+            )
+            text_palettes.append(
+                self._read_palette(text, ("hover_text.txt",))
+            )
+        return hover_out, panel_palettes, text_palettes
+
+                        if metric_name in [
+                            'MTLD', 'TTR', 'MATTR', 'yules_k',
+                            'hapax_ratio',
+                            'avg_word_length', 'semantic_disparity',
+                            'burrows_cosine_disagreement',
+                            'MTLD_centroid', 'MATTR_centroid',
+                        ]:
+                            stats_column += (
+                                f"{display_name}: "
+                                f"{_format_trimmed_decimal(metric_values[i], 4)}<br>"
+                            )
+                        elif metric_name in ['ngram_entropy_2', 'ngram_entropy_3']:
+                            stats_column += (
+                                f"{display_name}: "
+                                f"{_format_trimmed_decimal(metric_values[i], 4)}<br>"
+                            )
+                        elif metric_name in ['perplexity', 'tfidf_distinctiveness']:
+                            stats_column += f"{display_name}: {metric_values[i]:.2f}<br>"
+                        elif metric_name == 'flesch_kincaid':
+                            stats_column += f"{display_name}: {metric_values[i]:.1f}<br>"
+                        else:
+                            stats_column += f"{display_name}: {int(metric_values[i])}<br>"
+
+    def _metric_meta(
+        self, cluster_keys: List[str]
+    ) -> Tuple[Dict[str, str], Dict[str, Any], List[str]]:
+        names: Dict[str, str] = {}
+        scales: Dict[str, Any] = {}
+        keys: List[str] = []
+
+        for k in cluster_keys:
+            names[k] = self._cluster_label(k)
+            scales[k] = 'Turbo'
+            keys.append(k)
+
+        for name in MetricConfig.get_metric_names():
+            cfg_ = MetricConfig.METRICS[name]
+            if cfg_.get('category') == 'Contextual Descriptions':
+                continue
+            names[name] = cfg_.get('name', name)
+            scales[name] = cfg_.get('colorscale', UNIFIED_COLORSCALE)
+            keys.append(name)
+
+        return names, scales, keys
+
+    def visualize(
+        self,
+        reduced: np.ndarray,
+        texts: List[str],
+        metrics_data: Dict[str, np.ndarray],
+        active_metric: Optional[str] = None,
+        output_html: str = ".html",
+        low_token_texts: Optional[set] = None,
+        focus_text: Optional[str] = None,
+        semantic_embeddings: Optional[List[List[float]]] = None,
+        burrows_similarity: Optional[List[List[float]]] = None,
+        fighting_words_unigrams: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
+        burrows_reduced: Optional[List[List[float]]] = None,
+        burrows_function_words: Optional[List[str]] = None,
+        burrows_word_frequencies: Optional[Dict[str, List[Optional[float]]]] = None,
+        capital_cities: Optional[Dict[str, Any]] = None,
+    ):
+        low_token_texts = low_token_texts or set()
+        if focus_text is None:
+            focus_text = getattr(self, 'active_focus_text', '') or ''
+        semantic_embeddings = semantic_embeddings or []
+        burrows_similarity = burrows_similarity or []
+        fighting_words_unigrams = fighting_words_unigrams or {}
+        burrows_reduced = burrows_reduced or []
+        burrows_function_words = burrows_function_words or []
+        burrows_word_frequencies = burrows_word_frequencies or {}
+        capital_cities = capital_cities or {}
+
+            text_content = wrap_long_lines(text_content)
+            hover_texts.append(text_content)
+            hover_panel_palettes.append(
+                read_palette(text, ("hover_panel.txt", "hover_gradient.txt"))
+            )
+            hover_text_palettes.append(read_palette(text, ("hover_text.txt",)))
+
+        full_token_indices = list(range(len(texts)))
+        full_token_reduced = reduced
+
+        cluster_metric_keys = [
+            key for key in metrics_data.keys()
+            if key == 'cluster' or key.startswith('cluster_')
+            or key == 'burrows_cluster' or key.startswith('burrows_cluster_')
+        ]
+        cluster_metric_keys.sort(
+            key=lambda key: (
+                0 if key == 'cluster' else
+                1 if key.startswith('cluster_') else
+                2 if key == 'burrows_cluster' else
+                3
+            ,)
+        )
+
+        cluster_keys = [
+            k for k in metrics_data.keys()
+            if k == 'cluster' or k.startswith('cluster_')
+            or k == 'burrows_cluster' or k.startswith('burrows_cluster_')
+        ]
+        cluster_keys.sort(key=lambda k: (
+            0 if k == 'cluster' else
+            1 if k.startswith('cluster_') else
+            2 if k == 'burrows_cluster' else 3
+        ))
+
+        if (
+            active_metric
+            and active_metric in MetricConfig.METRICS
+            and active_metric in metrics_data
+            and metrics_data[active_metric] is not None
+        ):
+            cfg_ = MetricConfig.METRICS[active_metric]
+            values = metrics_data[active_metric]
+            color_label = cfg_.get('name', active_metric)
+            color_scale = cfg_.get('colorscale', UNIFIED_COLORSCALE)
+            suffix = cfg_.get('title_suffix', color_label)
+            title = f"Text Semantic Map colored by {suffix}"
+            color_data = [float(values[i]) for i in range(len(texts))]
+        else:
+            default_key = cluster_keys[0] if cluster_keys else 'cluster'
+            clusters = metrics_data.get(default_key)
+            color_data = (
+                [float(clusters[i]) for i in range(len(texts))]
+                if clusters is not None
+                else [float('nan')] * len(texts)
+            )
+            color_label = 'Cluster'
+            color_scale = 'turbo'
+            title = 'Mapping Texts with Semantics :O'
+            active_metric = default_key
+
+        is_cluster = (
+            active_metric == 'cluster'
+            or active_metric.startswith('cluster_')
+            or active_metric == 'burrows_cluster'
+            or active_metric.startswith('burrows_cluster_')
+        )
+        if is_cluster:
+            kept = [v for v in color_data if not np.isnan(v)]
+            lo = np.nanmin(kept) if kept else 0.0
+            hi = np.nanmax(kept) if kept else 1.0
+        else:
+            kept = [v for v in color_data if not np.isnan(v)]
+            lo = np.nanmin(kept) if kept else 0.0
+            hi = np.nanmax(kept) if kept else 1.0
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=reduced[:, 0],
+            y=reduced[:, 1],
+            mode='markers+text',
+            text=texts,
+            textposition="middle center",
+            hovertext=hover_texts,
+            hoverinfo="text",
+            marker=dict(
+                size=15,
+                color=color_data,
+                colorscale=color_scale,
+                showscale=True,
+                cmin=lo,
+                cmax=hi,
+                colorbar=dict(title=color_label),
+                line=dict(width=1, color='black'),
+            ),
+            textfont=dict(size=7, color='black'),
+        ))
+
+        fig.update_layout(
+            title=dict(text=title, x=0.5, xanchor='center'),
+            xaxis_title="UMAP Component 1",
+            yaxis_title="UMAP Component 2",
+            hovermode='closest',
+            showlegend=False,
+            height=800,
+            width=1200,
+            font=dict(family='Arial, sans-serif'),
+        )
+
+        fig.update_xaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+        fig.update_yaxes(showgrid=True, gridwidth=1, gridcolor='LightGray')
+
+        output_path = Path(output_html).absolute()
+
+        plotly_html = fig.to_html(include_plotlyjs='cdn', full_html=False)
+        plotly_html = re.sub(r'\s+integrity="[^"]*"', '', plotly_html)
+        plotly_html = re.sub(r'\s+crossorigin="[^"]*"', '', plotly_html)
+
+        metrics_json: Dict[str, Any] = {}
+        titles_json: Dict[str, str] = {}
+
+        for ck in cluster_keys:
+            values = metrics_data.get(ck)
+            if values is None:
+                metrics_json[ck] = [None for _ in range(len(texts))]
+            else:
+                labels = [None] * len(texts)
+                for i in range(len(texts)):
+                    if not np.isnan(values[i]):
+                        labels[i] = int(values[i])
+                metrics_json[ck] = labels
+            titles_json[ck] = f'Text Semantic Clusters ({self._cluster_label(ck)})'
+
+        names_dict, scales_dict, keys_list = self._metric_meta(cluster_keys)
+
+        for name, values in metrics_data.items():
+            if values is None:
+                continue
+            if (
+                name == 'cluster'
+                or name.startswith('cluster_')
+                or name == 'burrows_cluster'
+                or name.startswith('burrows_cluster_')
+            ):
+                continue
+            metrics_json[name] = [float(values[i]) for i in range(len(texts))]
+            cfg_ = MetricConfig.METRICS.get(name, {})
+            titles_json[name] = (
+                f"Text Semantic Clusters colored by "
+                f"{cfg_.get('title_suffix', name)}"
+            )
+
+        metric_names_dict = {}
+        metric_colorscale_dict = {}
+        metric_keys_list = []
+
+        for cluster_metric_key in cluster_metric_keys:
+            if cluster_metric_key in self.cluster_metric_labels:
+                metric_names_dict[cluster_metric_key] = self.cluster_metric_labels[cluster_metric_key]
+            elif cluster_metric_key in ('cluster', 'burrows_cluster'):
+                metric_names_dict[cluster_metric_key] = 'Cluster 1 (default)'
+            else:
+                cluster_index = int(cluster_metric_key.rsplit('_', 1)[1])
+                metric_names_dict[cluster_metric_key] = f'Cluster {cluster_index}'
+            metric_colorscale_dict[cluster_metric_key] = 'Turbo'
+            metric_keys_list.append(cluster_metric_key)
+
+        non_contextual_metric_items = [
+            (metric_name, MetricConfig.METRICS[metric_name])
+            for metric_name in MetricConfig.get_metric_names()
+            if MetricConfig.METRICS[metric_name].get('category') != 'Contextual Descriptions'
+        ]
+
+        for metric_name, metric_config in non_contextual_metric_items:
+            metric_names_dict[metric_name] = metric_config.get('name', metric_name)
+            metric_colorscale_dict[metric_name] = metric_config.get(
+                'colorscale', UNIFIED_COLORSCALE
+            )
+            metric_keys_list.append(metric_name)
+
+        for metric_name, metric_values in metrics_data.items():
+            if metric_values is not None:
+                if (
+                    metric_name == 'cluster'
+                    or metric_name.startswith('cluster_')
+                    or metric_name == 'burrows_cluster'
+                    or metric_name.startswith('burrows_cluster_')
+                ):
+                    continue
+                metric_list = [
+                    float(metric_values[i]) if i in full_token_indices else None
+                    for i in range(len(texts))
+                ]
+                metrics_json[metric_name] = metric_list
+                metric_config = MetricConfig.METRICS.get(metric_name, {})
+                titles_json[metric_name] = (
+                    f"Text Semantic Clusters colored by "
+                    f"{metric_config.get('title_suffix', metric_name)}"
+                )
+
+        metrics_json_str = safe_json_dumps(metrics_json)
+        titles_json_str = safe_json_dumps(titles_json)
+        texts_json = safe_json_dumps(texts)
+
+        programmer_notes_json = safe_json_dumps(
+            {tx: note for tx, note in programmer_notes.items()}
+        )
+        annotations_enabled_json = safe_json_dumps(bool(enable_annotations))
+
+        template_path = Path(__file__).with_name("atlas_template.html")
+        template = template_path.read_text(encoding="utf-8")
+
+        values = {
+            "__FOCUS_TEXT__": json.dumps(focus_text),
+            "__METRICS_JSON__": metrics_json_str,
+            "__TITLES_JSON__": titles_json_str,
+            "__TEXTS_JSON__": texts_json,
+            "__HOVER_PANEL_PALETTES_JSON__": safe_json_dumps(hover_panel_palettes),
+            "__HOVER_TEXT_PALETTES_JSON__": safe_json_dumps(hover_text_palettes),
+            "__METRIC_NAMES_JSON__": json.dumps(metric_names_dict),
+            "__METRIC_COLORScales_JSON__": json.dumps(metric_colorscale_dict),
+            "__METRIC_KEYS_JSON__": json.dumps(metric_keys_list),
+            "__SEMANTIC_EMBEDDINGS_JSON__": safe_json_dumps(semantic_embeddings),
+            "__BURROWS_SIMILARITY_JSON__": safe_json_dumps(burrows_similarity),
+            "__LOW_TOKEN_TEXTS_JSON__": json.dumps(
+                [tx for tx in texts if tx in low_token_texts]
+            ),
+            "__FIGHTING_WORDS_UNIGRAMS_JSON__": safe_json_dumps(fighting_words_unigrams),
+            "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
+            # --- Experimental Burrows mode data --------------------------------
+            # These placeholders are populated unconditionally so the client can
+            # toggle the mirror Burrows tab at any time without re-running the
+            # pipeline.  If the corpus is too small to produce a stable Burrows
+            # layout, they are empty lists / dicts and the client falls back to
+            # hiding the Experimental button.
+            "__BURROWS_REDUCED_JSON__": safe_json_dumps(burrows_reduced),
+            "__BURROWS_FUNCTION_WORDS_JSON__": json.dumps(list(burrows_function_words)),
+            "__BURROWS_WORD_FREQUENCIES_JSON__": safe_json_dumps(burrows_word_frequencies),
+        }
+
+        custom = template
+        for k, v in values.items():
+            custom = custom.replace(k, v)
+
+        head_match = re.search(
+            r'<head\b[^>]*>(.*?)</head\s*>',
+            custom,
+            re.DOTALL | re.IGNORECASE,
+        )
+        head = head_match.group(1) if head_match else custom
+
+        html = (
+            '<!DOCTYPE html>\n'
+            '<html>\n'
+            '<head>\n'
+            f'<title>{escape_html_attribute("Centroid plot")}</title>\n'
+            '<meta charset="utf-8">\n'
+            f'{head}\n'
+            '</head>\n'
+            '<body>\n'
+            f'{plotly_html}\n'
+            '</body>\n'
+            '</html>\n'
+        )
+
+        with open(output_path, 'w', encoding='utf-8') as f:
+            f.write(html)
+
+        print(f"\nExported interactive visualization to: {output_path}")
+        print("Opening in browser...")
+        time.sleep(0.1)
+        try:
+            webbrowser.open(f'file://{output_path}')
+        except Exception as e:
+            print(f"Could not automatically open browser: {e}")
+            print(f"Please manually open: {output_path}")
+
+    def _build_burrows_word_frequencies(
+        self,
+        successful: List[str],
+        style_profiles: Dict[str, np.ndarray],
+    ) -> Dict[str, List[Optional[float]]]:
+        """Build {function_word: [rate per successful text]} for the client.
+
+        Texts without a style profile receive ``None`` so the client can
+        exclude them from the bell curve and any per-cluster stats.
+        """
+        words = list(self.BURROWS_FUNCTION_WORDS)
+        n_words = len(words)
+        freqs: Dict[str, List[Optional[float]]] = {w: [] for w in words}
+
+        for tx in successful:
+            profile = style_profiles.get(tx)
+            for w_idx, w in enumerate(words):
+                if profile is None or w_idx >= n_words:
+                    freqs[w].append(None)
+                else:
+                    freqs[w].append(float(profile[w_idx]))
+
+        return freqs
+
+    def _build_burrows_layout(
+        self,
+        successful: List[str],
+        style_profiles: Dict[str, np.ndarray],
+    ) -> Optional[List[List[float]]]:
+        """Reduce Burrows distances to 2-D via precomputed-metric UMAP.
+
+        Returns ``None`` when there are fewer than two style profiles, which
+        tells the client to hide the Experimental button.
+        """
+        if len(style_profiles) < 2:
+            return None
+
+        distances, valid = self._burrows_distance_matrix(style_profiles, successful)
+        if distances is None or not valid:
+            return None
+
+        full = self._expand_burrows_distance_matrix(
+            len(successful), distances, valid
+        )
+
+        try:
+            reduced = self._burrows_reduce_dimensions(full, len(successful))
+        except Exception as exc:
+            print(f"  Warning: Burrows UMAP failed ({exc}); experimental tab disabled")
+            return None
+
+        return [
+            [float(reduced[i, 0]), float(reduced[i, 1])]
+            for i in range(len(successful))
+        ]
+
+    def _cluster_burrows_variants(
+        self,
+        distances: Optional[np.ndarray],
+        valid: List[int],
+        variant_count: int,
+        base_seed: int = 42,
+    ) -> Dict[str, List[Optional[int]]]:
+        """Cluster the texts that have Burrows profiles.
+
+        Burrows clustering must use the style distance matrix, rather than
+        semantic embeddings. HDBSCAN exports five variants; Leiden mirrors
+        the normal semantic resolution sweep.
+        """
+        labels_by_key: Dict[str, List[Optional[int]]] = {}
+        self.burrows_cluster_metric_labels = {}
+        n = len(self.successful)
+        if distances is None or len(valid) < 2:
+            return labels_by_key
+
+        compact = np.asarray(distances, dtype=np.float64)
+        compact = np.nan_to_num(compact, nan=0.0, posinf=1e6, neginf=0.0)
+        compact = np.maximum((compact + compact.T) * 0.5, 0.0)
+        np.fill_diagonal(compact, 0.0)
+        valid_count = len(valid)
+
+        def expand(labels: np.ndarray) -> List[Optional[int]]:
+            result: List[Optional[int]] = [None] * n
+            for index, text_index in enumerate(valid):
+                result[text_index] = int(labels[index])
+            return result
+
+        if self.cluster_method != 'leiden':
+            min_cluster_size = max(2, min(20, valid_count // 20 or 2))
+            min_samples = max(1, min_cluster_size // 2)
+            for variant_index in range(max(1, int(variant_count))):
+                key = 'burrows_cluster' if variant_index == 0 else f'burrows_cluster_{variant_index + 1}'
+                labels = None
+                if SklearnHDBSCAN is not None:
+                    try:
+                        labels = SklearnHDBSCAN(
+                            min_cluster_size=min_cluster_size,
+                            min_samples=min_samples,
+                            metric='precomputed',
+                        ).fit_predict(compact)
+                    except Exception as exc:
+                        print(f"    Warning: Burrows HDBSCAN failed ({exc})")
+                if labels is None or np.all(labels == -1):
+                    labels = KMeans(
+                        n_clusters=max(2, min(14, int(np.sqrt(valid_count)))),
+                        random_state=base_seed + variant_index,
+                        n_init=10,
+                    ).fit_predict(compact)
+                labels_by_key[key] = expand(np.asarray(labels))
+            return labels_by_key
+
+        if not LEIDEN_AVAILABLE:
+            return labels_by_key
+
+        try:
+            from sklearn.neighbors import kneighbors_graph
+        except ImportError:
+            return labels_by_key
+
+        k_eff = max(2, min(int(self.leiden_k_neighbors), valid_count - 1))
+        try:
+            graph = kneighbors_graph(
+                compact, k_eff, mode='connectivity',
+                metric='precomputed', include_self=False,
+            )
+            graph = graph.maximum(graph.T)
+            sources, targets = graph.nonzero()
+            edges = [(int(s), int(t)) for s, t in zip(sources, targets) if s < t]
+            if not edges:
+                return labels_by_key
+        except Exception as exc:
+            print(f"    Warning: Burrows Leiden graph failed ({exc})")
+            return labels_by_key
+
+        resolutions = (
+            [1.0] if variant_count <= 1 else np.linspace(
+                self.leiden_resolution_min,
+                self.leiden_resolution_max,
+                max(1, int(variant_count)),
+            ).tolist()
+        )
+        for index, resolution in enumerate(resolutions):
+            key = 'burrows_cluster' if index == 0 else f'burrows_cluster_{index + 1}'
+            try:
+                partition = la.find_partition(
+                    ig.Graph(n=valid_count, edges=edges, directed=False),
+                    la.RBConfigurationVertexPartition,
+                    resolution_parameter=float(resolution),
+                    seed=base_seed,
+                )
+                labels_by_key[key] = expand(np.asarray(partition.membership, dtype=int))
+                self.burrows_cluster_metric_labels[key] = (
+                    f'Burrows Leiden r={float(resolution):.2f}'
+                )
+            except Exception as exc:
+                print(f"    Warning: Burrows Leiden failed ({exc})")
+                break
+        return labels_by_key
+
+    def run(
+        self,
+        texts: List[str],
+        output_csv: str,
+        output_html: str,
+        ignore_ids: Optional[set] = None,
+        capital_cities: bool = False,
+        **filter_kwargs,
+    ):
+        if ignore_ids is None:
+            ignore_ids = set()
+
+        texts = sorted(texts, key=str.lower)
+        print(f"Processing {len(texts)} texts...")
+
+        if self.compute_fighting_words:
+            self._fighting_words_unigrams = {}
+            self._fighting_words_token_counts = {}
+            self._fighting_words_unigrams_centroid = {}
+            self._fighting_words_token_counts_centroid = {}
+            self._fighting_words_peak_unigrams = {}
+            self._fighting_words_floor_unigrams = {}
+            self._fighting_words_peak_unigrams_centroid = {}
+            self._fighting_words_floor_unigrams_centroid = {}
+
+        successful: List[str] = []
+        low_token_texts = set()
+        style_profiles: Dict[str, np.ndarray] = {}
+        metric_names = self._target_metrics(include_global_metrics=True)
+        metrics_storage: Dict[str, Dict[str, Any]] = {n: {} for n in metric_names}
+
+        for tx in texts:
+            self._current_text_name = tx
+            result = self.process_text(tx, ignore_ids=ignore_ids, **filter_kwargs)
+            if result is None:
+                continue
+
+                if result.get('low_token_text', False):
+                    low_token_texts.add(tx)
+                style_profile = result.get('_burrows_rate_profile')
+                # Burrows profiles are independent of the statistical token
+                # threshold. Low-token texts still have video centroid tokens
+                # and must remain eligible for the style map.
+                if style_profile is None:
+                    fallback_filters = dict(filter_kwargs)
+                    fallback_filters['ignore_ids'] = ignore_ids
+                    style_profile = self._load_burrows_rate_profile(tx, fallback_filters)
+
+                if style_profile is not None:
+                    style_profiles[tx] = style_profile
+
+                if not result.get('low_token_text', False):
+                    for metric_name in metric_names:
+                        if metric_name in result:
+                            metrics_storage[metric_name][tx] = result[metric_name]
+
+            if not result.get('low_token_text', False):
+                for name in metric_names:
+                    if name in result:
+                        metrics_storage[name][tx] = result[name]
+
+            successful.append(tx)
+
+        if not successful:
+            print("\nError: No texts successfully processed")
+            return
+
+        # Expose the successful texts in the same order the similarity
+        # matrices and cluster labels were built.  The gameologist export
+        # indexes into those matrices with this exact list; using the raw
+        # input list (args.texts) would misalign every row and column
+        # whenever any input failed to process.
+        self.successful = successful
+
+        print(f"\nSuccessfully processed {len(successful)}/{len(texts)} texts")
+
+        if self.mallet_num_topics > 0 and successful:
+            try:
+                self._train_mallet(successful, ignore_ids, filter_kwargs)
+            except Exception as exc:
+                print(f"  Warning: MALLET topic modeling failed ({exc}); continuing without topics")
+
+        if self.compute_fighting_words:
+            fighting_word_texts = successful
+
+            peak_values, peak_unigrams = self._compute_fighting_words_values(
+                fighting_word_texts, FIGHTING_WORDS_PEAK_RANK, use_centroid=False
+            )
+            floor_values, floor_unigrams = self._compute_fighting_words_values(
+                fighting_word_texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=False
+            )
+
+            for metric_name, values in (
+                (FIGHTING_WORDS_PEAK_METRIC, peak_values),
+                (FIGHTING_WORDS_FLOOR_METRIC, floor_values),
+            ):
+                for tx in fighting_word_texts:
+                    metrics_storage[metric_name][tx] = values.get(tx)
+
+            self._fighting_words_peak_unigrams = peak_unigrams
+            self._fighting_words_floor_unigrams = floor_unigrams
+
+            any_separate_centroid = any(
+                not self._centroid_equals_stat.get(tx, True)
+                for tx in fighting_word_texts
+            )
+
+            if any_separate_centroid:
+                peak_values_c, peak_unigrams_c = self._compute_fighting_words_values(
+                    fighting_word_texts, FIGHTING_WORDS_PEAK_RANK, use_centroid=True
+                )
+                floor_values_c, floor_unigrams_c = self._compute_fighting_words_values(
+                    fighting_word_texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=True
+                )
+                for metric_name, values in (
+                    (FIGHTING_WORDS_PEAK_CENTROID_METRIC, peak_values_c),
+                    (FIGHTING_WORDS_FLOOR_CENTROID_METRIC, floor_values_c),
+                ):
+                    for tx in fighting_word_texts:
+                        metrics_storage[metric_name][tx] = values.get(tx)
+
+                self._fighting_words_peak_unigrams_centroid = peak_unigrams_c
+                self._fighting_words_floor_unigrams_centroid = floor_unigrams_c
+
+            print(
+                f"  Fighting-words metrics: peak {n_peak}/{len(texts)}, "
+                f"floor {n_floor}/{len(texts)} "
+                f"(rank peak={FIGHTING_WORDS_PEAK_RANK}, "
+                f"rank floor={FIGHTING_WORDS_FLOOR_RANK}, "
+                f"min_count={FIGHTING_WORDS_FLOOR_MIN_COUNT})"
+            )
+
+        emb_matrix = np.vstack(
+            [self.embeddings[tx] for tx in successful]
+        ).astype(np.float32)
+
+        cluster_idx = list(range(len(successful)))
+        requested = filter_kwargs.get('cluster_variants')
+        if requested is None:
+            variant_count = 1 if len(successful) > 2000 else 11
+        else:
+            variant_count = max(1, int(requested))
+
+        if self.cluster_method == 'leiden':
+            print(
+                f"  Clustering method: Leiden | k={self.leiden_k_neighbors} | "
+                f"resolutions={self.leiden_resolution_min:.2f}-"
+                f"{self.leiden_resolution_max:.2f} | "
+                f"variants={variant_count} | whiten={self.leiden_whiten}"
+            )
+        else:
+            print(f"  Clustering method: HDBSCAN | variants={variant_count}")
+
+        cluster_labels = self._cluster_variants(
+            emb_matrix, cluster_idx, variant_count=variant_count, base_seed=42,
+        )
+        self.cluster_variant_labels = cluster_variant_labels
+
+        metrics_data: Dict[str, Optional[np.ndarray]] = {}
+        for name in metric_names:
+            values = [metrics_storage[name].get(tx) for tx in successful]
+            if any(v is not None for v in values):
+                metrics_data[name] = np.array(
+                    [v if v is not None else np.nan for v in values],
+                    dtype=float,
+                )
+            else:
+                metrics_data[name] = None
+
+        for key, labels in cluster_labels.items():
+            metrics_data[key] = np.array(
+                [float(l) if l is not None else np.nan for l in labels],
+                dtype=float,
+            )
+
+        self.similarity_matrix = cosine_similarity(emb_matrix)
+
+        # --- Burrows distance matrix (always computed) --------------------
+        # Used for: (a) burrows_cosine_disagreement, (b) the full similarity
+        # matrix shipped to the client, and (c) the experimental Burrows map.
+        burrows_distances, burrows_valid = self._burrows_distance_matrix(
+            style_profiles, successful
+        )
+
+        if not self.no_metrics:
+            disagreement = self._burrows_scores(
+                burrows_dist, burrows_valid, emb_matrix, successful
+            )
+            metrics_data['burrows_cosine_disagreement'] = np.array(
+                [disagreement.get(t, float('nan')) for t in successful],
+                dtype=float,
+            )
+
+        normalized_embeddings = emb_matrix / np.maximum(
+            np.linalg.norm(emb_matrix, axis=1, keepdims=True), 1e-12
+        )
+        self.export_csv(successful, output_csv)
+
+        if self.mallet_topic_proportions:
+            attached = 0
+            for tid in range(self.mallet_num_topics):
+                key = f'mallet_topic_{tid}'
+                values = np.array([
+                    self.mallet_topic_proportions.get(tx, {}).get(tid, np.nan)
+                    for tx in successful
+                ], dtype=float)
+                if np.all(np.isnan(values)):
+                    continue
+                metrics_data[key] = values
+                label_words = self.mallet_topic_labels.get(tid, '')
+                MetricConfig.METRICS[key] = {
+                    'name': f'MALLET Topic {tid}'
+                            + (f' ({label_words})' if label_words else ''),
+                    'title_suffix': f'MALLET LDA topic {tid} proportion',
+                    'compute_method': '_compute_mallet_topic',
+                    'category': 'Topic Modeling',
+                }
+                attached += 1
+            if attached:
+                print(f"  Attached {attached} MALLET topic metrics to visualization")
+
+        if filter_kwargs.get('get_metrics_csv', False):
+            out = Path(output_csv)
+            out = out.with_name(f'{out.stem}_metrics{out.suffix}')
+            self.export_metrics_csv(successful, metrics_data, str(out))
+
+        if filter_kwargs.get('get_metrics_csv', False):
+            metrics_output = Path(output_csv)
+            metrics_output = metrics_output.with_name(
+                f'{metrics_output.stem}_metrics{metrics_output.suffix}'
+            )
+            self.export_metrics_csv(successful, metrics_data, str(metrics_output))
+
+        n_success = len(successful)
+        self.burrows_similarity_matrix = np.zeros((n_success, n_success), dtype=np.float32)
+        for i in range(n_success):
+            self.burrows_similarity_matrix[i, i] = 1.0
+
+        if burrows_dist is not None and burrows_valid:
+            for rp, ri in enumerate(burrows_valid):
+                for cp, ci in enumerate(burrows_valid):
+                    if rp == cp:
+                        continue
+                    d = float(burrows_distances[row_pos, col_pos])
+                    self.burrows_similarity_matrix[row_text_idx, col_text_idx] = 1.0 / (1.0 + d)
+
+        burrows_cluster_variants = self._cluster_burrows_variants(
+            burrows_distances,
+            burrows_valid,
+            variant_count=(cluster_variant_count if self.cluster_method == 'leiden' else 5),
+            base_seed=42,
+        )
+        for metric_key, labels in burrows_cluster_variants.items():
+            metrics_data[metric_key] = np.array(
+                [float(label) if label is not None else np.nan for label in labels],
+                dtype=float,
+            )
+        self.burrows_cluster_variant_labels = burrows_cluster_variants
+
+        burrows_reduced = self._build_burrows_layout(successful, style_profiles)
+        burrows_word_frequencies = self._build_burrows_word_frequencies(
+            successful, style_profiles
+        )
+        burrows_function_words = list(self.BURROWS_FUNCTION_WORDS)
+
+        if burrows_reduced is not None:
+            print(
+                f"  Burrows experimental map ready "
+                f"({len(style_profiles)}/{n_success} texts have style profiles)"
+            )
+        else:
+            print(
+                "  Burrows experimental map unavailable "
+                "(fewer than two texts have style profiles); "
+                "Experimental tab will be hidden"
+            )
+
+        burrows_variants = self._burrows_variants(
+            burrows_dist,
+            burrows_valid,
+            variant_count=(variant_count if self.cluster_method == 'leiden' else 5),
+            base_seed=42,
+        )
+        for key, labels in burrows_variants.items():
+            metrics_data[key] = np.array(
+                [float(l) if l is not None else np.nan for l in labels],
+                dtype=float,
+            )
+        self.burrows_cluster_variant_labels = burrows_variants
+
+        burrows_reduced = self._burrows_layout(
+            successful, style_profiles, burrows_dist, burrows_valid
+        )
+        burrows_freqs = self._burrows_freqs(successful, style_profiles)
+        burrows_fws = list(self.BURROWS_FUNCTION_WORDS)
+
+        if burrows_reduced is not None:
+            print(
+                f"  Burrows experimental map ready "
+                f"({len(style_profiles)}/{n_success} texts have style profiles)"
+            )
+        else:
+            print(
+                "  Burrows experimental map unavailable "
+                "(fewer than two texts have style profiles); "
+                "Experimental tab will be hidden"
+            )
+
+        capitals: Dict[str, Any] = {}
+        if capital_cities:
+            for key, labels in cluster_labels.items():
+                capitals[key] = self._semantic_capitals(emb_matrix, labels, successful)
+            for key, labels in burrows_variants.items():
+                capitals[key] = self._burrows_capitals(
+                    burrows_dist, burrows_valid, labels, successful
+                )
+            total = sum(1 for c in capitals.values() if c.get('world') is not None)
+            print(f"  Capital cities computed for {total} cluster variant(s)")
+
+        reduced = self.reduce_dims(emb_matrix, n_success)
+        focus_text = filter_kwargs.get('focus_text', '')
+
+        if n_success > 1500:
+            print(
+                f"  Warning: {n_success:,} texts — the Delta Explorer in the "
+                f"browser will precompute {n_success * (n_success - 1) // 2:,} "
+                f"pairwise distances, which may be slow. This is a known "
+                f"limitation of the client-side Δ distribution."
+            )
+
+        self.visualize(
+            reduced,
+            successful,
+            metrics_data,
+            self.active_metric,
+            output_html,
+            low_token_texts,
+            focus_text=focus_text,
+            semantic_embeddings=normalized_embeddings.tolist(),
+            burrows_similarity=self.burrows_similarity_matrix.tolist(),
+            fighting_words_unigrams={
+                FIGHTING_WORDS_PEAK_METRIC: self._fighting_words_peak_unigrams,
+                FIGHTING_WORDS_FLOOR_METRIC: self._fighting_words_floor_unigrams,
+                FIGHTING_WORDS_PEAK_CENTROID_METRIC: self._fighting_words_peak_unigrams_centroid,
+                FIGHTING_WORDS_FLOOR_CENTROID_METRIC: self._fighting_words_floor_unigrams_centroid,
+            },
+            burrows_reduced=burrows_reduced,
+            burrows_function_words=burrows_function_words,
+            burrows_word_frequencies=burrows_word_frequencies,
+        )
+
+
+def _load_external(args, parser):
+    docs: Dict[str, Tuple[str, str]] = {}
+
+    def label(raw: str, i: int) -> str:
+        lbl = sanitize_filename(raw)
+        if len(lbl) > 240:
+            d = hashlib.sha256(lbl.encode('utf-8')).hexdigest()[:16]
+            lbl = f"{lbl[:220]}_{d}"
+        return lbl or f"document_{i}"
+
+    if args.nltk_corpus:
+        try:
+            from nltk import corpus as nltk_corpus
+            reader = getattr(nltk_corpus, args.nltk_corpus)
+            fileids = list(reader.fileids())
+        except (ImportError, AttributeError, LookupError) as exc:
+            parser.error(f"could not load NLTK corpus '{args.nltk_corpus}': {exc}")
+
+        for i, fid in enumerate(fileids):
+            try:
+                content = reader.raw(fid)
+            except Exception as exc:
+                print(f"Warning: skipped NLTK document {fid!r}: {exc}")
+                continue
+
+            k = label(
+                f"nltk_{args.nltk_corpus}_{fid}".replace('/', '__').replace('\\', '__'),
+                i,
+            )
+            if k in docs:
+                k = f"{k}_{i}"
+            sid = hashlib.sha256(content.encode('utf-8')).hexdigest()
+            docs[k] = (content, f"nltk:{args.nltk_corpus}:{fid}:{sid}")
+
+        if not docs:
+            parser.error(f"NLTK corpus '{args.nltk_corpus}' contains no readable documents")
+
+    if args.txt_directory:
+        root = Path(args.txt_directory).expanduser().resolve()
+        if not root.is_dir():
+            parser.error(f"text directory does not exist: {root}")
+
+        for fp in sorted(root.rglob('*.txt')):
+            if not fp.is_file():
+                continue
+            rel = fp.relative_to(root)
+            if len(rel.parts) - 1 > args.txt_depth:
+                continue
+            try:
+                content = fp.read_text(encoding='utf-8')
+                st = fp.stat()
+            except (OSError, UnicodeDecodeError) as exc:
+                print(f"Warning: skipped {fp}: {exc}")
+                continue
+            k = label(
+                f"txt_{rel.as_posix()}".replace('/', '__'),
+                len(docs),
+            )
+            if k in docs:
+                k = f"{k}_{len(docs)}"
+            sid = f"file:{fp}:{st.st_mtime_ns}:{st.st_size}"
+            docs[k] = (content, sid)
+
+        if not docs:
+            parser.error(f"no readable .txt files found within {args.txt_depth} levels of {root}")
+
+    return docs
+
+
+def _arg_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description='Text Classifier - Cluster texts by semantic similarity',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=(
+            "Examples:\n"
+            "  python atlas.py text1 text2 text3\n"
+            "  python atlas.py text1 text2 --niche-words <niche>\n"
+            "  python atlas.py --cluster-method leiden --cluster-variants 8\n\n"
+            "Available metrics for --color-by:\n  "
+        ) + ", ".join(MetricConfig.get_metric_names()),
+    )
+
+    parser.add_argument('texts', nargs='*', help='Text folder names to process')
+
+    src = parser.add_mutually_exclusive_group()
+    src.add_argument('--nltk-corpus', metavar='NAME', help='Compare every text in an installed NLTK corpus')
+    src.add_argument('--txt-directory', metavar='PATH', help='Compare every .txt file under a directory')
+
+    parser.add_argument('--txt-depth', type=int, default=3,
+                        help='Maximum number of subdirectory levels to scan with --txt-directory (default: 3)')
+    parser.add_argument('--date-from', help='Include only videos from this date onwards (YYYYMMDD)')
+    parser.add_argument('--date-to', help='Include only videos up to this date (YYYYMMDD)')
+    parser.add_argument('--duration-from', help='Minimum video duration (HH:MM:SS)')
+    parser.add_argument('--duration-to', help='Maximum video duration (HH:MM:SS)')
+    parser.add_argument('--exclude-live', action='store_true', help='Exclude livestream videos')
+    parser.add_argument('--min-tokens-per-file', type=int,
+                        help='Skip individual transcript files with fewer than N tokens')
+    parser.add_argument('--min-tokens-total', '--min-words', type=int, dest='min_tokens_total',
+                        help='Skip texts with fewer than N total tokens')
+    parser.add_argument('--embeddings-only-low-token', action='store_true',
+                        dest='embeddings_only_low_token',
+                        help='Generate embeddings for texts below min-tokens-total, but skip metric calculations')
+    parser.add_argument('--token-limit', type=int, help='Use only the newest N tokens per text')
+    parser.add_argument(
+        '--text-token-limit', type=int, dest='text_token_limit',
+        help='Use only the first N tokens per text',
+    )
+    parser.add_argument(
+        '--per-video-token-limit', type=int, dest='per_video_token_limit',
+        help='Use only the first N tokens per video before truncating each file',
+    )
+    parser.add_argument(
+        '--ignore-urls', type=str, dest='ignore_urls',
+        help='Path to txt file with YouTube URLs or video IDs to ignore (one per line)',
+    )
+
+    parser.add_argument(
+        '--output-csv', default='data/output/text_similarities.csv',
+        help='Output CSV file path',
+    )
+    parser.add_argument(
+        '--get-metrics-csv', action='store_true',
+        help='Also export one row per text with metric columns to a *_metrics.csv file',
+    )
+    parser.add_argument(
+        '--output-html', default='data/output/CentroidsMap.html',
+        help='Output HTML visualization file path',
+    )
+    parser.add_argument('--no-cache', action='store_true', help='Disable embedding cache')
+    parser.add_argument(
+        '--force-latest-cache', action='store_true',
+        help='Bypass cache freshness checks and use newest cache file per text immediately',
+    )
+    parser.add_argument(
+        '--clear-cache', nargs='?', const='all', metavar='TEXT',
+        help='Clear cache for specific text or all texts',
+    )
+
+    parser.add_argument(
+        '--color-by', choices=None,
+        help='Metric to use for coloring the visualization',
+    )
+    parser.add_argument(
+        '--calculate-perplexity', action='store_true',
+        help='Enable perplexity calculation (slower, loads language model)',
+    )
+    parser.add_argument(
+        '--compute-ngram-entropy', action='store_true',
+        help='Enable n-gram cross-entropy metrics (slower for large token counts)',
+    )
+    parser.add_argument('--fast-mode', action='store_true', help='Skip expensive metrics (fastest mode)')
+    parser.add_argument('--word-counts-only', action='store_true',
+                        help='Compute/cache only count-style and regex-pattern metrics')
+    parser.add_argument('--no-metrics', action='store_true',
+                        help='Skip all metric calculations and only run embeddings/clustering/UMAP')
+    parser.add_argument('--capital-cities', action='store_true', dest='capital_cities',
+                        help='Mark the most representative text (cluster centroid / medoid) of '
+                             'each cluster as a pentagon, and the corpus centroid / medoid as the '
+                             'yellow-outlined "capital of the world".')
+    parser.add_argument('--umap-neighbors', type=int,
+                        help='UMAP neighborhood size; defaults to 5 for datasets up to 30 items, otherwise 50')
+    parser.add_argument('--umap-min-dist', type=float, default=0.1,
+                        help='Minimum distance between points in UMAP space (default: 0.1; use 0 for tighter groups)')
+    parser.add_argument('--umap-epochs', type=int, default=200,
+                        help='Number of UMAP optimization epochs (default: 200)')
+    parser.add_argument('--cluster-variants', type=int, default=None,
+                        help='Number of clustering variants to generate (minimum: 1). Defaults to 11 '
+                             'for datasets up to 2,000 items and 1 for larger datasets.')
+    parser.add_argument('--cluster-method', choices=['hdbscan', 'leiden'], default='hdbscan',
+                        help='Clustering algorithm to use (default: hdbscan).')
+    parser.add_argument('--leiden-resolution-min', type=float, default=1.15,
+                        help='Minimum Leiden resolution parameter (default: 1.15)')
+    parser.add_argument('--leiden-resolution-max', type=float, default=3.0,
+                        help='Maximum Leiden resolution parameter (default: 3.0)')
+    parser.add_argument('--leiden-k-neighbors', type=int, default=20,
+                        help='Number of nearest neighbors for the Leiden k-NN graph (default: 20)')
+    parser.add_argument('--no-leiden-whiten', action='store_true', dest='no_leiden_whiten',
+                        help='Disable PCA whitening before k-NN graph construction')
+    parser.add_argument('--embedding-model', default=SBERT_MODEL,
+                        help='Embedding model name')
+    parser.add_argument('--embedding-chunk-size', type=int,
+                        help='Override embedding chunk size (in model tokens)')
+    parser.add_argument('--embedding-min-chunk', type=int,
+                        help='Override minimum embedding chunk size (in model tokens)')
+    parser.add_argument('--embedding-batch-size', type=int,
+                        help='Override embedding batch size for SentenceTransformer encode()')
+    parser.add_argument('--trained-model-path', type=str, dest='trained_model_path',
+                        help='Path to a custom fine-tuned SBERT model')
+    parser.add_argument('--compute-fighting-words', '--compute-fighting-words-floor',
+                        dest='compute_fighting_words', action='store_true',
+                        help='Enable fighting-words peak (rank 1) and floor (rank 1000) metrics. '
+                             'Requires a corpus-wide pre-scan (all texts are tokenized before '
+                             'the main pass).')
+    parser.add_argument('--centroid-mode', choices=['video', 'word'],
+                        help='Use centroids for text representation (video or word)')
+    parser.add_argument('--centroid-videos', type=int, default=10,
+                        help='Number of videos to use for video centroid computation (default: 10)')
+    parser.add_argument('--centroid-words', type=int, default=1000000,
+                        help='Number of words to use for word centroid computation (default: 1,000,000)')
+    parser.add_argument('--stat-word-count', type=int, default=None,
+                        help='Number of words to use for statistical metrics when using video centroids')
+    parser.add_argument('--focus-text', type=str, dest='focus_text',
+                        help='Focus text for similarity mapping')
+    parser.add_argument('--mallet-topics', type=int, default=0,
+                        help='Train a MALLET LDA model with this many topics (requires MALLET installed; 0 disables).')
+    parser.add_argument('--mallet-memory', type=str, default=None,
+                        help='Java heap size for MALLET (e.g. 4g, 12g).')
+    parser.add_argument('--mallet-max-tokens-per-channel', type=int, default=None,
+                        help='Cap the per-channel token stream fed to MALLET.')
+    parser.add_argument('--mallet-iterations', type=int, default=1000,
+                        help='Gibbs sampling iterations for MALLET (default: 1000).')
+    parser.add_argument('--mallet-threads', type=int, default=None,
+                        help='Threads for MALLET train-topics (default: min(8, CPU count)).')
+    parser.add_argument('--export-gameologist', action='store_true',
+                        help='Export data for the gameologist sister project (requires 1500+ channels)')
+    parser.add_argument('--gameologist-dir', type=str, default=None,
+                        help='Path to gameologist directory (default: ../gameologist)')
+    parser.add_argument('--niche-words', action='append', default=None, metavar='NICHE',
+                        help='Enable niche word-count metric sets (repeatable).')
+
+    return parser
+
+
+def _apply_niche(args, parser):
+    if not args.niche_words:
+        return
+    for niche in dict.fromkeys(args.niche_words):
+        try:
+            mod = importlib.import_module(f'atlas_{niche}')
+            register = getattr(mod, f'register_{niche}_metrics')
+        except (ImportError, AttributeError) as exc:
+            parser.error(f"unsupported niche '{niche}': {exc}")
+        register(MetricConfig, TextClassifier)
+
+
+def _export_gameologist(args, classifier):
+    if not GAMEOLOGIST_AVAILABLE:
+        print("Error: gameologist export requested but atlas_gameologist module not available")
+        return
+
+    texts = list(getattr(classifier, 'successful', None) or classifier.embeddings.keys())
+    n = len(texts)
+
+    if n == 0:
+        print("Error: no channels processed successfully; nothing to export to gameologist")
+        return
+
+    sim = classifier.similarity_matrix
+    burrows = classifier.burrows_similarity_matrix
+    if sim is None or burrows is None:
+        print("Error: similarity matrices not available; skipping gameologist export")
+        return
+    if sim.shape[0] != n or burrows.shape[0] != n:
+        print(
+            f"Error: matrix shape mismatch (successful={n}, "
+            f"semantic={sim.shape[0]}, burrows={burrows.shape[0]})"
+        )
+        return
+
+    if n < 1500:
+        print(
+            f"Warning: gameologist usually targets 1500+ channels; "
+            f"exporting {n} channels instead. The export will still work, "
+            f"but the sister project is designed around a larger corpus."
+        )
+
+    if args.gameologist_dir:
+        gdir = Path(args.gameologist_dir).expanduser().resolve()
+    else:
+        gdir = Path(__file__).resolve().parents[1] / "gameologist"
+
+    exporter = GameologistExporter(
+        centroids_dir=Path(__file__).resolve().parents[1],
+        gameologist_dir=gdir,
+    )
+
+    try:
+        exporter.export_all(
+            texts=texts,
+            cluster_labels=None,
+            similarity_matrix=sim,
+            burrows_similarity_matrix=burrows,
+            cluster_method=args.cluster_method,
+            leiden_resolution=1.5,
+            cluster_variant_labels=classifier.cluster_variant_labels,
+            cluster_metric_labels=classifier.cluster_metric_labels,
+            burrows_cluster_variant_labels=classifier.burrows_cluster_variant_labels,
+            burrows_cluster_metric_labels=classifier.burrows_cluster_metric_labels,
+        )
+    except Exception as exc:
+        import traceback
+        print(f"Error: gameologist export failed: {exc}")
+        traceback.print_exc()
+
+    parser.add_argument(
+        '--embedding-model', default=SBERT_MODEL,
+        help='Embedding model name (e.g., all-MiniLM-L12-v2, all-mpnet-base-v2, '
+             'Alibaba-NLP/gte-modernbert-base, thenlper/gte-small)',
+    )
+    parser.add_argument(
+        '--embedding-chunk-size', type=int,
+        help='Override embedding chunk size (in model tokens)',
+    )
+    parser.add_argument(
+        '--embedding-min-chunk', type=int,
+        help='Override minimum embedding chunk size (in model tokens)',
+    )
+    parser.add_argument(
+        '--embedding-batch-size', type=int,
+        help='Override embedding batch size for SentenceTransformer encode()',
+    )
+    parser.add_argument(
+        '--trained-model-path', type=str, dest='trained_model_path',
+        help='Path to a custom fine-tuned SBERT model (e.g., my_finetuned_sbert). '
+             'If provided, this overrides --embedding-model',
+    )
+    parser.add_argument(
+        '--compute-fighting-words', '--compute-fighting-words-floor',
+        dest='compute_fighting_words', action='store_true',
+        help='Enable fighting-words peak (rank 1) and floor (rank 1000) metrics',
+    )
+    parser.add_argument(
+        '--centroid-mode', choices=['video', 'word'],
+        help='Use centroids for text representation (video or word)',
+    )
+    parser.add_argument(
+        '--centroid-videos', type=int, default=10,
+        help='Number of videos to use for video centroid computation (default: 10)',
+    )
+    parser.add_argument(
+        '--centroid-words', type=int, default=1000000,
+        help='Number of words to use for word centroid computation (default: 1,000,000)',
+    )
+    parser.add_argument(
+        '--stat-word-count', type=int, default=None,
+        help='Number of words to use for statistical metrics when using video centroids '
+             '(defaults to --token-limit if set, else 1,000,000)',
+    )
+    parser.add_argument(
+        '--focus-text', type=str, dest='focus_text',
+        help='Focus text for similarity mapping',
+    )
+
+    parser.add_argument(
+        '--mallet-topics', type=int, default=0,
+        help='Train a MALLET LDA model with this many topics '
+             '(requires MALLET installed; 0 disables).',
+    )
+    parser.add_argument(
+        '--mallet-memory', type=str, default=None,
+        help='Java heap size for MALLET (e.g. 4g, 12g). Defaults to the '
+             'MALLET_MEMORY env var if set, otherwise "4g". MALLET needs '
+             'roughly 6-8 bytes per token of heap.',
+    )
+    parser.add_argument(
+        '--mallet-max-tokens-per-channel', type=int, default=None,
+        help='Cap the per-channel token stream fed to MALLET. Use when the '
+             'full corpus overruns the Java heap; e.g. 200000 fits a ~1.5 GB '
+             'corpus in ~8 GB of heap.',
+    )
+    parser.add_argument(
+        '--mallet-iterations', type=int, default=1000,
+        help='Gibbs sampling iterations for MALLET (default: 1000; try 200-500 for big corpora).',
+    )
+    parser.add_argument(
+        '--mallet-threads', type=int, default=None,
+        help='Threads for MALLET train-topics (default: min(8, CPU count)).',
+    )
+
+    parser.add_argument(
+        '--export-gameologist', action='store_true',
+        help='Export data for the gameologist sister project (requires 1500+ channels)',
+    )
+
+    parser.add_argument(
+        '--gameologist-dir', type=str, default=None,
+        help='Path to gameologist directory (default: ../gameologist)',
+    )
+
+    parser.add_argument(
+        '--niche-words', action='append', default=None, metavar='NICHE',
+        help='Enable niche word-count metric sets (repeatable).',
+    )
+
+def main():
+    parser = _arg_parser()
+    args = parser.parse_args()
+
+    if args.umap_neighbors is not None and args.umap_neighbors < 2:
+        parser.error('--umap-neighbors must be at least 2')
+    if not 0.0 <= args.umap_min_dist <= 1.0:
+        parser.error('--umap-min-dist must be between 0 and 1')
+    if args.umap_epochs < 1:
+        parser.error('--umap-epochs must be positive')
+    if args.mallet_topics < 0:
+        parser.error('--mallet-topics must be zero or greater')
+
+    if args.mallet_max_tokens_per_channel is not None and args.mallet_max_tokens_per_channel <= 0:
+        parser.error('--mallet-max-tokens-per-channel must be greater than zero')
+
+    if args.txt_depth < 0:
+        parser.error('--txt-depth must be zero or greater')
+
+    external = _load_external(args, parser)
+
+    if external and args.centroid_mode == 'video':
+        parser.error('external document sources support --centroid-mode word, not video')
+
+    if args.stat_word_count is None:
+        args.stat_word_count = args.token_limit if args.token_limit else 1_000_000
+
+    _apply_niche(args, parser)
+
+    valid = set(MetricConfig.get_metric_names())
+    if args.color_by is not None and args.color_by not in valid:
+        parser.error(f"--color-by '{args.color_by}' is not a registered metric")
+
+    if args.cluster_method == 'leiden' and not LEIDEN_AVAILABLE:
+        parser.error(
+            "--cluster-method leiden requires the 'leidenalg' and 'igraph' packages. "
+            "Install them with: pip install leidenalg python-igraph"
+        )
+
+    if args.clear_cache:
+        cache_dir = Path(__file__).resolve().parents[1] / "cache" / "metrics"
+        SimpleCache(cache_dir).clear(
+            None if args.clear_cache == 'all' else args.clear_cache
+        )
+        if not args.texts:
+            return
+
+    if external:
+        args.texts = list(external)
+        print(f"Loaded {len(args.texts)} external documents")
+    elif not args.texts:
+        input_dir = Path(__file__).resolve().parents[1] / "data" / "input"
+        if input_dir.exists():
+            args.texts = [
+                d.name for d in input_dir.iterdir()
+                if d.is_dir() and not d.name.startswith('.')
+            ]
+            if args.texts:
+                print(f"Auto-discovered {len(args.texts)} texts from {input_dir}")
+            else:
+                parser.error(f"No texts found in {input_dir}. Use --help for usage information.")
+                return
+        else:
+            parser.error(
+                "No texts specified and data/input directory not found in expected "
+                "locations. Use --help for usage information."
+            )
+            return
+
+    active = args.color_by
+
+    if args.no_metrics and active:
+        parser.error("--no-metrics cannot be used with --color-by")
+
+    if (
+        args.word_counts_only
+        and active
+        and active not in TextClassifier.get_word_count_metric_names()
+    ):
+        parser.error(
+            "--word-counts-only only supports --color-by metrics in the count/regex subset"
+        )
+
+    if (
+        active in (
+            FIGHTING_WORDS_PEAK_METRIC, FIGHTING_WORDS_FLOOR_METRIC,
+            FIGHTING_WORDS_PEAK_CENTROID_METRIC, FIGHTING_WORDS_FLOOR_CENTROID_METRIC,
+        )
+        and not args.compute_fighting_words
+    ):
+        parser.error(f"--color-by {active} requires --compute-fighting-words")
+
+    needs_ppl = (
+        (not args.no_metrics)
+        and (args.calculate_perplexity or (active == 'perplexity'))
+    )
+    enable_spacy = (
+        (not args.no_metrics)
+        and (
+            active_metric and MetricConfig.requires_spacy_model(active_metric)
+        )
+    )
+    enable_ngram = (
+        (not args.no_metrics)
+        and (args.compute_ngram_entropy or (active and MetricConfig.requires_ngram_entropy(active)))
+    )
+
+    model = args.embedding_model
+    if args.trained_model_path:
+        tm = Path(args.trained_model_path)
+        if not tm.exists():
+            parser.error(f"Trained model not found at: {args.trained_model_path}")
+        model = str(tm.resolve())
+        print(f"[INFO] Using trained model: {model}")
+
+    classifier = TextClassifier(
+        use_cache=not args.no_cache,
+        active_metric=active,
+        enable_spacy=enable_spacy,
+        enable_ngram_entropy=enable_ngram,
+        fast_mode=args.fast_mode,
+        word_counts_only=args.word_counts_only,
+        force_latest_cache=args.force_latest_cache,
+        embedding_model=model,
+        embedding_chunk_size=args.embedding_chunk_size,
+        embedding_min_chunk=args.embedding_min_chunk,
+        embedding_batch_size=args.embedding_batch_size,
+        no_metrics=args.no_metrics,
+        compute_fighting_words=args.compute_fighting_words,
+        centroid_mode=args.centroid_mode,
+        centroid_videos=args.centroid_videos,
+        centroid_words=args.centroid_words,
+        stat_word_count=args.stat_word_count,
+        cluster_method=args.cluster_method,
+        leiden_resolution_min=args.leiden_resolution_min,
+        leiden_resolution_max=args.leiden_resolution_max,
+        leiden_k_neighbors=args.leiden_k_neighbors,
+        leiden_whiten=not args.no_leiden_whiten,
+        umap_neighbors=args.umap_neighbors,
+        umap_min_dist=args.umap_min_dist,
+        umap_epochs=args.umap_epochs,
+        mallet_num_topics=args.mallet_topics,
+        mallet_memory=args.mallet_memory,
+        mallet_max_tokens_per_channel=args.mallet_max_tokens_per_channel,
+        mallet_iterations=args.mallet_iterations,
+        mallet_threads=args.mallet_threads,
+    )
+
+    classifier.active_focus_text = args.focus_text if args.focus_text else ''
+    if external:
+        classifier.processor.set_external_documents(external)
+
+    if needs_ppl:
+        classifier.processor.needs_perplexity_model = True
+        classifier.processor._initialize_perplexity_model('distilgpt2')
+
+    ignore_ids = load_ignore_urls(args.ignore_urls)
+
+    classifier.run(
+        args.texts, args.output_csv, args.output_html,
+        ignore_ids=ignore_ids,
+        capital_cities=args.capital_cities,
+        date_from=args.date_from, date_to=args.date_to,
+        duration_from=args.duration_from, duration_to=args.duration_to,
+        exclude_live=args.exclude_live, token_limit=args.token_limit,
+        text_token_limit=args.text_token_limit,
+        per_video_token_limit=args.per_video_token_limit,
+        min_tokens_total=args.min_tokens_total,
+        min_tokens_per_file=args.min_tokens_per_file,
+        embeddings_only_low_token=args.embeddings_only_low_token,
+        cluster_variants=args.cluster_variants,
+        focus_text=args.focus_text,
+        get_metrics_csv=args.get_metrics_csv,
+    )
+
+    # Export for gameologist if requested
+    if args.export_gameologist:
+        if not GAMEOLOGIST_AVAILABLE:
+            print("Error: gameologist export requested but atlas_gameologist module not available")
+            return
+
+        # The similarity matrices are indexed by the *successful* texts
+        # (classifier.successful), NOT by args.texts.  If even one input
+        # failed to process, the two lists differ and using args.texts
+        # here would silently misalign every row and column of the
+        # exported relationships.  classifiers may also have re-sorted
+        # args.texts internally, further scrambling the order.
+        successful_texts = list(
+            getattr(classifier, 'successful', None)
+            or classifier.embeddings.keys()
+        )
+        n_successful = len(successful_texts)
+
+        if n_successful == 0:
+            print("Error: no channels processed successfully; nothing to export to gameologist")
+            return
+
+        similarity_matrix = classifier.similarity_matrix
+        burrows_similarity_matrix = classifier.burrows_similarity_matrix
+
+        if similarity_matrix is None or burrows_similarity_matrix is None:
+            print("Error: similarity matrices not available; skipping gameologist export")
+            return
+
+        if (
+            similarity_matrix.shape[0] != n_successful
+            or burrows_similarity_matrix.shape[0] != n_successful
+        ):
+            print(
+                f"Error: matrix shape mismatch "
+                f"(successful={n_successful}, "
+                f"semantic={similarity_matrix.shape[0]}, "
+                f"burrows={burrows_similarity_matrix.shape[0]})"
+            )
+            return
+
+        if n_successful < 1500:
+            print(
+                f"Warning: gameologist usually targets 1500+ channels; "
+                f"exporting {n_successful} channels instead.  The export "
+                f"will still work, but the sister project is designed "
+                f"around a larger corpus."
+            )
+
+        if args.gameologist_dir:
+            gameologist_dir = Path(args.gameologist_dir).expanduser().resolve()
+        else:
+            gameologist_dir = Path(__file__).resolve().parents[1] / "gameologist"
+
+        exporter = GameologistExporter(
+            centroids_dir=Path(__file__).resolve().parents[1],
+            gameologist_dir=gameologist_dir,
+        )
+
+        try:
+            exporter.export_all(
+                texts=successful_texts,
+                cluster_labels=None,
+                similarity_matrix=similarity_matrix,
+                burrows_similarity_matrix=burrows_similarity_matrix,
+                cluster_method=args.cluster_method,
+                leiden_resolution=1.5,
+                cluster_variant_labels=classifier.cluster_variant_labels,
+                cluster_metric_labels=classifier.cluster_metric_labels,
+                burrows_cluster_variant_labels=classifier.burrows_cluster_variant_labels,
+                burrows_cluster_metric_labels=classifier.burrows_cluster_metric_labels,
+            )
+        except Exception as exc:
+            import traceback
+            print(f"Error: gameologist export failed: {exc}")
+            traceback.print_exc()
+
+
+if __name__ == "__main__":
+    main()
