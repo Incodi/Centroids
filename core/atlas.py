@@ -672,6 +672,7 @@ class TextClassifier(TextMetricsMixin):
         tomotopy_num_topics: int = 0,
         tomotopy_iterations: int = 1000,
         tomotopy_threads: Optional[int] = None,
+        tomotopy_max_tokens_per_channel: Optional[int] = None,
     ):
         self.embedding_model_name = resolve_embedding_model_name(embedding_model)
         try:
@@ -782,6 +783,10 @@ class TextClassifier(TextMetricsMixin):
         self.tomotopy_num_topics: int = int(tomotopy_num_topics or 0)
         self.tomotopy_iterations: int = max(1, int(tomotopy_iterations or 1000))
         self.tomotopy_threads: int = max(1, int(tomotopy_threads or min(8, os.cpu_count() or 1)))
+        if tomotopy_max_tokens_per_channel and int(tomotopy_max_tokens_per_channel) > 0:
+            self.tomotopy_max_tokens_per_channel: Optional[int] = int(tomotopy_max_tokens_per_channel)
+        else:
+            self.tomotopy_max_tokens_per_channel = None
         self.tomotopy_topic_proportions: Dict[str, Dict[int, float]] = {}
         self.tomotopy_topic_labels: Dict[int, str] = {}
 
@@ -1168,129 +1173,24 @@ class TextClassifier(TextMetricsMixin):
             tokens = tokens[-self.centroid_words:]
         return tokens
 
-    def _run_mallet_logged(
-        self, cmd: List[str], env: Dict[str, str], log_path: Path,
-        stage: str, heartbeat_seconds: int = 30,
-    ) -> Tuple[int, str]:
-        """Run a MALLET command, streaming output to a log file and printing
-        a heartbeat so a long run never looks frozen."""
-        started = time.time()
-        tail: deque = deque(maxlen=80)
-        last_line = ['(no output yet)']
-
-        with open(log_path, 'a', encoding='utf-8') as log:
-            log.write(f"\n===== {stage} | {' '.join(cmd)} =====\n")
-            log.flush()
-
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, env=env, text=True,
-                errors='ignore', bufsize=1,
-            )
-
-            def pump() -> None:
-                for line in proc.stdout:
-                    log.write(line)
-                    log.flush()
-                    stripped = line.rstrip()
-                    if stripped:
-                        tail.append(stripped)
-                        last_line[0] = stripped
-
-            reader = threading.Thread(target=pump, daemon=True)
-            reader.start()
-
-            next_beat = started + heartbeat_seconds
-            try:
-                while proc.poll() is None:
-                    time.sleep(1.0)
-                    if time.time() >= next_beat:
-                        print(
-                            f"    [{stage}] running {time.time() - started:,.0f}s | "
-                            f"last: {last_line[0][:110]}"
-                        )
-                        next_beat += heartbeat_seconds
-            except KeyboardInterrupt:
-                proc.kill()
-                raise
-            finally:
-                reader.join(timeout=5)
-
-        print(f"    [{stage}] finished in {time.time() - started:,.0f}s (exit={proc.returncode})")
-        return proc.returncode, '\n'.join(tail)
-
-    def _report_mallet_failure(self, stderr_text: str, log_path: Path) -> None:
-        if 'OutOfMemoryError' in stderr_text or 'Java heap space' in stderr_text:
-            print(f"  MALLET ran out of Java heap at heap={self.mallet_memory}.")
-            print(
-                "  Increase --mallet-memory (e.g. 12g) or lower "
-                "--mallet-max-tokens-per-channel (e.g. 200000)."
-            )
-        else:
-            print(f"  MALLET failed. Last output:\n{stderr_text[-600:]}")
-        print(f"  Full log: {log_path}")
-
-    def _train_mallet_topics(
+    def _train_tomotopy_topics(
         self,
         texts: List[str],
         ignore_ids: set,
         filter_kwargs: Dict[str, Any],
     ) -> None:
-        """Train MALLET LDA on the centroid corpus of every successful text.
-
-        Streaming design: only one text's centroid tokens are held in memory
-        at a time; they are written to the MALLET input file and then freed
-        immediately.  Result proportions and top-word labels are cached under
-        ``cache/mallet/`` keyed on the text list + filters, so re-running the
-        pipeline skips the sampler entirely.
-
-        Heap size comes from ``self.mallet_memory`` (CLI flag > MALLET_MEMORY
-        env var > 4g default).  When that is still not enough for a given
-        corpus, ``self.mallet_max_tokens_per_channel`` caps the per-channel
-        token stream so MALLET remains trainable on constrained machines.
-
-        Populates:
-            self.mallet_topic_proportions: {text: {topic_id: proportion}}
-            self.mallet_topic_labels:      {topic_id: "top eight words"}
-        """
-        if self.mallet_num_topics <= 0:
+        if self.tomotopy_num_topics <= 0:
             return
 
         if not texts:
             return
 
-        # ---- Locate the MALLET binary ----
-        mallet_binary: Optional[str] = shutil.which('mallet')
-        if not mallet_binary:
-            mallet_home = os.environ.get('MALLET_HOME')
-            if mallet_home:
-                candidate = Path(mallet_home) / 'bin' / 'mallet'
-                if candidate.exists():
-                    mallet_binary = str(candidate)
-
-        if not mallet_binary:
-            print(
-                "  MALLET not found; skipping topic modeling. "
-                "Install it (brew install mallet, or set MALLET_HOME to a "
-                "MALLET install directory)."
-            )
-            return
-
-        # ---- Cache path setup ----
-        cache_dir = self.base_dir / "cache" / "mallet"
+        cache_dir = self.base_dir / "cache" / "tomotopy"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        input_txt = cache_dir / "texts_input.txt"
-        bin_file = cache_dir / "texts.mallet"
-        doc_topics = cache_dir / "doc_topics.txt"
-        topic_keys = cache_dir / "topic_keys.txt"
         sig_path = cache_dir / "signature.json"
         proportions_path = cache_dir / "proportions.json"
         labels_path = cache_dir / "labels.json"
-        doc_map_path = cache_dir / "doc_map.json"
 
-        # Signature is intentionally limited to inputs that actually affect
-        # the MALLET output.  The token cap IS included because changing it
-        # changes the corpus MALLET sees.
         filter_sig: Dict[str, Any] = {}
         for key in sorted(CACHE_FILTER_KEYS):
             if key in ('centroid_mode', 'centroid_videos', 'centroid_words', 'stat_word_count'):
@@ -1301,20 +1201,18 @@ class TextClassifier(TextMetricsMixin):
             filter_sig[key] = str(v)
 
         sig = {
-            'num_topics': int(self.mallet_num_topics),
-            'iterations': int(self.mallet_iterations),
-            'threads': int(self.mallet_threads),
+            'num_topics': int(self.tomotopy_num_topics),
+            'iterations': int(self.tomotopy_iterations),
+            'threads': int(self.tomotopy_threads),
             'texts': sorted(texts),
             'ignore_ids': sorted(str(v) for v in ignore_ids),
             'centroid_mode': self.centroid_mode,
             'centroid_videos': int(self.centroid_videos or 0),
             'centroid_words': int(self.centroid_words or 0),
             'stat_word_count': int(self.stat_word_count or 0),
-            'max_tokens_per_channel': int(self.mallet_max_tokens_per_channel or 0),
             'filters': filter_sig,
         }
 
-        # ---- Try cache ----
         if sig_path.exists() and proportions_path.exists():
             try:
                 with open(sig_path, 'r', encoding='utf-8') as f:
@@ -1322,7 +1220,7 @@ class TextClassifier(TextMetricsMixin):
                 if saved == sig:
                     with open(proportions_path, 'r', encoding='utf-8') as f:
                         props = json.load(f)
-                    self.mallet_topic_proportions = {
+                    self.tomotopy_topic_proportions = {
                         tx: {int(k): float(v) for k, v in topics.items()}
                         for tx, topics in props.items()
                     }
@@ -1330,254 +1228,101 @@ class TextClassifier(TextMetricsMixin):
                         try:
                             with open(labels_path, 'r', encoding='utf-8') as f:
                                 labels = json.load(f)
-                            self.mallet_topic_labels = {
+                            self.tomotopy_topic_labels = {
                                 int(k): str(v) for k, v in labels.items()
                             }
                         except Exception:
-                            self.mallet_topic_labels = {}
+                            self.tomotopy_topic_labels = {}
                     print(
-                        f"  MALLET topics loaded from cache "
-                        f"({len(self.mallet_topic_proportions)} texts, "
-                        f"{self.mallet_num_topics} topics)"
+                        f"  Tomotopy topics loaded from cache "
+                        f"({len(self.tomotopy_topic_proportions)} texts, "
+                        f"{self.tomotopy_num_topics} topics)"
                     )
                     return
             except Exception as exc:
-                print(f"  Warning: failed to load MALLET cache ({exc}); retraining")
+                print(f"  Warning: failed to load tomotopy cache ({exc}); retraining")
 
-        # ---- Write the MALLET input file, one text at a time ----
-        #
-        # Use synthetic ASCII-only doc ids (tx_000000, tx_000001, ...) rather
-        # than the raw text names.  MALLET's import-file rewrites the doc
-        # source name when it contains whitespace or punctuation, which
-        # silently breaks any lookup keyed on the original text name.  With
-        # ids that MALLET leaves untouched, the mapping stays exact, and we
-        # persist the id -> text map alongside the proportions so cache hits
-        # skip the sampler entirely.
-        cap_note = (
-            f" | cap={self.mallet_max_tokens_per_channel:,} tokens/text"
-            if self.mallet_max_tokens_per_channel
-            else ""
-        )
+        try:
+            import tomotopy as tp
+        except ImportError:
+            print("  Tomotopy not installed; skipping topic modeling.")
+            print("  Install it with: pip install tomotopy")
+            return
+
         print(
-            f"  Training MALLET LDA: {self.mallet_num_topics} topics, "
-            f"{self.mallet_iterations} iterations, "
-            f"{self.mallet_threads} threads, "
-            f"heap={self.mallet_memory}{cap_note} "
-            f"(streaming input across {len(texts)} texts)"
+            f"  Training Tomotopy LDA: {self.tomotopy_num_topics} topics, "
+            f"{self.tomotopy_iterations} iterations, "
+            f"{self.tomotopy_threads} threads"
         )
+
         filters = {k: v for k, v in filter_kwargs.items() if v is not None}
-        written = 0
-        doc_map: Dict[str, str] = {}  # safe_id -> text name
+        corpus = []
+        doc_names = []
 
-        try:
-            with open(input_txt, 'w', encoding='utf-8') as f:
-                for n_seen, tx in enumerate(texts, start=1):
-                    if n_seen == 1 or n_seen % 50 == 0 or n_seen == len(texts):
-                        print(f"    Gathering MALLET tokens: {n_seen}/{len(texts)}")
-                    try:
-                        tokens = self._get_centroid_tokens_for_mallet(tx, filters, ignore_ids)
-                    except Exception as exc:
-                        print(f"    Warning: could not gather tokens for {tx}: {exc}")
-                        continue
-                    if not tokens:
-                        continue
-                    safe_id = f"tx_{written:06d}"
-                    doc_map[safe_id] = tx
-                    # MALLET's default line regex is "name  label  data".
-                    # A dummy label column keeps the first real token from
-                    # being swallowed as the label.
-                    f.write(f"{safe_id}\tX\t{' '.join(tokens)}\n")
-                    written += 1
-                    del tokens
-        except OSError as exc:
-            print(f"  MALLET input write failed: {exc}")
-            return
-
-        if written == 0:
-            print("  MALLET skipped: no texts produced centroid tokens")
-            return
-
-        print(f"    Wrote {written} documents to {input_txt.name}")
-
-        gc.collect()
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-        except Exception:
-            pass
-        log_path = cache_dir / "mallet_debug.log"
-        print(f"    MALLET log: {log_path}")
-
-        # ---- Run MALLET (import-file -> train-topics) ----
-        # Pass the heap size through the MALLET_MEMORY env var, which the
-        # bin/mallet launcher script turns into a JVM -Xmx argument.
-        run_env = {**os.environ, 'MALLET_MEMORY': self.mallet_memory}
-
-        # Skip import-file when the binary is already newer than the input
-        # file.  This makes retries after a training-only failure cheap --
-        # re-serialising the corpus is the slow part on big runs.
-        need_import = True
-        try:
-            if mallet_bin_file.exists():
-                need_import = mallet_bin_file.stat().st_mtime < input_txt.stat().st_mtime
-        except OSError:
-            need_import = True
-
-        try:
-            if need_import:
-                rc, tail_text = self._run_mallet_logged(
-                    [mallet_binary, 'import-file',
-                     '--input', str(input_txt),
-                     '--output', str(mallet_bin_file),
-                     '--keep-sequence',
-                     '--remove-stopwords'],
-                    run_env, log_path, 'import',
-                )
-                if rc != 0:
-                    self._report_mallet_failure(tail_text, log_path)
-                    return
-            else:
-                print(f"    Reusing cached binary {mallet_bin_file.name}")
-
-            rc, tail_text = self._run_mallet_logged(
-                [mallet_binary, 'train-topics',
-                 '--input', str(mallet_bin_file),
-                 '--num-topics', str(self.mallet_num_topics),
-                 '--num-iterations', str(self.mallet_iterations),
-                 '--num-threads', str(self.mallet_threads),
-                 '--optimize-interval', '10',
-                 '--random-seed', '20',
-                 '--output-doc-topics', str(doc_topics),
-                 '--output-topic-keys', str(topic_keys)],
-                run_env, log_path, 'train',
-            )
-            if rc != 0:
-                self._report_mallet_failure(tail_text, log_path)
-                return
-        except FileNotFoundError as exc:
-            print(f"  MALLET binary not executable: {exc}")
-            return
-        except Exception as exc:
-            print(f"  MALLET training failed: {exc}")
-            return
-
-        # ---- Parse doc-topics.txt (line by line, streaming) ----
-        #
-        # MALLET 2.0.8+ writes --output-doc-topics as:
-        #
-        #   #doc<TAB>source<TAB>p_0<TAB>p_1<TAB>...<TAB>p_{N-1}
-        #   0<TAB>tx_000000<TAB>9.84E-6<TAB>3.04E-6<TAB>0.159<TAB>...
-        #   1<TAB>tx_000001<TAB>0.0152<TAB>2.05E-6<TAB>0.039<TAB>...
-        #
-        # Each topic proportion is its own tab-delimited column, as a bare
-        # float, in topic order.  Older MALLET builds packed them into a
-        # single space-separated column as "topic:proportion topic:proportion".
-        def _all_float(tokens: List[str]) -> bool:
+        for n_seen, tx in enumerate(texts, start=1):
+            if n_seen == 1 or n_seen % 50 == 0 or n_seen == len(texts):
+                print(f"    Gathering tomotopy tokens: {n_seen}/{len(texts)}")
+            try:
+                tokens = self._get_centroid_tokens_for_tomotopy(tx, filters, ignore_ids)
+            except Exception as exc:
+                print(f"    Warning: could not gather tokens for {tx}: {exc}")
+                continue
             if not tokens:
-                return False
-            for tok in tokens:
-                try:
-                    float(tok)
-                except ValueError:
-                    return False
-            return True
+                continue
+            corpus.append(tokens)
+            doc_names.append(tx)
+
+        if not corpus:
+            print("  Tomotopy skipped: no texts produced centroid tokens")
+            return
+
+        model = tp.LDAModel(
+            k=self.tomotopy_num_topics,
+            alpha=0.1,
+            eta=0.01,
+            min_cf=1,
+            min_df=1,
+            rm_top=0,
+            seed=20,
+        )
+
+        for tokens in corpus:
+            model.add_doc(tokens)
+
+        print("    Training model...")
+        for i in range(self.tomotopy_iterations):
+            model.train(1)
+            if (i + 1) % 100 == 0:
+                print(f"    Iteration {i + 1}/{self.tomotopy_iterations}")
 
         proportions: Dict[str, Dict[int, float]] = {}
-        try:
-            with open(doc_topics, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.rstrip('\n')
-                    if not line or line.startswith('#'):
-                        continue
-                    parts = line.split('\t')
-                    if len(parts) < 2:
-                        continue
+        for i, tx in enumerate(doc_names):
+            if i >= len(corpus):
+                continue
+            topic_dist = model.get_doc_topics(i, min_prob=0.0)
+            proportions[tx] = {int(tid): float(prob) for tid, prob in topic_dist}
 
-                    # Locate the source column.  It is the one whose value
-                    # was registered in doc_map during input writing.
-                    source_idx = -1
-                    for i, part in enumerate(parts):
-                        if part in doc_map:
-                            src_idx = i
-                            break
-                    if src_idx < 0:
-                        if parts[0] in doc_map:
-                            src_idx = 0
-                        else:
-                            continue
-                    source = parts[src_idx]
-                    text_name = doc_map.get(source, source)
-                    tail = parts[src_idx + 1:]
-                    text_topics: Dict[int, float] = {}
-                    if _all_float(tail):
-                        for tid, tok in enumerate(tail):
-                            text_topics[tid] = float(tok)
-                    elif len(tail) == 1 and ':' in tail[0]:
-                        for entry in tail[0].split():
-                            if ':' not in entry:
-                                continue
-                            head, _, val = entry.partition(':')
-                            try:
-                                text_topics[int(head)] = float(val)
-                            except ValueError:
-                                continue
-                    if text_topics:
-                        proportions[text_name] = text_topics
-        except OSError as exc:
-            print(f"  MALLET doc-topics read failed: {exc}")
-            return
+        self.tomotopy_topic_proportions = proportions
 
-        if not proportions:
-            # Diagnostics: dump the first few lines of doc-topics.txt so
-            # it is obvious what the parser was handed when it fails.
-            print("  MALLET parse produced 0 documents; previewing doc-topics.txt:")
-            try:
-                with open(doc_topics, 'r', encoding='utf-8') as f:
-                    for _ in range(5):
-                        preview = f.readline()
-                        if not preview:
-                            break
-                        print(f"    {preview.rstrip(chr(10))!r}")
-            except Exception as exc:
-                print(f"    (could not preview file: {exc})")
+        self.tomotopy_topic_labels = {}
+        for tid in range(self.tomotopy_num_topics):
+            topic_words = model.get_topic_words(tid, top_n=8)
+            self.tomotopy_topic_labels[tid] = ' '.join(topic_words)
 
-        self.mallet_topic_proportions = proportions
-
-        # ---- Parse topic-keys.txt for human-readable labels ----
-        self.mallet_topic_labels = {}
-        try:
-            with open(topic_keys, 'r', encoding='utf-8') as f:
-                for line in f:
-                    parts = line.rstrip('\n').split('\t')
-                    if len(parts) < 3:
-                        continue
-                    try:
-                        tid = int(parts[0])
-                    except ValueError:
-                        continue
-                    self.mallet_topic_labels[tid] = ' '.join(parts[2].split()[:8])
-        except OSError:
-            pass
-
-        # ---- Persist cache ----
         try:
             with open(sig_path, 'w', encoding='utf-8') as f:
                 json.dump(sig, f)
             with open(proportions_path, 'w', encoding='utf-8') as f:
-                json.dump(self.mallet_topic_proportions, f)
+                json.dump(self.tomotopy_topic_proportions, f)
             with open(labels_path, 'w', encoding='utf-8') as f:
-                json.dump({str(k): v for k, v in self.mallet_topic_labels.items()}, f)
-            with open(doc_map_path, 'w', encoding='utf-8') as f:
-                json.dump(doc_map, f)
+                json.dump({str(k): v for k, v in self.tomotopy_topic_labels.items()}, f)
         except Exception as exc:
-            print(f"  Warning: failed to write MALLET cache: {exc}")
+            print(f"  Warning: failed to write tomotopy cache: {exc}")
 
-        matched = sum(1 for tx in texts if tx in self.mallet_topic_proportions)
+        matched = sum(1 for tx in texts if tx in self.tomotopy_topic_proportions)
         print(
-            f"  MALLET topics trained; matched {matched}/{len(texts)} texts "
-            f"({len(self.mallet_topic_proportions)} docs parsed)"
+            f"  Tomotopy topics trained; matched {matched}/{len(texts)} texts "
+            f"({len(self.tomotopy_topic_proportions)} docs parsed)"
         )
 
     def _ensure_runtime_cache_for_tokens(self, tokens: List[str]) -> None:
@@ -3043,7 +2788,7 @@ class TextClassifier(TextMetricsMixin):
             metric_name for metric_name in MetricConfig.METRICS
             if metric_name.endswith('_count')
             or metric_name.endswith('_density')
-            or metric_name.startswith('mallet_topic_')
+            or metric_name.startswith('tomotopy_topic_')
         })
         return excluded
 
@@ -3452,8 +3197,11 @@ class TextClassifier(TextMetricsMixin):
         )
         annotations_enabled_json = safe_json_dumps(bool(enable_annotations))
 
-        template_path = Path(__file__).with_name("atlas_template.html")
+        template_path = Path(__file__).parent / "output_files" / "template.html"
+        script_path = Path(__file__).parent / "output_files" / "script.js"
+        
         template = template_path.read_text(encoding="utf-8")
+        script = script_path.read_text(encoding="utf-8")
 
         values = {
             "__FOCUS_TEXT__": json.dumps(focus_text),
@@ -3472,12 +3220,6 @@ class TextClassifier(TextMetricsMixin):
             ),
             "__FIGHTING_WORDS_UNIGRAMS_JSON__": safe_json_dumps(fighting_words_unigrams),
             "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
-            # --- Experimental Burrows mode data --------------------------------
-            # These placeholders are populated unconditionally so the client can
-            # toggle the mirror Burrows tab at any time without re-running the
-            # pipeline.  If the corpus is too small to produce a stable Burrows
-            # layout, they are empty lists / dicts and the client falls back to
-            # hiding the Experimental button.
             "__BURROWS_REDUCED_JSON__": safe_json_dumps(burrows_reduced),
             "__BURROWS_FUNCTION_WORDS_JSON__": json.dumps(list(burrows_function_words)),
             "__BURROWS_WORD_FREQUENCIES_JSON__": safe_json_dumps(burrows_word_frequencies),
@@ -3487,22 +3229,22 @@ class TextClassifier(TextMetricsMixin):
         for k, v in values.items():
             custom = custom.replace(k, v)
 
-        head_match = re.search(
-            r'<head\b[^>]*>(.*?)</head\s*>',
-            custom,
-            re.DOTALL | re.IGNORECASE,
-        )
-        head = head_match.group(1) if head_match else custom
+        custom_script = script
+        for k, v in values.items():
+            custom_script = custom_script.replace(k, v)
 
-        html = (
-            '<!DOCTYPE html>\n'
-            '<html>\n'
-            '<head>\n'
-            f'<title>{escape_html_attribute("Centroid plot")}</title>\n'
-            '<meta charset="utf-8">\n'
-            f'{head}\n'
-            '</head>\n'
-            '<body>\n'
+        output_dir = Path(output_html).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        template_out = output_dir / "template.html"
+        script_out = output_dir / "script.js"
+        
+        with open(template_out, 'w', encoding='utf-8') as f:
+            f.write(custom)
+        with open(script_out, 'w', encoding='utf-8') as f:
+            f.write(custom_script)
+
+        html = custom
             f'{plotly_html}\n'
             '</body>\n'
             '</html>\n'
@@ -3755,11 +3497,11 @@ class TextClassifier(TextMetricsMixin):
 
         print(f"\nSuccessfully processed {len(successful)}/{len(texts)} texts")
 
-        if self.mallet_num_topics > 0 and successful:
+        if self.tomotopy_num_topics > 0 and successful:
             try:
-                self._train_mallet(successful, ignore_ids, filter_kwargs)
+                self._train_tomotopy_topics(successful, ignore_ids, filter_kwargs)
             except Exception as exc:
-                print(f"  Warning: MALLET topic modeling failed ({exc}); continuing without topics")
+                print(f"  Warning: Tomotopy topic modeling failed ({exc}); continuing without topics")
 
         if self.compute_fighting_words:
             fighting_word_texts = successful
@@ -3877,28 +3619,28 @@ class TextClassifier(TextMetricsMixin):
         )
         self.export_csv(successful, output_csv)
 
-        if self.mallet_topic_proportions:
+        if self.tomotopy_topic_proportions:
             attached = 0
-            for tid in range(self.mallet_num_topics):
-                key = f'mallet_topic_{tid}'
+            for tid in range(self.tomotopy_num_topics):
+                key = f'tomotopy_topic_{tid}'
                 values = np.array([
-                    self.mallet_topic_proportions.get(tx, {}).get(tid, np.nan)
+                    self.tomotopy_topic_proportions.get(tx, {}).get(tid, np.nan)
                     for tx in successful
                 ], dtype=float)
                 if np.all(np.isnan(values)):
                     continue
                 metrics_data[key] = values
-                label_words = self.mallet_topic_labels.get(tid, '')
+                label_words = self.tomotopy_topic_labels.get(tid, '')
                 MetricConfig.METRICS[key] = {
-                    'name': f'MALLET Topic {tid}'
+                    'name': f'Topic {tid}'
                             + (f' ({label_words})' if label_words else ''),
-                    'title_suffix': f'MALLET LDA topic {tid} proportion',
-                    'compute_method': '_compute_mallet_topic',
+                    'title_suffix': f'LDA topic {tid} proportion',
+                    'compute_method': '_compute_tomotopy_topic',
                     'category': 'Topic Modeling',
                 }
                 attached += 1
             if attached:
-                print(f"  Attached {attached} MALLET topic metrics to visualization")
+                print(f"  Attached {attached} Tomotopy topic metrics to visualization")
 
         if filter_kwargs.get('get_metrics_csv', False):
             out = Path(output_csv)
@@ -4234,16 +3976,12 @@ def _arg_parser() -> argparse.ArgumentParser:
                         help='Number of words to use for statistical metrics when using video centroids')
     parser.add_argument('--focus-text', type=str, dest='focus_text',
                         help='Focus text for similarity mapping')
-    parser.add_argument('--mallet-topics', type=int, default=0,
-                        help='Train a MALLET LDA model with this many topics (requires MALLET installed; 0 disables).')
-    parser.add_argument('--mallet-memory', type=str, default=None,
-                        help='Java heap size for MALLET (e.g. 4g, 12g).')
-    parser.add_argument('--mallet-max-tokens-per-channel', type=int, default=None,
-                        help='Cap the per-channel token stream fed to MALLET.')
-    parser.add_argument('--mallet-iterations', type=int, default=1000,
-                        help='Gibbs sampling iterations for MALLET (default: 1000).')
-    parser.add_argument('--mallet-threads', type=int, default=None,
-                        help='Threads for MALLET train-topics (default: min(8, CPU count)).')
+    parser.add_argument('--tomotopy-topics', type=int, default=0,
+                        help='Train a Tomotopy LDA model with this many topics (requires tomotopy installed; 0 disables).')
+    parser.add_argument('--tomotopy-iterations', type=int, default=1000,
+                        help='Gibbs sampling iterations for Tomotopy (default: 1000).')
+    parser.add_argument('--tomotopy-threads', type=int, default=None,
+                        help='Threads for Tomotopy train (default: min(8, CPU count)).')
     parser.add_argument('--export-gameologist', action='store_true',
                         help='Export data for the gameologist sister project (requires 1500+ channels)')
     parser.add_argument('--gameologist-dir', type=str, default=None,
@@ -4375,29 +4113,17 @@ def _export_gameologist(args, classifier):
     )
 
     parser.add_argument(
-        '--mallet-topics', type=int, default=0,
-        help='Train a MALLET LDA model with this many topics '
-             '(requires MALLET installed; 0 disables).',
+        '--tomotopy-topics', type=int, default=0,
+        help='Train a Tomotopy LDA model with this many topics '
+             '(requires tomotopy installed; 0 disables).',
     )
     parser.add_argument(
-        '--mallet-memory', type=str, default=None,
-        help='Java heap size for MALLET (e.g. 4g, 12g). Defaults to the '
-             'MALLET_MEMORY env var if set, otherwise "4g". MALLET needs '
-             'roughly 6-8 bytes per token of heap.',
+        '--tomotopy-iterations', type=int, default=1000,
+        help='Gibbs sampling iterations for Tomotopy (default: 1000; try 200-500 for big corpora).',
     )
     parser.add_argument(
-        '--mallet-max-tokens-per-channel', type=int, default=None,
-        help='Cap the per-channel token stream fed to MALLET. Use when the '
-             'full corpus overruns the Java heap; e.g. 200000 fits a ~1.5 GB '
-             'corpus in ~8 GB of heap.',
-    )
-    parser.add_argument(
-        '--mallet-iterations', type=int, default=1000,
-        help='Gibbs sampling iterations for MALLET (default: 1000; try 200-500 for big corpora).',
-    )
-    parser.add_argument(
-        '--mallet-threads', type=int, default=None,
-        help='Threads for MALLET train-topics (default: min(8, CPU count)).',
+        '--tomotopy-threads', type=int, default=None,
+        help='Threads for Tomotopy train (default: min(8, CPU count)).',
     )
 
     parser.add_argument(
@@ -4425,11 +4151,11 @@ def main():
         parser.error('--umap-min-dist must be between 0 and 1')
     if args.umap_epochs < 1:
         parser.error('--umap-epochs must be positive')
-    if args.mallet_topics < 0:
-        parser.error('--mallet-topics must be zero or greater')
+    if args.tomotopy_topics < 0:
+        parser.error('--tomotopy-topics must be zero or greater')
 
-    if args.mallet_max_tokens_per_channel is not None and args.mallet_max_tokens_per_channel <= 0:
-        parser.error('--mallet-max-tokens-per-channel must be greater than zero')
+    if args.tomotopy_threads is not None and args.tomotopy_threads <= 0:
+        parser.error('--tomotopy-threads must be greater than zero')
 
     if args.txt_depth < 0:
         parser.error('--txt-depth must be zero or greater')
@@ -4556,11 +4282,9 @@ def main():
         umap_neighbors=args.umap_neighbors,
         umap_min_dist=args.umap_min_dist,
         umap_epochs=args.umap_epochs,
-        mallet_num_topics=args.mallet_topics,
-        mallet_memory=args.mallet_memory,
-        mallet_max_tokens_per_channel=args.mallet_max_tokens_per_channel,
-        mallet_iterations=args.mallet_iterations,
-        mallet_threads=args.mallet_threads,
+        tomotopy_num_topics=args.tomotopy_topics,
+        tomotopy_iterations=args.tomotopy_iterations,
+        tomotopy_threads=args.tomotopy_threads,
     )
 
     classifier.active_focus_text = args.focus_text if args.focus_text else ''

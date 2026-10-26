@@ -565,3 +565,6 @@ class TextMetricsMixin:
 
     def _compute_color_count(self, tokens: List[str]) -> float:
         return self._compute_pattern_count(tokens, COLOR_PATTERNS)
+
+    def _compute_tomotopy_topic(self, tokens: List[str]) -> float:
+        return 0.0
