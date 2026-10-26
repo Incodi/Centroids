@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+    * { font-family: Arial, sans-serif; }
+    body { margin: 0; }
+    .js-plotly-plot .hoverlayer,
+    .plotly .hoverlayer { z-index: 20050; pointer-events: none; }
+    @supports (paint-order: stroke) {
+        .plotly-stroke-text,
+        .correlationStrokeText {
+            stroke: white; stroke-width: 1.5; stroke-opacity: 1; paint-order: stroke;
+        }
+    }
+    .panelDragHandle {
+        position: relative; margin: -5px -5px 5px -5px; padding: 1px 22px;
+        background: #f0f0f0; border-bottom: 0.5px solid #ccc;
+        font-size: 9px; color: #555; text-align: center; letter-spacing: 2px;
+        line-height: 1.4; cursor: move; user-select: none; -webkit-user-select: none;
+    }
+    .panelCollapseBtn {
+        position: absolute; right: 2px; top: 1px; padding: 0 5px;
+        font-size: 9px; line-height: 1.2; cursor: pointer;
+    }
+    .fullView {
+        display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+        box-sizing: border-box; padding: 50px 330px 10px 310px;
+        background: #ffffff; overflow: auto; z-index: 9990;
+    }
+    .fullViewPlot { width: 100%; min-width: 600px; min-height: 500px; height: calc(100vh - 60px); }
+    .fullViewPlot .modebar { left: 50%; right: auto; transform: translateX(-50%); }
+    #correlationContainer, #functionWordContainer { padding: 0; overflow: hidden; }
+    #deltaContainer { padding-top: 0; padding-right: 280px; padding-left: 260px; }
+    #correlationContainer .fullViewPlot, #functionWordContainer .fullViewPlot { height: 100vh; }
+    #textPanel { display: flex; flex-direction: column; }
+    #textPanel .panelDragHandle { flex: 0 0 auto; }
+    #textPanel .panelBody { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; }
+    #textList { flex: 1 1 auto; min-height: 0; overflow-y: auto; box-sizing: border-box; }
+    #textList div { padding: 2px; cursor: pointer; font-size: 11px; }
+    #textList div:hover { background-color: #ddd; }
+    #textList div.focusedTextItem { background-color: #ffeb3b; font-weight: bold; }
+    #textList div.focusedTextItem:hover { background-color: #ffe066; }
+    .searchableMetricInput { width: 100%; box-sizing: border-box; margin: 4px 0; font-size: 11px; }
+    .searchableMetricSelect { width: 100%; font-size: 11px; }
+    #correlationControls, #functionWordControls { font-size: 12px; }
+    #correlationControls select, #functionWordControls select, #functionWordControls input { font-size: 11px; }
+    #correlationStats, #functionWordStats { font-size: 10px; line-height: 1.4; }
+    #correlationStats strong, #functionWordStats strong {
+        display: block; margin-bottom: 8px; padding-bottom: 4px; font-size: 11px;
+    }
+    #functionWordSelect { height: 150px; }
+    #functionWordSelectionSummary {
+        max-width: 260px; margin-top: 4px; font-size: 10px;
+        word-wrap: break-word; color: #7a0403;
+    }
+    #experimentalPanel button { font-weight: bold; }
+    #experimentalPanel button.active { background: #2b3a55; color: white; border-color: #2b3a55; }
+    #burrowsIndicator { font-size: 10px; font-weight: bold; color: #7a0403; }
+    #deltaExplorerBtn {
+        padding: 3px 8px; background: linear-gradient(135deg, #7a0403, #d93806);
+        border: 1px solid #7a0403; color: white; font-weight: bold;
+    }
+    #deltaExplorerBtn:hover { filter: brightness(1.1); }
+    #deltaStats { font-size: 10px; line-height: 1.45; }
+    #deltaStats .deltaWordRow {
+        display: flex; justify-content: space-between; gap: 6px;
+        padding: 1px 0; border-bottom: 1px dotted #eee;
+    }
+    #deltaStats .deltaWordRow span:first-child { font-weight: 600; white-space: nowrap; }
+    #deltaStats .deltaWordRow .val {
+        text-align: right; font-variant-numeric: tabular-nums; color: #333;
+        min-width: 0; word-break: break-word;
+    }
+    #deltaStats .deltaSectionHead {
+        margin-top: 10px; margin-bottom: 4px; padding-bottom: 2px;
+        border-bottom: 1px solid #ccc; font-weight: 700;
+    }
+    #deltaStats details > summary::-webkit-details-marker { color: #888; }
+    #deltaScrollHint { margin-top: 3px; font-size: 9px; font-style: italic; color: #777; }
+    #exportMapBtn {
+        margin-top: 5px; font-weight: bold; padding: 3px 6px;
+        background: linear-gradient(135deg, #0b6e4f, #3caa87);
+        border: 1px solid #0b6e4f; color: white; cursor: pointer;
+    }
+    #exportMapBtn:hover { filter: brightness(1.1); }
+</style>
+</head>
+<body>
+<script src="script.js"></script>

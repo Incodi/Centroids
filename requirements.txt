@@ -8,6 +8,10 @@ umap-learn
 plotly
 lexicalrichness
 vaderSentiment
+<<<<<<< HEAD
+tomotopy
+=======
+>>>>>>> 63ad25e08477451841dc8631e5730701ce0bc488
 
 # Optional dependencies
 orjson

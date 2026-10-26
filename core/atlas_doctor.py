@@ -289,7 +289,11 @@ def check_external_tools() -> List[Tuple[str, str, str, str, Optional[str]]]:
 def check_models() -> List[Tuple[str, str, str, str, Optional[str]]]:
     results = []
 
+<<<<<<< HEAD
+    from helpers.atlas_config import EMBEDDING_MODEL_PROFILES, resolve_embedding_model_name
+=======
     from atlas_config import EMBEDDING_MODEL_PROFILES, resolve_embedding_model_name
+>>>>>>> 63ad25e08477451841dc8631e5730701ce0bc488
 
     default_model = resolve_embedding_model_name(None)
     hf_cache = Path.home() / '.cache' / 'huggingface' / 'hub'
