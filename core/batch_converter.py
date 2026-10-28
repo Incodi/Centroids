@@ -2,7 +2,7 @@ import os
 import re
 
 try:
-    from .vtt_helper import VTTSegment
+    from helpers.vtt_helper import VTTSegment
 except ImportError:
     from vtt_helper import VTTSegment
 
@@ -360,3 +360,5 @@ if __name__ == "__main__":
         delete_vtt=args.delete_vtt,
         force_channels=args.channels
     )
+
+# python3 core/batch_converter.py --delete-vtt --channels Ctop

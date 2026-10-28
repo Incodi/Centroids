@@ -1,3 +1,4 @@
+#NEW ATLAS.py
 import argparse
 import csv
 import gc
@@ -59,15 +60,15 @@ except ImportError:
     GameologistExporter = None
     GAMEOLOGIST_AVAILABLE = False
 
-from atlas_config import *  # noqa
-from atlas_config import (
+from helpers.atlas_config import *
+from helpers.atlas_config import (
     _format_trimmed_decimal,
     _is_word_count_metric_config,
 )
-from atlas_cache import SimpleCache
-from atlas_metrics import TextMetricsMixin
-from atlas_processor import TextProcessor
-import atlas_config as cfg
+from helpers.atlas_cache import SimpleCache
+from metricsmixin.atlas_metrics import TextMetricsMixin
+from helpers.atlas_processor import TextProcessor
+import helpers.atlas_config as cfg
 
 try:
     import igraph as ig
@@ -172,8 +173,8 @@ class TextClassifier(TextMetricsMixin):
         'do', 'does', 'did', 'doing',
         'will', 'would', 'should', 'can', 'could', 'may', 'might', 'must',
         'to', 'of', 'and', 'a', 'in', 'that', 'for', 'not', 'on', 'with', 'as', 'at',
-        'but', 'by', 'from', 'or', 'an', 'if', 'about', 
-        'after', 'because', 'any', 'than', 'into', 'through', 'before', 
+        'but', 'by', 'from', 'or', 'an', 'if', 'about',
+        'after', 'because', 'any', 'than', 'into', 'through', 'before',
         'this', 'these', 'those', 'there', 'what', 'so', 'who', 'which', 'when',
         'no', 'only', 'other', 'some', 'then', 'now', 'look', 'come', 'go', 'get',
         'take', 'see', 'think', 'also', 'use', 'how', 'even', 'want', 'give',
@@ -199,9 +200,6 @@ class TextClassifier(TextMetricsMixin):
         "can't": "can not", "couldn't": "could not", "won't": "will not", "wouldn't": "would not",
         "shouldn't": "should not", "mustn't": "must not", "let's": "let us",
         "y'all": "you all",
-        # we are going to make all gendered pronouns into one token for Burrows distance.
-        # this prevents female writers from being clustered together and properly placed in a niche.
-        # but we will have to use the male version of the word due to the commonality of it in texts.
         "her": "him",
         "she": "he",
         "herself": "himself",
@@ -463,6 +461,7 @@ class TextClassifier(TextMetricsMixin):
         for r, row in enumerate(valid):
             for c, col in enumerate(valid):
                 full[row, col] = distances[r, c]
+        return full
 
     @classmethod
     def _expand_burrows_distance_matrix(
@@ -471,11 +470,6 @@ class TextClassifier(TextMetricsMixin):
         distances: np.ndarray,
         valid: List[int],
     ) -> np.ndarray:
-        """Expand a compact valid-subset distance matrix to an n×n symmetric matrix.
-
-        Texts without a style profile receive a large fill distance so UMAP
-        pushes them to the periphery rather than smearing the whole layout.
-        """
         full = np.full((n, n), np.nan, dtype=np.float64)
         for r_idx, row in enumerate(valid):
             for c_idx, col in enumerate(valid):
@@ -490,7 +484,6 @@ class TextClassifier(TextMetricsMixin):
         full[np.isnan(full)] = fill_value
         np.fill_diagonal(full, 0.0)
 
-        # Force exact symmetry (the diagonal is already 0)
         full = (full + full.T) * 0.5
         np.fill_diagonal(full, 0.0)
 
@@ -501,7 +494,6 @@ class TextClassifier(TextMetricsMixin):
         distances: np.ndarray,
         n: int,
     ) -> np.ndarray:
-        """Run UMAP on a precomputed Burrows distance matrix."""
         if n == 0:
             return np.zeros((0, 2), dtype=np.float32)
 
@@ -541,14 +533,14 @@ class TextClassifier(TextMetricsMixin):
         )
 
     def _skipped(self, name: str) -> bool:
-        return not self._eligible(name)
+        return not self._metric_is_eligible(name)
 
     def _metric_needs_compute(self, name: str, cached_metrics: Dict[str, Any]) -> bool:
         if name not in cached_metrics:
             return self._metric_is_eligible(name)
         if cached_metrics[name] is not None:
             return False
-        return self._eligible(name)
+        return self._metric_is_eligible(name)
 
     @staticmethod
     def _summarize(names: List[str], max_items: Optional[int] = 16) -> str:
@@ -582,15 +574,8 @@ class TextClassifier(TextMetricsMixin):
         if other:
             print(f"      • Other metrics: {len(other)}")
 
-        if word_count_metrics:
-            print(f"      • Word counts: {len(word_count_metrics)}")
-        if embedding_metrics:
-            print(f"      • Embedding metrics: {len(embedding_metrics)}")
-        if other_metrics:
-            print(f"      • Other metrics: {len(other_metrics)}")
-
         category_buckets: Dict[str, List[str]] = defaultdict(list)
-        for metric_name in completed:
+        for metric_name in done:
             category = MetricConfig.METRICS.get(metric_name, {}).get(
                 'category', 'Uncategorized'
             )
@@ -669,13 +654,15 @@ class TextClassifier(TextMetricsMixin):
         umap_neighbors: Optional[int] = None,
         umap_min_dist: float = 0.1,
         umap_epochs: int = 200,
-        mallet_num_topics: int = 0,
-        mallet_memory: Optional[str] = None,
-        mallet_max_tokens_per_channel: Optional[int] = None,
-        mallet_iterations: int = 1000,
-        mallet_threads: Optional[int] = None,
+        tomotopy_num_topics: int = 0,
+        tomotopy_iterations: int = 1000,
+        tomotopy_threads: Optional[int] = None,
+        tomotopy_max_tokens_per_channel: Optional[int] = None,
+        change_fword_to_stupid: bool = False,
     ):
         self.embedding_model_name = resolve_embedding_model_name(embedding_model)
+        if huggingface_local_files_only(self.embedding_model_name):
+            os.environ['HF_HUB_OFFLINE'] = '1'
         try:
             self.model = SentenceTransformer(
                 self.embedding_model_name,
@@ -696,9 +683,6 @@ class TextClassifier(TextMetricsMixin):
                 'Set ATLAS_HF_LOCAL_FILES_ONLY=0 with internet access to '
                 'download it, or pre-cache the model before running Centroids.'
             ) from exc
-        profile = get_embedding_model_profile(self.embedding_model_name)
-        self.embedding_device = self._detect_embedding_device()
-
         profile = get_embedding_model_profile(self.embedding_model_name)
         self.embedding_device = self._embed_device()
 
@@ -733,11 +717,14 @@ class TextClassifier(TextMetricsMixin):
         elif self.embedding_device == 'mps':
             self.embedding_batch_size = min(self.embedding_batch_size, 16)
 
+        self.change_fword_to_stupid = bool(change_fword_to_stupid)
+
         self.embedding_cache_signature: Dict[str, Any] = {
             'embedding_model': self.embedding_model_name,
             'embedding_context_window': int(self.embedding_context_window),
             'embedding_chunk_size': int(chunk),
             'embedding_min_chunk': int(embedding_min_chunk),
+            'change_fword_to_stupid': self.change_fword_to_stupid,
         }
 
         print(
@@ -746,7 +733,8 @@ class TextClassifier(TextMetricsMixin):
             f"| context={self.embedding_context_window} "
             f"| chunk={int(chunk)} "
             f"| min_chunk={int(embedding_min_chunk)} "
-            f"| batch={self.embedding_batch_size}"
+            f"| batch={self.embedding_batch_size} "
+            f"| fword->stupid={self.change_fword_to_stupid}"
         )
 
         self.base_dir = Path(__file__).resolve().parents[1]
@@ -781,26 +769,15 @@ class TextClassifier(TextMetricsMixin):
         self.centroid_words = centroid_words
         self.stat_word_count = stat_word_count
 
-        # --- MALLET topic modeling (population-level) --------------------
-        self.mallet_num_topics: int = int(mallet_num_topics or 0)
-        # Java heap size for MALLET.  Priority: explicit argument >
-        # MALLET_MEMORY env var > 4g default.  The MALLET bin/mallet shell
-        # script reads this env var and turns it into -Xmx for the JVM.
-        self.mallet_memory: str = (
-            (mallet_memory or os.environ.get('MALLET_MEMORY') or '4g').strip()
-        ) or '4g'
-        # Optional per-channel token cap.  When the full corpus cannot fit
-        # in the available Java heap, capping each channel's stream keeps
-        # MALLET trainable.  Order within a document is irrelevant to LDA,
-        # so keeping the first N tokens is as good as any other slice.
-        if mallet_max_tokens_per_channel and int(mallet_max_tokens_per_channel) > 0:
-            self.mallet_max_tokens_per_channel: Optional[int] = int(mallet_max_tokens_per_channel)
+        self.tomotopy_num_topics: int = int(tomotopy_num_topics or 0)
+        self.tomotopy_iterations: int = max(1, int(tomotopy_iterations or 1000))
+        self.tomotopy_threads: int = max(1, int(tomotopy_threads or min(8, os.cpu_count() or 1)))
+        if tomotopy_max_tokens_per_channel and int(tomotopy_max_tokens_per_channel) > 0:
+            self.tomotopy_max_tokens_per_channel: Optional[int] = int(tomotopy_max_tokens_per_channel)
         else:
-            self.mallet_max_tokens_per_channel = None
-        self.mallet_iterations: int = max(1, int(mallet_iterations or 1000))
-        self.mallet_threads: int = max(1, int(mallet_threads or min(8, os.cpu_count() or 1)))
-        self.mallet_topic_proportions: Dict[str, Dict[int, float]] = {}
-        self.mallet_topic_labels: Dict[int, str] = {}
+            self.tomotopy_max_tokens_per_channel = None
+        self.tomotopy_topic_proportions: Dict[str, Dict[int, float]] = {}
+        self.tomotopy_topic_labels: Dict[int, str] = {}
 
         self.cluster_method = (cluster_method or 'hdbscan').lower()
         self.leiden_resolution_min = float(leiden_resolution_min)
@@ -825,6 +802,7 @@ class TextClassifier(TextMetricsMixin):
             enable_spacy=enable_spacy,
             model_tokenizer=getattr(self.model, 'tokenizer', None),
             model_context_window=self.embedding_context_window,
+            change_fword_to_stupid=self.change_fword_to_stupid,
         )
 
         self.processor._model = self.model
@@ -962,7 +940,7 @@ class TextClassifier(TextMetricsMixin):
 
                 if files:
                     try:
-                        cap = self.mallet_max_tokens_per_channel
+                        cap = self.tomotopy_max_tokens_per_channel
                         accumulate = (
                             min(self.stat_word_count, cap)
                             if cap and self.stat_word_count
@@ -1002,6 +980,9 @@ class TextClassifier(TextMetricsMixin):
             print("  Fighting-words precompute: no texts tokenized; skipping")
             return
 
+        self._fighting_words_unigrams = unigrams
+        self._fighting_words_token_counts = counts
+
         peak_values, peak_uni = self._fw_values(
             texts, FIGHTING_WORDS_PEAK_RANK, unigrams, counts
         )
@@ -1019,6 +1000,8 @@ class TextClassifier(TextMetricsMixin):
         )
 
         if any_separate:
+            self._fighting_words_unigrams_centroid = unigrams_c
+            self._fighting_words_token_counts_centroid = counts_c
             peak_c, peak_uni_c = self._fw_values(
                 texts, FIGHTING_WORDS_PEAK_RANK, unigrams_c, counts_c
             )
@@ -1030,6 +1013,8 @@ class TextClassifier(TextMetricsMixin):
             self._fighting_words_peak_unigrams_centroid = peak_uni_c
             self._fighting_words_floor_unigrams_centroid = floor_uni_c
         else:
+            self._fighting_words_unigrams_centroid = unigrams
+            self._fighting_words_token_counts_centroid = counts
             self._fw_peak_centroid_cache = dict(peak_values)
             self._fw_floor_centroid_cache = dict(floor_values)
             self._fighting_words_peak_unigrams_centroid = dict(peak_uni)
@@ -1046,21 +1031,25 @@ class TextClassifier(TextMetricsMixin):
         self,
         texts: List[str],
         rank: int,
+        unigrams: Optional[Dict[str, Counter]] = None,
+        counts: Optional[Dict[str, int]] = None,
         use_centroid: bool = False,
     ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[str]]]:
         if not texts:
             return {}, {}
 
-        source_unigrams = (
-            self._fighting_words_unigrams_centroid
-            if use_centroid
-            else self._fighting_words_unigrams
-        )
-        source_counts = (
-            self._fighting_words_token_counts_centroid
-            if use_centroid
-            else self._fighting_words_token_counts
-        )
+        if unigrams is None:
+            unigrams = (
+                self._fighting_words_unigrams_centroid
+                if use_centroid
+                else self._fighting_words_unigrams
+            )
+        if counts is None:
+            counts = (
+                self._fighting_words_token_counts_centroid
+                if use_centroid
+                else self._fighting_words_token_counts
+            )
 
         counters: Dict[str, Counter] = {}
         token_counts: Dict[str, int] = {}
@@ -1083,20 +1072,20 @@ class TextClassifier(TextMetricsMixin):
             total_tokens += token_counts[text]
 
         floors: Dict[str, Optional[float]] = {}
-        unigrams: Dict[str, Optional[str]] = {}
+        top_unigrams: Dict[str, Optional[str]] = {}
 
         for text in texts:
             focus = counters.get(text)
             n_focus = token_counts.get(text, 0)
             if focus is None or n_focus <= 0:
                 floors[text] = None
-                unigrams[text] = None
+                top_unigrams[text] = None
                 continue
 
             n_rest = total_tokens - n_focus
             if n_rest <= 0:
                 floors[text] = None
-                unigrams[text] = None
+                top_unigrams[text] = None
                 continue
 
             rest = total_counts - focus
@@ -1106,7 +1095,7 @@ class TextClassifier(TextMetricsMixin):
             ]
             if not candidates:
                 floors[text] = None
-                unigrams[text] = None
+                top_unigrams[text] = None
                 continue
 
             V = len(candidates)
@@ -1124,7 +1113,7 @@ class TextClassifier(TextMetricsMixin):
                     / (n_rest + FIGHTING_WORDS_FLOOR_ALPHA * V)
                 )
                 log_odds = math.log(p_focus) - math.log(p_rest)
-                var = (
+                variance = (
                     (1.0 / (f_focus + FIGHTING_WORDS_FLOOR_ALPHA))
                     + (1.0 / (f_rest + FIGHTING_WORDS_FLOOR_ALPHA))
                 )
@@ -1133,26 +1122,34 @@ class TextClassifier(TextMetricsMixin):
 
             if not z_score_pairs:
                 floors[text] = None
-                unigrams[text] = None
+                top_unigrams[text] = None
                 continue
 
             z_score_pairs.sort(reverse=True, key=lambda x: x[0])
             rank_index = min(rank, len(z_score_pairs)) - 1
             floors[text] = float(z_score_pairs[rank_index][0])
-            unigrams[text] = z_score_pairs[rank_index][1]
+            top_unigrams[text] = z_score_pairs[rank_index][1]
 
-        return floors, unigrams
+        return floors, top_unigrams
+
+    def _compute_fighting_words_values(
+        self,
+        texts: List[str],
+        rank: int,
+        use_centroid: bool = False,
+    ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[str]]]:
+        return self._fw_values(texts, rank, use_centroid=use_centroid)
 
     def _compute_fighting_words_floor_values(
         self,
         texts: List[str],
         use_centroid: bool = False,
     ) -> Tuple[Dict[str, Optional[float]], Dict[str, Optional[str]]]:
-        return self._compute_fighting_words_values(
+        return self._fw_values(
             texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=use_centroid
         )
 
-    def _get_centroid_tokens_for_mallet(
+    def _get_centroid_tokens_for_tomotopy(
         self,
         text: str,
         filters: Dict,
@@ -1163,7 +1160,7 @@ class TextClassifier(TextMetricsMixin):
             if not files:
                 return []
 
-            cap = self.mallet_max_tokens_per_channel
+            cap = self.tomotopy_max_tokens_per_channel
             accumulate = (
                 min(self.stat_word_count, cap) if cap and self.stat_word_count else (cap or self.stat_word_count)
             )
@@ -1185,129 +1182,24 @@ class TextClassifier(TextMetricsMixin):
             tokens = tokens[-self.centroid_words:]
         return tokens
 
-    def _run_mallet_logged(
-        self, cmd: List[str], env: Dict[str, str], log_path: Path,
-        stage: str, heartbeat_seconds: int = 30,
-    ) -> Tuple[int, str]:
-        """Run a MALLET command, streaming output to a log file and printing
-        a heartbeat so a long run never looks frozen."""
-        started = time.time()
-        tail: deque = deque(maxlen=80)
-        last_line = ['(no output yet)']
-
-        with open(log_path, 'a', encoding='utf-8') as log:
-            log.write(f"\n===== {stage} | {' '.join(cmd)} =====\n")
-            log.flush()
-
-            proc = subprocess.Popen(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                stdin=subprocess.DEVNULL, env=env, text=True,
-                errors='ignore', bufsize=1,
-            )
-
-            def pump() -> None:
-                for line in proc.stdout:
-                    log.write(line)
-                    log.flush()
-                    stripped = line.rstrip()
-                    if stripped:
-                        tail.append(stripped)
-                        last_line[0] = stripped
-
-            reader = threading.Thread(target=pump, daemon=True)
-            reader.start()
-
-            next_beat = started + heartbeat_seconds
-            try:
-                while proc.poll() is None:
-                    time.sleep(1.0)
-                    if time.time() >= next_beat:
-                        print(
-                            f"    [{stage}] running {time.time() - started:,.0f}s | "
-                            f"last: {last_line[0][:110]}"
-                        )
-                        next_beat += heartbeat_seconds
-            except KeyboardInterrupt:
-                proc.kill()
-                raise
-            finally:
-                reader.join(timeout=5)
-
-        print(f"    [{stage}] finished in {time.time() - started:,.0f}s (exit={proc.returncode})")
-        return proc.returncode, '\n'.join(tail)
-
-    def _report_mallet_failure(self, stderr_text: str, log_path: Path) -> None:
-        if 'OutOfMemoryError' in stderr_text or 'Java heap space' in stderr_text:
-            print(f"  MALLET ran out of Java heap at heap={self.mallet_memory}.")
-            print(
-                "  Increase --mallet-memory (e.g. 12g) or lower "
-                "--mallet-max-tokens-per-channel (e.g. 200000)."
-            )
-        else:
-            print(f"  MALLET failed. Last output:\n{stderr_text[-600:]}")
-        print(f"  Full log: {log_path}")
-
-    def _train_mallet_topics(
+    def _train_tomotopy_topics(
         self,
         texts: List[str],
         ignore_ids: set,
         filter_kwargs: Dict[str, Any],
     ) -> None:
-        """Train MALLET LDA on the centroid corpus of every successful text.
-
-        Streaming design: only one text's centroid tokens are held in memory
-        at a time; they are written to the MALLET input file and then freed
-        immediately.  Result proportions and top-word labels are cached under
-        ``cache/mallet/`` keyed on the text list + filters, so re-running the
-        pipeline skips the sampler entirely.
-
-        Heap size comes from ``self.mallet_memory`` (CLI flag > MALLET_MEMORY
-        env var > 4g default).  When that is still not enough for a given
-        corpus, ``self.mallet_max_tokens_per_channel`` caps the per-channel
-        token stream so MALLET remains trainable on constrained machines.
-
-        Populates:
-            self.mallet_topic_proportions: {text: {topic_id: proportion}}
-            self.mallet_topic_labels:      {topic_id: "top eight words"}
-        """
-        if self.mallet_num_topics <= 0:
+        if self.tomotopy_num_topics <= 0:
             return
 
         if not texts:
             return
 
-        # ---- Locate the MALLET binary ----
-        mallet_binary: Optional[str] = shutil.which('mallet')
-        if not mallet_binary:
-            mallet_home = os.environ.get('MALLET_HOME')
-            if mallet_home:
-                candidate = Path(mallet_home) / 'bin' / 'mallet'
-                if candidate.exists():
-                    mallet_binary = str(candidate)
-
-        if not mallet_binary:
-            print(
-                "  MALLET not found; skipping topic modeling. "
-                "Install it (brew install mallet, or set MALLET_HOME to a "
-                "MALLET install directory)."
-            )
-            return
-
-        # ---- Cache path setup ----
-        cache_dir = self.base_dir / "cache" / "mallet"
+        cache_dir = self.base_dir / "cache" / "tomotopy"
         cache_dir.mkdir(parents=True, exist_ok=True)
-        input_txt = cache_dir / "texts_input.txt"
-        bin_file = cache_dir / "texts.mallet"
-        doc_topics = cache_dir / "doc_topics.txt"
-        topic_keys = cache_dir / "topic_keys.txt"
         sig_path = cache_dir / "signature.json"
         proportions_path = cache_dir / "proportions.json"
         labels_path = cache_dir / "labels.json"
-        doc_map_path = cache_dir / "doc_map.json"
 
-        # Signature is intentionally limited to inputs that actually affect
-        # the MALLET output.  The token cap IS included because changing it
-        # changes the corpus MALLET sees.
         filter_sig: Dict[str, Any] = {}
         for key in sorted(CACHE_FILTER_KEYS):
             if key in ('centroid_mode', 'centroid_videos', 'centroid_words', 'stat_word_count'):
@@ -1318,20 +1210,19 @@ class TextClassifier(TextMetricsMixin):
             filter_sig[key] = str(v)
 
         sig = {
-            'num_topics': int(self.mallet_num_topics),
-            'iterations': int(self.mallet_iterations),
-            'threads': int(self.mallet_threads),
+            'num_topics': int(self.tomotopy_num_topics),
+            'iterations': int(self.tomotopy_iterations),
+            'threads': int(self.tomotopy_threads),
             'texts': sorted(texts),
             'ignore_ids': sorted(str(v) for v in ignore_ids),
             'centroid_mode': self.centroid_mode,
             'centroid_videos': int(self.centroid_videos or 0),
             'centroid_words': int(self.centroid_words or 0),
             'stat_word_count': int(self.stat_word_count or 0),
-            'max_tokens_per_channel': int(self.mallet_max_tokens_per_channel or 0),
             'filters': filter_sig,
+            'change_fword_to_stupid': bool(getattr(self, 'change_fword_to_stupid', False)),
         }
 
-        # ---- Try cache ----
         if sig_path.exists() and proportions_path.exists():
             try:
                 with open(sig_path, 'r', encoding='utf-8') as f:
@@ -1339,7 +1230,7 @@ class TextClassifier(TextMetricsMixin):
                 if saved == sig:
                     with open(proportions_path, 'r', encoding='utf-8') as f:
                         props = json.load(f)
-                    self.mallet_topic_proportions = {
+                    self.tomotopy_topic_proportions = {
                         tx: {int(k): float(v) for k, v in topics.items()}
                         for tx, topics in props.items()
                     }
@@ -1347,254 +1238,101 @@ class TextClassifier(TextMetricsMixin):
                         try:
                             with open(labels_path, 'r', encoding='utf-8') as f:
                                 labels = json.load(f)
-                            self.mallet_topic_labels = {
+                            self.tomotopy_topic_labels = {
                                 int(k): str(v) for k, v in labels.items()
                             }
                         except Exception:
-                            self.mallet_topic_labels = {}
+                            self.tomotopy_topic_labels = {}
                     print(
-                        f"  MALLET topics loaded from cache "
-                        f"({len(self.mallet_topic_proportions)} texts, "
-                        f"{self.mallet_num_topics} topics)"
+                        f"  Tomotopy topics loaded from cache "
+                        f"({len(self.tomotopy_topic_proportions)} texts, "
+                        f"{self.tomotopy_num_topics} topics)"
                     )
                     return
             except Exception as exc:
-                print(f"  Warning: failed to load MALLET cache ({exc}); retraining")
+                print(f"  Warning: failed to load tomotopy cache ({exc}); retraining")
 
-        # ---- Write the MALLET input file, one text at a time ----
-        #
-        # Use synthetic ASCII-only doc ids (tx_000000, tx_000001, ...) rather
-        # than the raw text names.  MALLET's import-file rewrites the doc
-        # source name when it contains whitespace or punctuation, which
-        # silently breaks any lookup keyed on the original text name.  With
-        # ids that MALLET leaves untouched, the mapping stays exact, and we
-        # persist the id -> text map alongside the proportions so cache hits
-        # skip the sampler entirely.
-        cap_note = (
-            f" | cap={self.mallet_max_tokens_per_channel:,} tokens/text"
-            if self.mallet_max_tokens_per_channel
-            else ""
-        )
+        try:
+            import tomotopy as tp
+        except ImportError:
+            print("  Tomotopy not installed; skipping topic modeling.")
+            print("  Install it with: pip install tomotopy")
+            return
+
         print(
-            f"  Training MALLET LDA: {self.mallet_num_topics} topics, "
-            f"{self.mallet_iterations} iterations, "
-            f"{self.mallet_threads} threads, "
-            f"heap={self.mallet_memory}{cap_note} "
-            f"(streaming input across {len(texts)} texts)"
+            f"  Training Tomotopy LDA: {self.tomotopy_num_topics} topics, "
+            f"{self.tomotopy_iterations} iterations, "
+            f"{self.tomotopy_threads} threads"
         )
+
         filters = {k: v for k, v in filter_kwargs.items() if v is not None}
-        written = 0
-        doc_map: Dict[str, str] = {}  # safe_id -> text name
+        corpus = []
+        doc_names = []
 
-        try:
-            with open(input_txt, 'w', encoding='utf-8') as f:
-                for n_seen, tx in enumerate(texts, start=1):
-                    if n_seen == 1 or n_seen % 50 == 0 or n_seen == len(texts):
-                        print(f"    Gathering MALLET tokens: {n_seen}/{len(texts)}")
-                    try:
-                        tokens = self._get_centroid_tokens_for_mallet(tx, filters, ignore_ids)
-                    except Exception as exc:
-                        print(f"    Warning: could not gather tokens for {tx}: {exc}")
-                        continue
-                    if not tokens:
-                        continue
-                    safe_id = f"tx_{written:06d}"
-                    doc_map[safe_id] = tx
-                    # MALLET's default line regex is "name  label  data".
-                    # A dummy label column keeps the first real token from
-                    # being swallowed as the label.
-                    f.write(f"{safe_id}\tX\t{' '.join(tokens)}\n")
-                    written += 1
-                    del tokens
-        except OSError as exc:
-            print(f"  MALLET input write failed: {exc}")
-            return
-
-        if written == 0:
-            print("  MALLET skipped: no texts produced centroid tokens")
-            return
-
-        print(f"    Wrote {written} documents to {input_txt.name}")
-
-        gc.collect()
-        try:
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-            elif hasattr(torch, 'mps') and torch.backends.mps.is_available():
-                torch.mps.empty_cache()
-        except Exception:
-            pass
-        log_path = cache_dir / "mallet_debug.log"
-        print(f"    MALLET log: {log_path}")
-
-        # ---- Run MALLET (import-file -> train-topics) ----
-        # Pass the heap size through the MALLET_MEMORY env var, which the
-        # bin/mallet launcher script turns into a JVM -Xmx argument.
-        run_env = {**os.environ, 'MALLET_MEMORY': self.mallet_memory}
-
-        # Skip import-file when the binary is already newer than the input
-        # file.  This makes retries after a training-only failure cheap --
-        # re-serialising the corpus is the slow part on big runs.
-        need_import = True
-        try:
-            if mallet_bin_file.exists():
-                need_import = mallet_bin_file.stat().st_mtime < input_txt.stat().st_mtime
-        except OSError:
-            need_import = True
-
-        try:
-            if need_import:
-                rc, tail_text = self._run_mallet_logged(
-                    [mallet_binary, 'import-file',
-                     '--input', str(input_txt),
-                     '--output', str(mallet_bin_file),
-                     '--keep-sequence',
-                     '--remove-stopwords'],
-                    run_env, log_path, 'import',
-                )
-                if rc != 0:
-                    self._report_mallet_failure(tail_text, log_path)
-                    return
-            else:
-                print(f"    Reusing cached binary {mallet_bin_file.name}")
-
-            rc, tail_text = self._run_mallet_logged(
-                [mallet_binary, 'train-topics',
-                 '--input', str(mallet_bin_file),
-                 '--num-topics', str(self.mallet_num_topics),
-                 '--num-iterations', str(self.mallet_iterations),
-                 '--num-threads', str(self.mallet_threads),
-                 '--optimize-interval', '10',
-                 '--random-seed', '20',
-                 '--output-doc-topics', str(doc_topics),
-                 '--output-topic-keys', str(topic_keys)],
-                run_env, log_path, 'train',
-            )
-            if rc != 0:
-                self._report_mallet_failure(tail_text, log_path)
-                return
-        except FileNotFoundError as exc:
-            print(f"  MALLET binary not executable: {exc}")
-            return
-        except Exception as exc:
-            print(f"  MALLET training failed: {exc}")
-            return
-
-        # ---- Parse doc-topics.txt (line by line, streaming) ----
-        #
-        # MALLET 2.0.8+ writes --output-doc-topics as:
-        #
-        #   #doc<TAB>source<TAB>p_0<TAB>p_1<TAB>...<TAB>p_{N-1}
-        #   0<TAB>tx_000000<TAB>9.84E-6<TAB>3.04E-6<TAB>0.159<TAB>...
-        #   1<TAB>tx_000001<TAB>0.0152<TAB>2.05E-6<TAB>0.039<TAB>...
-        #
-        # Each topic proportion is its own tab-delimited column, as a bare
-        # float, in topic order.  Older MALLET builds packed them into a
-        # single space-separated column as "topic:proportion topic:proportion".
-        def _all_float(tokens: List[str]) -> bool:
+        for n_seen, tx in enumerate(texts, start=1):
+            if n_seen == 1 or n_seen % 50 == 0 or n_seen == len(texts):
+                print(f"    Gathering tomotopy tokens: {n_seen}/{len(texts)}")
+            try:
+                tokens = self._get_centroid_tokens_for_tomotopy(tx, filters, ignore_ids)
+            except Exception as exc:
+                print(f"    Warning: could not gather tokens for {tx}: {exc}")
+                continue
             if not tokens:
-                return False
-            for tok in tokens:
-                try:
-                    float(tok)
-                except ValueError:
-                    return False
-            return True
+                continue
+            corpus.append(tokens)
+            doc_names.append(tx)
+
+        if not corpus:
+            print("  Tomotopy skipped: no texts produced centroid tokens")
+            return
+
+        model = tp.LDAModel(
+            k=self.tomotopy_num_topics,
+            alpha=0.1,
+            eta=0.01,
+            min_cf=1,
+            min_df=1,
+            rm_top=0,
+            seed=20,
+        )
+
+        for tokens in corpus:
+            model.add_doc(tokens)
+
+        print("    Training model...")
+        for i in range(self.tomotopy_iterations):
+            model.train(1)
+            if (i + 1) % 100 == 0:
+                print(f"    Iteration {i + 1}/{self.tomotopy_iterations}")
 
         proportions: Dict[str, Dict[int, float]] = {}
-        try:
-            with open(doc_topics, 'r', encoding='utf-8') as f:
-                for line in f:
-                    line = line.rstrip('\n')
-                    if not line or line.startswith('#'):
-                        continue
-                    parts = line.split('\t')
-                    if len(parts) < 2:
-                        continue
+        for i, tx in enumerate(doc_names):
+            if i >= len(corpus):
+                continue
+            topic_dist = model.get_doc_topics(i, min_prob=0.0)
+            proportions[tx] = {int(tid): float(prob) for tid, prob in topic_dist}
 
-                    # Locate the source column.  It is the one whose value
-                    # was registered in doc_map during input writing.
-                    source_idx = -1
-                    for i, part in enumerate(parts):
-                        if part in doc_map:
-                            src_idx = i
-                            break
-                    if src_idx < 0:
-                        if parts[0] in doc_map:
-                            src_idx = 0
-                        else:
-                            continue
-                    source = parts[src_idx]
-                    text_name = doc_map.get(source, source)
-                    tail = parts[src_idx + 1:]
-                    text_topics: Dict[int, float] = {}
-                    if _all_float(tail):
-                        for tid, tok in enumerate(tail):
-                            text_topics[tid] = float(tok)
-                    elif len(tail) == 1 and ':' in tail[0]:
-                        for entry in tail[0].split():
-                            if ':' not in entry:
-                                continue
-                            head, _, val = entry.partition(':')
-                            try:
-                                text_topics[int(head)] = float(val)
-                            except ValueError:
-                                continue
-                    if text_topics:
-                        proportions[text_name] = text_topics
-        except OSError as exc:
-            print(f"  MALLET doc-topics read failed: {exc}")
-            return
+        self.tomotopy_topic_proportions = proportions
 
-        if not proportions:
-            # Diagnostics: dump the first few lines of doc-topics.txt so
-            # it is obvious what the parser was handed when it fails.
-            print("  MALLET parse produced 0 documents; previewing doc-topics.txt:")
-            try:
-                with open(doc_topics, 'r', encoding='utf-8') as f:
-                    for _ in range(5):
-                        preview = f.readline()
-                        if not preview:
-                            break
-                        print(f"    {preview.rstrip(chr(10))!r}")
-            except Exception as exc:
-                print(f"    (could not preview file: {exc})")
+        self.tomotopy_topic_labels = {}
+        for tid in range(self.tomotopy_num_topics):
+            topic_words = model.get_topic_words(tid, top_n=8)
+            self.tomotopy_topic_labels[tid] = ' '.join(topic_words)
 
-        self.mallet_topic_proportions = proportions
-
-        # ---- Parse topic-keys.txt for human-readable labels ----
-        self.mallet_topic_labels = {}
-        try:
-            with open(topic_keys, 'r', encoding='utf-8') as f:
-                for line in f:
-                    parts = line.rstrip('\n').split('\t')
-                    if len(parts) < 3:
-                        continue
-                    try:
-                        tid = int(parts[0])
-                    except ValueError:
-                        continue
-                    self.mallet_topic_labels[tid] = ' '.join(parts[2].split()[:8])
-        except OSError:
-            pass
-
-        # ---- Persist cache ----
         try:
             with open(sig_path, 'w', encoding='utf-8') as f:
                 json.dump(sig, f)
             with open(proportions_path, 'w', encoding='utf-8') as f:
-                json.dump(self.mallet_topic_proportions, f)
+                json.dump(self.tomotopy_topic_proportions, f)
             with open(labels_path, 'w', encoding='utf-8') as f:
-                json.dump({str(k): v for k, v in self.mallet_topic_labels.items()}, f)
-            with open(doc_map_path, 'w', encoding='utf-8') as f:
-                json.dump(doc_map, f)
+                json.dump({str(k): v for k, v in self.tomotopy_topic_labels.items()}, f)
         except Exception as exc:
-            print(f"  Warning: failed to write MALLET cache: {exc}")
+            print(f"  Warning: failed to write tomotopy cache: {exc}")
 
-        matched = sum(1 for tx in texts if tx in self.mallet_topic_proportions)
+        matched = sum(1 for tx in texts if tx in self.tomotopy_topic_proportions)
         print(
-            f"  MALLET topics trained; matched {matched}/{len(texts)} texts "
-            f"({len(self.mallet_topic_proportions)} docs parsed)"
+            f"  Tomotopy topics trained; matched {matched}/{len(texts)} texts "
+            f"({len(self.tomotopy_topic_proportions)} docs parsed)"
         )
 
     def _ensure_runtime_cache_for_tokens(self, tokens: List[str]) -> None:
@@ -1762,7 +1500,7 @@ class TextClassifier(TextMetricsMixin):
                 import spacy
                 cfg.spacy_nlp = spacy.load("en_core_web_sm")
             except (ModuleNotFoundError, ImportError, OSError):
-                from atlas_config import _install_spacy_model
+                from helpers.atlas_config import _install_spacy_model
                 _install_spacy_model()
                 if cfg.spacy_nlp is None:
                     return None
@@ -2216,6 +1954,8 @@ class TextClassifier(TextMetricsMixin):
                     chunk_embs = self._encode(chunks)
                     mean_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
 
+                self.embeddings[text] = mean_emb
+
                 rd = {
                     'mean_emb': mean_emb,
                     'token_count': len(tokens),
@@ -2267,7 +2007,7 @@ class TextClassifier(TextMetricsMixin):
                 cached_chunks = cached.get('chunks')
                 missing = [
                     m for m in target
-                    if self._needs_compute(m, cached_metrics)
+                    if self._metric_needs_compute(m, cached_metrics)
                 ]
             else:
                 missing = list(target)
@@ -2284,6 +2024,8 @@ class TextClassifier(TextMetricsMixin):
                 return None
             chunk_embs = self._encode(chunks)
             mean_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
+
+        self.embeddings[text] = mean_emb
 
         report_values: Dict[str, Any] = {}
         report_src = 'computed'
@@ -2408,8 +2150,8 @@ class TextClassifier(TextMetricsMixin):
                 text, cache_filters, vids_for_cache,
                 embeddings_only=self.no_metrics,
                 force_latest_cache=self.force_latest_cache,
-                expected_token_count=token_cap,
-                **cache_kwargs,
+                expected_token_count=cap,
+                **ckw,
             )
             if cached is not None and cached.get('mean_emb') is not None:
                 text_emb = cached['mean_emb']
@@ -2422,7 +2164,10 @@ class TextClassifier(TextMetricsMixin):
                     if cached_low
                     else list(target)
                 )
-                missing = [m for m in needed if self._needs_compute(m, cached_metrics)]
+                missing = [
+                    m for m in needed
+                    if self._metric_needs_compute(m, cached_metrics)
+                ]
 
                 if self.no_metrics or (not missing and not self.compute_fighting_words):
                     if not self.no_metrics:
@@ -2431,6 +2176,7 @@ class TextClassifier(TextMetricsMixin):
                     if cached_low:
                         for m in stat_names:
                             result_metrics.pop(m, None)
+                    self.embeddings[text] = text_emb
                     print(f"  Complete: {text} ({cached_tokens:,} tokens, cached)")
                     return {
                         'mean_emb': text_emb,
@@ -2442,22 +2188,14 @@ class TextClassifier(TextMetricsMixin):
                         **({} if self.no_metrics else result_metrics),
                     }
 
-                missing_summary = self._summarize_metric_names(
-                    missing_metrics, max_items=None
-                )
-                print(
-                    f"    -> {len(missing_metrics)} metrics missing from cache: "
-                    f"{missing_summary}"
-                )
-
                 uncached_by_fast_mode = [
-                    name for name in missing_metrics
+                    name for name in missing
                     if self.fast_mode and name in ('ngram_entropy_2', 'ngram_entropy_3')
                 ]
                 if uncached_by_fast_mode:
                     print(
                         "    -> Not persisted because --fast-mode excludes: "
-                        f"{self._summarize_metric_names(uncached_by_fast_mode, max_items=None)}"
+                        f"{self._summarize(uncached_by_fast_mode, max_items=None)}"
                     )
 
         result = self.processor.load_video_centroids(
@@ -2480,6 +2218,8 @@ class TextClassifier(TextMetricsMixin):
                 return None
             text_emb = np.mean(video_embeddings, axis=0).astype(np.float32)
             video_embeddings.clear()
+
+        self.embeddings[text] = text_emb
 
         centroid_eq = self._token_lists_are_identical(centroid_tokens, stat_tokens)
         self._centroid_equals_stat[text] = centroid_eq
@@ -2611,6 +2351,8 @@ class TextClassifier(TextMetricsMixin):
 
         chunk_embs = self._encode(chunks)
         text_emb = np.mean(chunk_embs, axis=0).astype(np.float32)
+
+        self.embeddings[text] = text_emb
 
         all_metrics = {}
 
@@ -3007,230 +2749,22 @@ class TextClassifier(TextMetricsMixin):
 
         print(f"  Exported metrics: {output_path.absolute()}")
 
-    def visualize(
-        self,
-        texts: List[str],
-        metrics_data: Dict[str, np.ndarray],
-        active_metric: Optional[str] = None,
-        output_html: str = ".html",
-        low_token_texts: Optional[set] = None,
-        enable_annotations: bool = False,
-        focus_text: Optional[str] = None,
-        semantic_embeddings: Optional[List[List[float]]] = None,
-        burrows_similarity: Optional[List[List[float]]] = None,
-        fighting_words_unigrams: Optional[Dict[str, Dict[str, Optional[str]]]] = None,
-        burrows_reduced: Optional[List[List[float]]] = None,
-        burrows_function_words: Optional[List[str]] = None,
-        burrows_word_frequencies: Optional[Dict[str, List[Optional[float]]]] = None,
-    ):
-        if low_token_texts is None:
-            low_token_texts = set()
-        if focus_text is None:
-            focus_text = self.active_focus_text if hasattr(self, 'active_focus_text') else ''
-        if semantic_embeddings is None:
-            semantic_embeddings = []
-        if burrows_similarity is None:
-            burrows_similarity = []
-        if fighting_words_unigrams is None:
-            fighting_words_unigrams = {}
-        if burrows_reduced is None:
-            burrows_reduced = []
-        if burrows_function_words is None:
-            burrows_function_words = []
-        if burrows_word_frequencies is None:
-            burrows_word_frequencies = {}
-
-        exclude_from_hover = {
-            'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
-            'imperative_exclamation_count', 'academic_word_density',
-            'article_count_raw', 'conjunction_count_raw', 'vulnerability',
-            'family_exclamations', 'pronoun_article_ratio',
-            'deictic_spatial_temporal', 'elaboration_explanation_ratio',
-            'narration_continuation_ratio',
-            'insult', 'bodily_humor', 'dis_ratio',
-            'word_burstiness', 'semantic_disparity', 'guppa', 'pronoun_switching',
-            'compression', 'moving_lzma_cr', 'normalized_compression_ratio',
-            'window_normalized_lzma_cr',
-            'vader_positivity', 'vader_volatility',
-            'vader_positivity_centroid', 'vader_volatility_centroid',
-            'fighting_words_peak_z1', 'fighting_words_floor_z1000',
-            'fighting_words_peak_z1_centroid', 'fighting_words_floor_z1000_centroid',
-        }
-        exclude_from_hover.update({
-            metric_name for metric_name in MetricConfig.METRICS
-            if metric_name.endswith('_count')
-            or metric_name.endswith('_density')
-            or metric_name.startswith('mallet_topic_')
-        })
-        return excluded
-
-    def _fmt_hover(self, name: str, display: str, value) -> Optional[str]:
-        if name in (
-            'MTLD', 'TTR', 'MATTR', 'yules_k',
-            'hapax_ratio',
-            'avg_word_length', 'semantic_disparity',
-            'burrows_cosine_disagreement',
-            'MTLD_centroid', 'MATTR_centroid',
-            'ngram_entropy_2', 'ngram_entropy_3',
-        ):
-            return f"{display}: {_format_trimmed_decimal(value, 4)}<br>"
-        if name in ('perplexity', 'tfidf_distinctiveness'):
-            return f"{display}: {value:.2f}<br>"
-        if name == 'flesch_kincaid':
-            return f"{display}: {value:.1f}<br>"
-        if isinstance(value, float) and not float(value).is_integer():
-            return f"{display}: {_format_trimmed_decimal(value, 4)}<br>"
-        return f"{display}: {int(value)}<br>"
-
-                    for word in words:
-                        word_len = len(word) + (1 if current_line else 0)
-                        if current_length + word_len > max_length and current_line:
-                            wrapped_lines.append(' '.join(current_line))
-                            current_line = [word]
-                            current_length = len(word)
-                        else:
-                            current_line.append(word)
-                            current_length += word_len
-
-                    if current_line:
-                        wrapped_lines.append(' '.join(current_line))
-                else:
-                    wrapped_lines.append(line)
-
-            return '<br>'.join(wrapped_lines)
-
-        def read_palette(text: str, filenames: Tuple[str, ...]) -> List[str]:
-            channel_dir = (
-                self.processor.base_dir
-                / "data/input"
-                / sanitize_filename(text)
-            )
-            palette_path = next(
-                (channel_dir / filename for filename in filenames
-                 if (channel_dir / filename).exists()),
-                None,
-            )
-            if palette_path is None:
-                return []
-
-            try:
-                colors = [
-                    line.strip()
-                    for line in palette_path.read_text(encoding='utf-8').splitlines()
-                    if line.strip()
-                ]
-            except (OSError, UnicodeError) as exc:
-                print(f"Warning: unable to read {palette_path}: {exc}")
-                return []
-
-            hex_color = re.compile(r'^#[0-9a-fA-F]{3}(?:[0-9a-fA-F]{3})?$')
-            if not 2 <= len(colors) <= 4 or any(
-                not hex_color.fullmatch(color) for color in colors
-            ):
-                print(
-                    f"Warning: {palette_path} must contain 2-4 hex colors, "
-                    "one per line; ignoring it."
-                )
-                return []
-            return colors
-
-        hover_texts = []
-        hover_panel_palettes = []
-        hover_text_palettes = []
-        programmer_notes = {}
-
-        for i, text in enumerate(texts):
-            tag = ''
-            try:
-                tag_path = (
-                    self.processor.base_dir
-                    / "data/input"
-                    / sanitize_filename(text)
-                    / "tag.txt"
-                )
-                if tag_path.exists():
-                    tag = tag_path.read_text(encoding='utf-8').strip()
-            except (OSError, UnicodeError):
-                pass
-
-            col = f"<b>{text}</b><br>"
-            if tag:
-                col += f"{escape_html_attribute(tag)}<br>"
-            col += (
-                f"X: {_format_trimmed_decimal(reduced[i, 0], 4)}<br>"
-                f"Y: {_format_trimmed_decimal(reduced[i, 1], 4)}<br>"
-            )
-
-            if text not in low_token_texts:
-                for name, values in metrics_data.items():
-                    if (
-                        values is None
-                        or name in excluded
-                        or name.startswith('cluster')
-                        or name.startswith('burrows_cluster')
-                    ):
-                        continue
-                    v = values[i]
-                    if v is None or np.isnan(v):
-                        continue
-                    display = MetricConfig.METRICS.get(name, {}).get('name', name)
-                    line = self._fmt_hover(name, display, v)
-                    if line:
-                        col += line
-
-            hover_out.append(self._wrap_hover(col))
-            panel_palettes.append(
-                self._read_palette(text, ("hover_panel.txt", "hover_gradient.txt"))
-            )
-            text_palettes.append(
-                self._read_palette(text, ("hover_text.txt",))
-            )
-        return hover_out, panel_palettes, text_palettes
-
-                        if metric_name in [
-                            'MTLD', 'TTR', 'MATTR', 'yules_k',
-                            'hapax_ratio',
-                            'avg_word_length', 'semantic_disparity',
-                            'burrows_cosine_disagreement',
-                            'MTLD_centroid', 'MATTR_centroid',
-                        ]:
-                            stats_column += (
-                                f"{display_name}: "
-                                f"{_format_trimmed_decimal(metric_values[i], 4)}<br>"
-                            )
-                        elif metric_name in ['ngram_entropy_2', 'ngram_entropy_3']:
-                            stats_column += (
-                                f"{display_name}: "
-                                f"{_format_trimmed_decimal(metric_values[i], 4)}<br>"
-                            )
-                        elif metric_name in ['perplexity', 'tfidf_distinctiveness']:
-                            stats_column += f"{display_name}: {metric_values[i]:.2f}<br>"
-                        elif metric_name == 'flesch_kincaid':
-                            stats_column += f"{display_name}: {metric_values[i]:.1f}<br>"
-                        else:
-                            stats_column += f"{display_name}: {int(metric_values[i])}<br>"
-
-    def _metric_meta(
-        self, cluster_keys: List[str]
-    ) -> Tuple[Dict[str, str], Dict[str, Any], List[str]]:
-        names: Dict[str, str] = {}
-        scales: Dict[str, Any] = {}
-        keys: List[str] = []
-
-        for k in cluster_keys:
-            names[k] = self._cluster_label(k)
-            scales[k] = 'Turbo'
-            keys.append(k)
-
-        for name in MetricConfig.get_metric_names():
-            cfg_ = MetricConfig.METRICS[name]
-            if cfg_.get('category') == 'Contextual Descriptions':
-                continue
-            names[name] = cfg_.get('name', name)
-            scales[name] = cfg_.get('colorscale', UNIFIED_COLORSCALE)
-            keys.append(name)
-
-        return names, scales, keys
+    def _cluster_label(self, key: str) -> str:
+        if key in self.cluster_metric_labels:
+            return self.cluster_metric_labels[key]
+        if key in self.burrows_cluster_metric_labels:
+            return self.burrows_cluster_metric_labels[key]
+        if key == 'cluster':
+            return 'Cluster (default)'
+        if key.startswith('cluster_'):
+            idx = key.split('_', 1)[1]
+            return f'Cluster {idx}'
+        if key == 'burrows_cluster':
+            return 'Burrows Cluster (default)'
+        if key.startswith('burrows_cluster_'):
+            idx = key.rsplit('_', 1)[-1]
+            return f'Burrows Cluster {idx}'
+        return key
 
     def visualize(
         self,
@@ -3260,15 +2794,9 @@ class TextClassifier(TextMetricsMixin):
         burrows_word_frequencies = burrows_word_frequencies or {}
         capital_cities = capital_cities or {}
 
-            text_content = wrap_long_lines(text_content)
-            hover_texts.append(text_content)
-            hover_panel_palettes.append(
-                read_palette(text, ("hover_panel.txt", "hover_gradient.txt"))
-            )
-            hover_text_palettes.append(read_palette(text, ("hover_text.txt",)))
-
-        full_token_indices = list(range(len(texts)))
-        full_token_reduced = reduced
+        hover_texts, hover_panel_palettes, hover_text_palettes = (
+            self._build_hover_texts(texts, metrics_data, reduced, low_token_texts)
+        )
 
         cluster_metric_keys = [
             key for key in metrics_data.keys()
@@ -3417,13 +2945,7 @@ class TextClassifier(TextMetricsMixin):
         metric_keys_list = []
 
         for cluster_metric_key in cluster_metric_keys:
-            if cluster_metric_key in self.cluster_metric_labels:
-                metric_names_dict[cluster_metric_key] = self.cluster_metric_labels[cluster_metric_key]
-            elif cluster_metric_key in ('cluster', 'burrows_cluster'):
-                metric_names_dict[cluster_metric_key] = 'Cluster 1 (default)'
-            else:
-                cluster_index = int(cluster_metric_key.rsplit('_', 1)[1])
-                metric_names_dict[cluster_metric_key] = f'Cluster {cluster_index}'
+            metric_names_dict[cluster_metric_key] = self._cluster_label(cluster_metric_key)
             metric_colorscale_dict[cluster_metric_key] = 'Turbo'
             metric_keys_list.append(cluster_metric_key)
 
@@ -3440,39 +2962,18 @@ class TextClassifier(TextMetricsMixin):
             )
             metric_keys_list.append(metric_name)
 
-        for metric_name, metric_values in metrics_data.items():
-            if metric_values is not None:
-                if (
-                    metric_name == 'cluster'
-                    or metric_name.startswith('cluster_')
-                    or metric_name == 'burrows_cluster'
-                    or metric_name.startswith('burrows_cluster_')
-                ):
-                    continue
-                metric_list = [
-                    float(metric_values[i]) if i in full_token_indices else None
-                    for i in range(len(texts))
-                ]
-                metrics_json[metric_name] = metric_list
-                metric_config = MetricConfig.METRICS.get(metric_name, {})
-                titles_json[metric_name] = (
-                    f"Text Semantic Clusters colored by "
-                    f"{metric_config.get('title_suffix', metric_name)}"
-                )
-
         metrics_json_str = safe_json_dumps(metrics_json)
         titles_json_str = safe_json_dumps(titles_json)
         texts_json = safe_json_dumps(texts)
 
-        programmer_notes_json = safe_json_dumps(
-            {tx: note for tx, note in programmer_notes.items()}
-        )
-        annotations_enabled_json = safe_json_dumps(bool(enable_annotations))
+        template_path = Path(__file__).parent / "output_files" / "template.html"
+        script_path = Path(__file__).parent / "output_files" / "script.js"
 
-        template_path = Path(__file__).with_name("atlas_template.html")
         template = template_path.read_text(encoding="utf-8")
+        script = script_path.read_text(encoding="utf-8")
 
         values = {
+            "__PLOTLY_HTML__": plotly_html,
             "__FOCUS_TEXT__": json.dumps(focus_text),
             "__METRICS_JSON__": metrics_json_str,
             "__TITLES_JSON__": titles_json_str,
@@ -3489,44 +2990,30 @@ class TextClassifier(TextMetricsMixin):
             ),
             "__FIGHTING_WORDS_UNIGRAMS_JSON__": safe_json_dumps(fighting_words_unigrams),
             "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
-            # --- Experimental Burrows mode data --------------------------------
-            # These placeholders are populated unconditionally so the client can
-            # toggle the mirror Burrows tab at any time without re-running the
-            # pipeline.  If the corpus is too small to produce a stable Burrows
-            # layout, they are empty lists / dicts and the client falls back to
-            # hiding the Experimental button.
             "__BURROWS_REDUCED_JSON__": safe_json_dumps(burrows_reduced),
             "__BURROWS_FUNCTION_WORDS_JSON__": json.dumps(list(burrows_function_words)),
             "__BURROWS_WORD_FREQUENCIES_JSON__": safe_json_dumps(burrows_word_frequencies),
+            "__CAPITAL_CITIES_JSON__": safe_json_dumps(capital_cities),
         }
+
+        custom_script = script
+        for k, v in values.items():
+            custom_script = custom_script.replace(k, v)
+
+        output_dir = Path(output_html).parent
+        output_dir.mkdir(parents=True, exist_ok=True)
+
+        script_out = output_dir / "script.js"
+
+        with open(script_out, 'w', encoding='utf-8') as f:
+            f.write(custom_script)
 
         custom = template
         for k, v in values.items():
             custom = custom.replace(k, v)
 
-        head_match = re.search(
-            r'<head\b[^>]*>(.*?)</head\s*>',
-            custom,
-            re.DOTALL | re.IGNORECASE,
-        )
-        head = head_match.group(1) if head_match else custom
-
-        html = (
-            '<!DOCTYPE html>\n'
-            '<html>\n'
-            '<head>\n'
-            f'<title>{escape_html_attribute("Centroid plot")}</title>\n'
-            '<meta charset="utf-8">\n'
-            f'{head}\n'
-            '</head>\n'
-            '<body>\n'
-            f'{plotly_html}\n'
-            '</body>\n'
-            '</html>\n'
-        )
-
         with open(output_path, 'w', encoding='utf-8') as f:
-            f.write(html)
+            f.write(custom)
 
         print(f"\nExported interactive visualization to: {output_path}")
         print("Opening in browser...")
@@ -3537,16 +3024,187 @@ class TextClassifier(TextMetricsMixin):
             print(f"Could not automatically open browser: {e}")
             print(f"Please manually open: {output_path}")
 
+    def _build_hover_texts(self, texts, metrics_data, reduced, low_token_texts):
+        exclude_from_hover = {
+            'latinate_word_ratio', 'coordinate_clause_ratio', 'subordinate_clause_ratio',
+            'imperative_exclamation_count', 'academic_word_density',
+            'article_count_raw', 'conjunction_count_raw', 'vulnerability',
+            'family_exclamations', 'pronoun_article_ratio',
+            'deictic_spatial_temporal', 'elaboration_explanation_ratio',
+            'narration_continuation_ratio',
+            'insult', 'bodily_humor', 'dis_ratio',
+            'word_burstiness', 'semantic_disparity', 'guppa', 'pronoun_switching',
+            'compression', 'moving_lzma_cr', 'normalized_compression_ratio',
+            'window_normalized_lzma_cr',
+            'vader_positivity', 'vader_volatility',
+            'vader_positivity_centroid', 'vader_volatility_centroid',
+            'fighting_words_peak_z1', 'fighting_words_floor_z1000',
+            'fighting_words_peak_z1_centroid', 'fighting_words_floor_z1000_centroid',
+        }
+        exclude_from_hover.update({
+            metric_name for metric_name in MetricConfig.METRICS
+            if metric_name.endswith('_count')
+            or metric_name.endswith('_density')
+            or metric_name.startswith('tomotopy_topic_')
+        })
+
+        def wrap_long_lines(text: str, max_length: int = 120) -> str:
+            lines = text.split('<br>')
+            wrapped_lines = []
+            for line in lines:
+                if len(line) > max_length:
+                    words = line.split()
+                    current_line = []
+                    current_length = 0
+                    for word in words:
+                        word_len = len(word) + (1 if current_line else 0)
+                        if current_length + word_len > max_length and current_line:
+                            wrapped_lines.append(' '.join(current_line))
+                            current_line = [word]
+                            current_length = len(word)
+                        else:
+                            current_line.append(word)
+                            current_length += word_len
+
+                    if current_line:
+                        wrapped_lines.append(' '.join(current_line))
+                else:
+                    wrapped_lines.append(line)
+
+            return '<br>'.join(wrapped_lines)
+
+        def read_palette(text: str, filenames: tuple) -> list:
+            channel_dir = (
+                self.processor.base_dir
+                / "data/input"
+                / sanitize_filename(text)
+            )
+            palette_path = next(
+                (channel_dir / filename for filename in filenames
+                 if (channel_dir / filename).exists()),
+                None,
+            )
+            if palette_path is None:
+                return []
+
+            try:
+                colors = [
+                    line.strip()
+                    for line in palette_path.read_text(encoding="utf-8").splitlines()
+                    if line.strip()
+                ]
+            except (OSError, UnicodeError) as exc:
+                print(f"Warning: unable to read {palette_path}: {exc}")
+                return []
+
+            if not 2 <= len(colors) <= 4 or any(
+                not _HEX_COLOR_RE.fullmatch(c) for c in colors
+            ):
+                print(
+                    f"Warning: {palette_path} must contain 2-4 hex colours; ignoring."
+                )
+                return []
+            return colors
+
+        hover_texts = []
+        hover_panel_palettes = []
+        hover_text_palettes = []
+
+        for i, text in enumerate(texts):
+            tag = ''
+            try:
+                tag_path = (
+                    self.processor.base_dir
+                    / "data/input"
+                    / sanitize_filename(text)
+                    / "tag.txt"
+                )
+                if tag_path.exists():
+                    tag = tag_path.read_text(encoding='utf-8').strip()
+            except (OSError, UnicodeError):
+                pass
+
+            col = f"<b>{text}</b><br>"
+            if tag:
+                col += f"{escape_html_attribute(tag)}<br>"
+            col += (
+                f"X: {_format_trimmed_decimal(reduced[i, 0], 4)}<br>"
+                f"Y: {_format_trimmed_decimal(reduced[i, 1], 4)}<br>"
+            )
+
+            for name, values in metrics_data.items():
+                if (
+                    values is None
+                    or name in exclude_from_hover
+                    or name.startswith('cluster')
+                    or name.startswith('burrows_cluster')
+                ):
+                    continue
+                if text in low_token_texts and not MetricConfig.is_centroid_duplicate(name):
+                    continue
+                v = values[i]
+                if v is None or np.isnan(v):
+                    continue
+                display = MetricConfig.METRICS.get(name, {}).get('name', name)
+                line = self._fmt_hover(name, display, v)
+                if line:
+                    col += line
+
+            hover_texts.append(wrap_long_lines(col))
+            hover_panel_palettes.append(
+                read_palette(text, ("hover_panel.txt", "hover_gradient.txt"))
+            )
+            hover_text_palettes.append(
+                read_palette(text, ("hover_text.txt",))
+            )
+
+        return hover_texts, hover_panel_palettes, hover_text_palettes
+
+    def _fmt_hover(self, name: str, display: str, value) -> Optional[str]:
+        if name in (
+            'MTLD', 'TTR', 'MATTR', 'yules_k',
+            'hapax_ratio',
+            'avg_word_length', 'semantic_disparity',
+            'burrows_cosine_disagreement',
+            'MTLD_centroid', 'MATTR_centroid',
+            'ngram_entropy_2', 'ngram_entropy_3',
+        ):
+            return f"{display}: {_format_trimmed_decimal(value, 4)}<br>"
+        if name in ('perplexity', 'tfidf_distinctiveness'):
+            return f"{display}: {value:.2f}<br>"
+        if name == 'flesch_kincaid':
+            return f"{display}: {value:.1f}<br>"
+        if isinstance(value, float) and not float(value).is_integer():
+            return f"{display}: {_format_trimmed_decimal(value, 4)}<br>"
+        return f"{display}: {int(value)}<br>"
+
+    def _metric_meta(
+        self, cluster_keys: List[str]
+    ) -> Tuple[Dict[str, str], Dict[str, Any], List[str]]:
+        names: Dict[str, str] = {}
+        scales: Dict[str, Any] = {}
+        keys: List[str] = []
+
+        for k in cluster_keys:
+            names[k] = self._cluster_label(k)
+            scales[k] = 'Turbo'
+            keys.append(k)
+
+        for name in MetricConfig.get_metric_names():
+            cfg_ = MetricConfig.METRICS[name]
+            if cfg_.get('category') == 'Contextual Descriptions':
+                continue
+            names[name] = cfg_.get('name', name)
+            scales[name] = cfg_.get('colorscale', UNIFIED_COLORSCALE)
+            keys.append(name)
+
+        return names, scales, keys
+
     def _build_burrows_word_frequencies(
         self,
         successful: List[str],
         style_profiles: Dict[str, np.ndarray],
     ) -> Dict[str, List[Optional[float]]]:
-        """Build {function_word: [rate per successful text]} for the client.
-
-        Texts without a style profile receive ``None`` so the client can
-        exclude them from the bell curve and any per-cluster stats.
-        """
         words = list(self.BURROWS_FUNCTION_WORDS)
         n_words = len(words)
         freqs: Dict[str, List[Optional[float]]] = {w: [] for w in words}
@@ -3566,15 +3224,10 @@ class TextClassifier(TextMetricsMixin):
         successful: List[str],
         style_profiles: Dict[str, np.ndarray],
     ) -> Optional[List[List[float]]]:
-        """Reduce Burrows distances to 2-D via precomputed-metric UMAP.
-
-        Returns ``None`` when there are fewer than two style profiles, which
-        tells the client to hide the Experimental button.
-        """
         if len(style_profiles) < 2:
             return None
 
-        distances, valid = self._burrows_distance_matrix(style_profiles, successful)
+        distances, valid = self._burrows_dist(style_profiles, successful)
         if distances is None or not valid:
             return None
 
@@ -3600,12 +3253,6 @@ class TextClassifier(TextMetricsMixin):
         variant_count: int,
         base_seed: int = 42,
     ) -> Dict[str, List[Optional[int]]]:
-        """Cluster the texts that have Burrows profiles.
-
-        Burrows clustering must use the style distance matrix, rather than
-        semantic embeddings. HDBSCAN exports five variants; Leiden mirrors
-        the normal semantic resolution sweep.
-        """
         labels_by_key: Dict[str, List[Optional[int]]] = {}
         self.burrows_cluster_metric_labels = {}
         n = len(self.successful)
@@ -3625,10 +3272,25 @@ class TextClassifier(TextMetricsMixin):
             return result
 
         if self.cluster_method != 'leiden':
+            # ---- HDBSCAN branch ----
+            # Per-variant jitter on the distance matrix ensures the 5 variants
+            # are actually different cluster assignments (HDBSCAN is otherwise
+            # deterministic and would produce identical labels every time).
             min_cluster_size = max(2, min(20, valid_count // 20 or 2))
             min_samples = max(1, min_cluster_size // 2)
+            pos = compact[compact > 0]
+            base_scale = float(np.std(pos)) * 0.02 if pos.size else 1e-6
             for variant_index in range(max(1, int(variant_count))):
                 key = 'burrows_cluster' if variant_index == 0 else f'burrows_cluster_{variant_index + 1}'
+                jittered = compact
+                if variant_index > 0:
+                    rng = np.random.default_rng(base_seed + variant_index * 1009)
+                    jit = rng.normal(0.0, max(1e-9, base_scale), size=compact.shape)
+                    jit = (jit + jit.T) * 0.5
+                    np.fill_diagonal(jit, 0.0)
+                    jittered = np.maximum(compact + jit, 0.0)
+                    np.fill_diagonal(jittered, 0.0)
+
                 labels = None
                 if SklearnHDBSCAN is not None:
                     try:
@@ -3636,7 +3298,7 @@ class TextClassifier(TextMetricsMixin):
                             min_cluster_size=min_cluster_size,
                             min_samples=min_samples,
                             metric='precomputed',
-                        ).fit_predict(compact)
+                        ).fit_predict(jittered)
                     except Exception as exc:
                         print(f"    Warning: Burrows HDBSCAN failed ({exc})")
                 if labels is None or np.all(labels == -1):
@@ -3644,10 +3306,11 @@ class TextClassifier(TextMetricsMixin):
                         n_clusters=max(2, min(14, int(np.sqrt(valid_count)))),
                         random_state=base_seed + variant_index,
                         n_init=10,
-                    ).fit_predict(compact)
+                    ).fit_predict(jittered)
                 labels_by_key[key] = expand(np.asarray(labels))
             return labels_by_key
 
+        # ---- Leiden branch ----
         if not LEIDEN_AVAILABLE:
             return labels_by_key
 
@@ -3711,15 +3374,13 @@ class TextClassifier(TextMetricsMixin):
         texts = sorted(texts, key=str.lower)
         print(f"Processing {len(texts)} texts...")
 
-        if self.compute_fighting_words:
-            self._fighting_words_unigrams = {}
-            self._fighting_words_token_counts = {}
-            self._fighting_words_unigrams_centroid = {}
-            self._fighting_words_token_counts_centroid = {}
-            self._fighting_words_peak_unigrams = {}
-            self._fighting_words_floor_unigrams = {}
-            self._fighting_words_peak_unigrams_centroid = {}
-            self._fighting_words_floor_unigrams_centroid = {}
+        # ---- Fighting-words precompute (item 1) ----
+        # Must happen BEFORE the per-text processing loop, so that the
+        # corpus-wide unigram counts are available. The harvest block further
+        # down then reads straight from the _fw_*_cache attributes.
+        if self.compute_fighting_words and not self.no_metrics:
+            self._reset_fw()
+            self._precompute_fw(texts, filter_kwargs, ignore_ids)
 
         successful: List[str] = []
         low_token_texts = set()
@@ -3733,28 +3394,24 @@ class TextClassifier(TextMetricsMixin):
             if result is None:
                 continue
 
-                if result.get('low_token_text', False):
-                    low_token_texts.add(tx)
-                style_profile = result.get('_burrows_rate_profile')
-                # Burrows profiles are independent of the statistical token
-                # threshold. Low-token texts still have video centroid tokens
-                # and must remain eligible for the style map.
-                if style_profile is None:
-                    fallback_filters = dict(filter_kwargs)
-                    fallback_filters['ignore_ids'] = ignore_ids
-                    style_profile = self._load_burrows_rate_profile(tx, fallback_filters)
+            if result.get('low_token_text', False):
+                low_token_texts.add(tx)
+            style_profile = result.get('_burrows_rate_profile')
+            if style_profile is None:
+                fallback_filters = dict(filter_kwargs)
+                fallback_filters['ignore_ids'] = ignore_ids
+                style_profile = self._load_burrows_profile(tx, fallback_filters)
 
-                if style_profile is not None:
-                    style_profiles[tx] = style_profile
-
-                if not result.get('low_token_text', False):
-                    for metric_name in metric_names:
-                        if metric_name in result:
-                            metrics_storage[metric_name][tx] = result[metric_name]
+            if style_profile is not None:
+                style_profiles[tx] = style_profile
 
             if not result.get('low_token_text', False):
                 for name in metric_names:
                     if name in result:
+                        metrics_storage[name][tx] = result[name]
+            else:
+                for name in metric_names:
+                    if name in result and MetricConfig.is_centroid_duplicate(name):
                         metrics_storage[name][tx] = result[name]
 
             successful.append(tx)
@@ -3763,63 +3420,34 @@ class TextClassifier(TextMetricsMixin):
             print("\nError: No texts successfully processed")
             return
 
-        # Expose the successful texts in the same order the similarity
-        # matrices and cluster labels were built.  The gameologist export
-        # indexes into those matrices with this exact list; using the raw
-        # input list (args.texts) would misalign every row and column
-        # whenever any input failed to process.
         self.successful = successful
 
         print(f"\nSuccessfully processed {len(successful)}/{len(texts)} texts")
 
-        if self.mallet_num_topics > 0 and successful:
+        if self.tomotopy_num_topics > 0 and successful:
             try:
-                self._train_mallet(successful, ignore_ids, filter_kwargs)
+                self._train_tomotopy_topics(successful, ignore_ids, filter_kwargs)
             except Exception as exc:
-                print(f"  Warning: MALLET topic modeling failed ({exc}); continuing without topics")
+                print(f"  Warning: Tomotopy topic modeling failed ({exc}); continuing without topics")
 
-        if self.compute_fighting_words:
-            fighting_word_texts = successful
-
-            peak_values, peak_unigrams = self._compute_fighting_words_values(
-                fighting_word_texts, FIGHTING_WORDS_PEAK_RANK, use_centroid=False
-            )
-            floor_values, floor_unigrams = self._compute_fighting_words_values(
-                fighting_word_texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=False
-            )
-
-            for metric_name, values in (
-                (FIGHTING_WORDS_PEAK_METRIC, peak_values),
-                (FIGHTING_WORDS_FLOOR_METRIC, floor_values),
+        # ---- Fighting-words harvest (item 1) ----
+        # Read the precomputed caches, filtered to successful texts. This is
+        # what populates metrics_storage for the 4 fighting-word metrics.
+        if self.compute_fighting_words and not self.no_metrics:
+            for name, cache in (
+                (FIGHTING_WORDS_PEAK_METRIC, self._fw_peak_cache),
+                (FIGHTING_WORDS_FLOOR_METRIC, self._fw_floor_cache),
+                (FIGHTING_WORDS_PEAK_CENTROID_METRIC, self._fw_peak_centroid_cache),
+                (FIGHTING_WORDS_FLOOR_CENTROID_METRIC, self._fw_floor_centroid_cache),
             ):
-                for tx in fighting_word_texts:
-                    metrics_storage[metric_name][tx] = values.get(tx)
+                slot = metrics_storage.setdefault(name, {})
+                if name not in metric_names:
+                    metric_names.append(name)
+                for tx in successful:
+                    slot[tx] = cache.get(tx)
 
-            self._fighting_words_peak_unigrams = peak_unigrams
-            self._fighting_words_floor_unigrams = floor_unigrams
-
-            any_separate_centroid = any(
-                not self._centroid_equals_stat.get(tx, True)
-                for tx in fighting_word_texts
-            )
-
-            if any_separate_centroid:
-                peak_values_c, peak_unigrams_c = self._compute_fighting_words_values(
-                    fighting_word_texts, FIGHTING_WORDS_PEAK_RANK, use_centroid=True
-                )
-                floor_values_c, floor_unigrams_c = self._compute_fighting_words_values(
-                    fighting_word_texts, FIGHTING_WORDS_FLOOR_RANK, use_centroid=True
-                )
-                for metric_name, values in (
-                    (FIGHTING_WORDS_PEAK_CENTROID_METRIC, peak_values_c),
-                    (FIGHTING_WORDS_FLOOR_CENTROID_METRIC, floor_values_c),
-                ):
-                    for tx in fighting_word_texts:
-                        metrics_storage[metric_name][tx] = values.get(tx)
-
-                self._fighting_words_peak_unigrams_centroid = peak_unigrams_c
-                self._fighting_words_floor_unigrams_centroid = floor_unigrams_c
-
+            n_peak = sum(1 for v in self._fw_peak_cache.values() if v is not None)
+            n_floor = sum(1 for v in self._fw_floor_cache.values() if v is not None)
             print(
                 f"  Fighting-words metrics: peak {n_peak}/{len(texts)}, "
                 f"floor {n_floor}/{len(texts)} "
@@ -3852,7 +3480,7 @@ class TextClassifier(TextMetricsMixin):
         cluster_labels = self._cluster_variants(
             emb_matrix, cluster_idx, variant_count=variant_count, base_seed=42,
         )
-        self.cluster_variant_labels = cluster_variant_labels
+        self.cluster_variant_labels = cluster_labels
 
         metrics_data: Dict[str, Optional[np.ndarray]] = {}
         for name in metric_names:
@@ -3873,16 +3501,50 @@ class TextClassifier(TextMetricsMixin):
 
         self.similarity_matrix = cosine_similarity(emb_matrix)
 
-        # --- Burrows distance matrix (always computed) --------------------
-        # Used for: (a) burrows_cosine_disagreement, (b) the full similarity
-        # matrix shipped to the client, and (c) the experimental Burrows map.
-        burrows_distances, burrows_valid = self._burrows_distance_matrix(
+        # --- distance from center (semantic) ---
+        # Mean cosine distance of each text from the corpus centroid embedding.
+        semantic_center = emb_matrix.mean(axis=0, keepdims=True)
+        semantic_distances = 1.0 - cosine_similarity(
+            emb_matrix, semantic_center
+        ).flatten()
+        metrics_data['distance_from_center_semantic'] = semantic_distances
+        MetricConfig.METRICS['distance_from_center_semantic'] = {
+            'name': 'Distance from Center (Semantic)',
+            'title_suffix': 'Semantic distance from corpus centroid',
+            'category': 'Centroid',
+        }
+
+        # --- distance from center (burrows) ---
+        # Mean absolute deviation of each text's function-word rate profile
+        # from the corpus mean profile.
+        if style_profiles:
+            style_matrix = np.vstack(
+                [style_profiles[tx] for tx in successful if tx in style_profiles]
+            )
+            style_center = style_matrix.mean(axis=0, keepdims=True)
+            burrows_center_distances: List[float] = []
+            for tx in successful:
+                if tx in style_profiles:
+                    d = float(np.mean(np.abs(style_profiles[tx] - style_center)))
+                else:
+                    d = np.nan
+                burrows_center_distances.append(d)
+            metrics_data['distance_from_center_burrows'] = np.array(
+                burrows_center_distances, dtype=float
+            )
+            MetricConfig.METRICS['distance_from_center_burrows'] = {
+                'name': 'Distance from Center (Burrows)',
+                'title_suffix': 'Burrows distance from corpus centroid',
+                'category': 'Centroid',
+            }
+
+        burrows_distances, burrows_valid = self._burrows_dist(
             style_profiles, successful
         )
 
         if not self.no_metrics:
             disagreement = self._burrows_scores(
-                burrows_dist, burrows_valid, emb_matrix, successful
+                burrows_distances, burrows_valid, emb_matrix, successful
             )
             metrics_data['burrows_cosine_disagreement'] = np.array(
                 [disagreement.get(t, float('nan')) for t in successful],
@@ -3894,58 +3556,51 @@ class TextClassifier(TextMetricsMixin):
         )
         self.export_csv(successful, output_csv)
 
-        if self.mallet_topic_proportions:
+        if self.tomotopy_topic_proportions:
             attached = 0
-            for tid in range(self.mallet_num_topics):
-                key = f'mallet_topic_{tid}'
+            for tid in range(self.tomotopy_num_topics):
+                key = f'tomotopy_topic_{tid}'
                 values = np.array([
-                    self.mallet_topic_proportions.get(tx, {}).get(tid, np.nan)
+                    self.tomotopy_topic_proportions.get(tx, {}).get(tid, np.nan)
                     for tx in successful
                 ], dtype=float)
                 if np.all(np.isnan(values)):
                     continue
                 metrics_data[key] = values
-                label_words = self.mallet_topic_labels.get(tid, '')
+                label_words = self.tomotopy_topic_labels.get(tid, '')
                 MetricConfig.METRICS[key] = {
-                    'name': f'MALLET Topic {tid}'
+                    'name': f'Topic {tid}'
                             + (f' ({label_words})' if label_words else ''),
-                    'title_suffix': f'MALLET LDA topic {tid} proportion',
-                    'compute_method': '_compute_mallet_topic',
+                    'title_suffix': f'LDA topic {tid} proportion',
+                    'compute_method': '_compute_tomotopy_topic',
                     'category': 'Topic Modeling',
                 }
                 attached += 1
             if attached:
-                print(f"  Attached {attached} MALLET topic metrics to visualization")
+                print(f"  Attached {attached} Tomotopy topic metrics to visualization")
 
         if filter_kwargs.get('get_metrics_csv', False):
             out = Path(output_csv)
             out = out.with_name(f'{out.stem}_metrics{out.suffix}')
             self.export_metrics_csv(successful, metrics_data, str(out))
 
-        if filter_kwargs.get('get_metrics_csv', False):
-            metrics_output = Path(output_csv)
-            metrics_output = metrics_output.with_name(
-                f'{metrics_output.stem}_metrics{metrics_output.suffix}'
-            )
-            self.export_metrics_csv(successful, metrics_data, str(metrics_output))
-
         n_success = len(successful)
         self.burrows_similarity_matrix = np.zeros((n_success, n_success), dtype=np.float32)
         for i in range(n_success):
             self.burrows_similarity_matrix[i, i] = 1.0
 
-        if burrows_dist is not None and burrows_valid:
+        if burrows_distances is not None and burrows_valid:
             for rp, ri in enumerate(burrows_valid):
                 for cp, ci in enumerate(burrows_valid):
                     if rp == cp:
                         continue
-                    d = float(burrows_distances[row_pos, col_pos])
-                    self.burrows_similarity_matrix[row_text_idx, col_text_idx] = 1.0 / (1.0 + d)
+                    d = float(burrows_distances[rp, cp])
+                    self.burrows_similarity_matrix[ri, ci] = 1.0 / (1.0 + d)
 
         burrows_cluster_variants = self._cluster_burrows_variants(
             burrows_distances,
             burrows_valid,
-            variant_count=(cluster_variant_count if self.cluster_method == 'leiden' else 5),
+            variant_count=(variant_count if self.cluster_method == 'leiden' else 5),
             base_seed=42,
         )
         for metric_key, labels in burrows_cluster_variants.items():
@@ -3973,58 +3628,19 @@ class TextClassifier(TextMetricsMixin):
                 "Experimental tab will be hidden"
             )
 
-        burrows_variants = self._burrows_variants(
-            burrows_dist,
-            burrows_valid,
-            variant_count=(variant_count if self.cluster_method == 'leiden' else 5),
-            base_seed=42,
-        )
-        for key, labels in burrows_variants.items():
-            metrics_data[key] = np.array(
-                [float(l) if l is not None else np.nan for l in labels],
-                dtype=float,
-            )
-        self.burrows_cluster_variant_labels = burrows_variants
-
-        burrows_reduced = self._burrows_layout(
-            successful, style_profiles, burrows_dist, burrows_valid
-        )
-        burrows_freqs = self._burrows_freqs(successful, style_profiles)
-        burrows_fws = list(self.BURROWS_FUNCTION_WORDS)
-
-        if burrows_reduced is not None:
-            print(
-                f"  Burrows experimental map ready "
-                f"({len(style_profiles)}/{n_success} texts have style profiles)"
-            )
-        else:
-            print(
-                "  Burrows experimental map unavailable "
-                "(fewer than two texts have style profiles); "
-                "Experimental tab will be hidden"
-            )
-
         capitals: Dict[str, Any] = {}
         if capital_cities:
             for key, labels in cluster_labels.items():
                 capitals[key] = self._semantic_capitals(emb_matrix, labels, successful)
-            for key, labels in burrows_variants.items():
+            for key, labels in burrows_cluster_variants.items():
                 capitals[key] = self._burrows_capitals(
-                    burrows_dist, burrows_valid, labels, successful
+                    burrows_distances, burrows_valid, labels, successful
                 )
             total = sum(1 for c in capitals.values() if c.get('world') is not None)
             print(f"  Capital cities computed for {total} cluster variant(s)")
 
         reduced = self.reduce_dims(emb_matrix, n_success)
         focus_text = filter_kwargs.get('focus_text', '')
-
-        if n_success > 1500:
-            print(
-                f"  Warning: {n_success:,} texts — the Delta Explorer in the "
-                f"browser will precompute {n_success * (n_success - 1) // 2:,} "
-                f"pairwise distances, which may be slow. This is a known "
-                f"limitation of the client-side Δ distribution."
-            )
 
         self.visualize(
             reduced,
@@ -4034,8 +3650,9 @@ class TextClassifier(TextMetricsMixin):
             output_html,
             low_token_texts,
             focus_text=focus_text,
-            semantic_embeddings=normalized_embeddings.tolist(),
-            burrows_similarity=self.burrows_similarity_matrix.tolist(),
+            # Item 3: round to 5 decimals to keep the exported HTML payload small
+            semantic_embeddings=_round_list(normalized_embeddings, 5),
+            burrows_similarity=_round_list(self.burrows_similarity_matrix, 5),
             fighting_words_unigrams={
                 FIGHTING_WORDS_PEAK_METRIC: self._fighting_words_peak_unigrams,
                 FIGHTING_WORDS_FLOOR_METRIC: self._fighting_words_floor_unigrams,
@@ -4045,6 +3662,7 @@ class TextClassifier(TextMetricsMixin):
             burrows_reduced=burrows_reduced,
             burrows_function_words=burrows_function_words,
             burrows_word_frequencies=burrows_word_frequencies,
+            capital_cities=capitals,
         )
 
 
@@ -4207,6 +3825,13 @@ def _arg_parser() -> argparse.ArgumentParser:
                         help='Mark the most representative text (cluster centroid / medoid) of '
                              'each cluster as a pentagon, and the corpus centroid / medoid as the '
                              'yellow-outlined "capital of the world".')
+    parser.add_argument(
+        '--change-fword-to-stupid', action='store_true', dest='change_fword_to_stupid',
+        help='Replace standalone "fuck" tokens with "stupid" before embedding and metric '
+             'computation, so vulgarity does not dominate semantic comparisons. Derived forms '
+             '("fucker", "fucking", etc.) are left untouched. The flag is mixed into cache '
+             'signatures, so runs with and without it stay in separate cache slots.',
+    )
     parser.add_argument('--umap-neighbors', type=int,
                         help='UMAP neighborhood size; defaults to 5 for datasets up to 30 items, otherwise 50')
     parser.add_argument('--umap-min-dist', type=float, default=0.1,
@@ -4251,16 +3876,12 @@ def _arg_parser() -> argparse.ArgumentParser:
                         help='Number of words to use for statistical metrics when using video centroids')
     parser.add_argument('--focus-text', type=str, dest='focus_text',
                         help='Focus text for similarity mapping')
-    parser.add_argument('--mallet-topics', type=int, default=0,
-                        help='Train a MALLET LDA model with this many topics (requires MALLET installed; 0 disables).')
-    parser.add_argument('--mallet-memory', type=str, default=None,
-                        help='Java heap size for MALLET (e.g. 4g, 12g).')
-    parser.add_argument('--mallet-max-tokens-per-channel', type=int, default=None,
-                        help='Cap the per-channel token stream fed to MALLET.')
-    parser.add_argument('--mallet-iterations', type=int, default=1000,
-                        help='Gibbs sampling iterations for MALLET (default: 1000).')
-    parser.add_argument('--mallet-threads', type=int, default=None,
-                        help='Threads for MALLET train-topics (default: min(8, CPU count)).')
+    parser.add_argument('--tomotopy-topics', type=int, default=0,
+                        help='Train a Tomotopy LDA model with this many topics (requires tomotopy installed; 0 disables).')
+    parser.add_argument('--tomotopy-iterations', type=int, default=1000,
+                        help='Gibbs sampling iterations for Tomotopy (default: 1000).')
+    parser.add_argument('--tomotopy-threads', type=int, default=None,
+                        help='Threads for Tomotopy train (default: min(8, CPU count)).')
     parser.add_argument('--export-gameologist', action='store_true',
                         help='Export data for the gameologist sister project (requires 1500+ channels)')
     parser.add_argument('--gameologist-dir', type=str, default=None,
@@ -4275,11 +3896,20 @@ def _apply_niche(args, parser):
     if not args.niche_words:
         return
     for niche in dict.fromkeys(args.niche_words):
-        try:
-            mod = importlib.import_module(f'atlas_{niche}')
-            register = getattr(mod, f'register_{niche}_metrics')
-        except (ImportError, AttributeError) as exc:
-            parser.error(f"unsupported niche '{niche}': {exc}")
+        mod = None
+        for module_name in (f'atlas_{niche}', f'metricsmixin.atlas_{niche}'):
+            try:
+                mod = importlib.import_module(module_name)
+                break
+            except ImportError:
+                continue
+        if mod is None:
+            parser.error(f"unsupported niche '{niche}': No module named 'atlas_{niche}'")
+        register = getattr(mod, f'register_{niche}_metrics', None)
+        if register is None:
+            parser.error(
+                f"module '{mod.__name__}' has no function 'register_{niche}_metrics'"
+            )
         register(MetricConfig, TextClassifier)
 
 
@@ -4342,95 +3972,6 @@ def _export_gameologist(args, classifier):
         print(f"Error: gameologist export failed: {exc}")
         traceback.print_exc()
 
-    parser.add_argument(
-        '--embedding-model', default=SBERT_MODEL,
-        help='Embedding model name (e.g., all-MiniLM-L12-v2, all-mpnet-base-v2, '
-             'Alibaba-NLP/gte-modernbert-base, thenlper/gte-small)',
-    )
-    parser.add_argument(
-        '--embedding-chunk-size', type=int,
-        help='Override embedding chunk size (in model tokens)',
-    )
-    parser.add_argument(
-        '--embedding-min-chunk', type=int,
-        help='Override minimum embedding chunk size (in model tokens)',
-    )
-    parser.add_argument(
-        '--embedding-batch-size', type=int,
-        help='Override embedding batch size for SentenceTransformer encode()',
-    )
-    parser.add_argument(
-        '--trained-model-path', type=str, dest='trained_model_path',
-        help='Path to a custom fine-tuned SBERT model (e.g., my_finetuned_sbert). '
-             'If provided, this overrides --embedding-model',
-    )
-    parser.add_argument(
-        '--compute-fighting-words', '--compute-fighting-words-floor',
-        dest='compute_fighting_words', action='store_true',
-        help='Enable fighting-words peak (rank 1) and floor (rank 1000) metrics',
-    )
-    parser.add_argument(
-        '--centroid-mode', choices=['video', 'word'],
-        help='Use centroids for text representation (video or word)',
-    )
-    parser.add_argument(
-        '--centroid-videos', type=int, default=10,
-        help='Number of videos to use for video centroid computation (default: 10)',
-    )
-    parser.add_argument(
-        '--centroid-words', type=int, default=1000000,
-        help='Number of words to use for word centroid computation (default: 1,000,000)',
-    )
-    parser.add_argument(
-        '--stat-word-count', type=int, default=None,
-        help='Number of words to use for statistical metrics when using video centroids '
-             '(defaults to --token-limit if set, else 1,000,000)',
-    )
-    parser.add_argument(
-        '--focus-text', type=str, dest='focus_text',
-        help='Focus text for similarity mapping',
-    )
-
-    parser.add_argument(
-        '--mallet-topics', type=int, default=0,
-        help='Train a MALLET LDA model with this many topics '
-             '(requires MALLET installed; 0 disables).',
-    )
-    parser.add_argument(
-        '--mallet-memory', type=str, default=None,
-        help='Java heap size for MALLET (e.g. 4g, 12g). Defaults to the '
-             'MALLET_MEMORY env var if set, otherwise "4g". MALLET needs '
-             'roughly 6-8 bytes per token of heap.',
-    )
-    parser.add_argument(
-        '--mallet-max-tokens-per-channel', type=int, default=None,
-        help='Cap the per-channel token stream fed to MALLET. Use when the '
-             'full corpus overruns the Java heap; e.g. 200000 fits a ~1.5 GB '
-             'corpus in ~8 GB of heap.',
-    )
-    parser.add_argument(
-        '--mallet-iterations', type=int, default=1000,
-        help='Gibbs sampling iterations for MALLET (default: 1000; try 200-500 for big corpora).',
-    )
-    parser.add_argument(
-        '--mallet-threads', type=int, default=None,
-        help='Threads for MALLET train-topics (default: min(8, CPU count)).',
-    )
-
-    parser.add_argument(
-        '--export-gameologist', action='store_true',
-        help='Export data for the gameologist sister project (requires 1500+ channels)',
-    )
-
-    parser.add_argument(
-        '--gameologist-dir', type=str, default=None,
-        help='Path to gameologist directory (default: ../gameologist)',
-    )
-
-    parser.add_argument(
-        '--niche-words', action='append', default=None, metavar='NICHE',
-        help='Enable niche word-count metric sets (repeatable).',
-    )
 
 def main():
     parser = _arg_parser()
@@ -4442,11 +3983,11 @@ def main():
         parser.error('--umap-min-dist must be between 0 and 1')
     if args.umap_epochs < 1:
         parser.error('--umap-epochs must be positive')
-    if args.mallet_topics < 0:
-        parser.error('--mallet-topics must be zero or greater')
+    if args.tomotopy_topics < 0:
+        parser.error('--tomotopy-topics must be zero or greater')
 
-    if args.mallet_max_tokens_per_channel is not None and args.mallet_max_tokens_per_channel <= 0:
-        parser.error('--mallet-max-tokens-per-channel must be greater than zero')
+    if args.tomotopy_threads is not None and args.tomotopy_threads <= 0:
+        parser.error('--tomotopy-threads must be greater than zero')
 
     if args.txt_depth < 0:
         parser.error('--txt-depth must be zero or greater')
@@ -4530,9 +4071,7 @@ def main():
     )
     enable_spacy = (
         (not args.no_metrics)
-        and (
-            active_metric and MetricConfig.requires_spacy_model(active_metric)
-        )
+        and (active and MetricConfig.requires_spacy_model(active))
     )
     enable_ngram = (
         (not args.no_metrics)
@@ -4573,12 +4112,24 @@ def main():
         umap_neighbors=args.umap_neighbors,
         umap_min_dist=args.umap_min_dist,
         umap_epochs=args.umap_epochs,
-        mallet_num_topics=args.mallet_topics,
-        mallet_memory=args.mallet_memory,
-        mallet_max_tokens_per_channel=args.mallet_max_tokens_per_channel,
-        mallet_iterations=args.mallet_iterations,
-        mallet_threads=args.mallet_threads,
+        tomotopy_num_topics=args.tomotopy_topics,
+        tomotopy_iterations=args.tomotopy_iterations,
+        tomotopy_threads=args.tomotopy_threads,
+        change_fword_to_stupid=args.change_fword_to_stupid,
     )
+
+    # Defensive: make sure the requested clustering method actually reached the
+    # classifier. This catches edge cases where argparse or an external wrapper
+    # might not pass the flag through, which would otherwise silently fall back
+    # to HDBSCAN.
+    if getattr(classifier, 'cluster_method', 'hdbscan') != args.cluster_method:
+        print(
+            f"[WARNING] Requested --cluster-method {args.cluster_method!r} but "
+            f"TextClassifier.cluster_method is "
+            f"{getattr(classifier, 'cluster_method', None)!r}; forcing the "
+            f"requested value."
+        )
+        classifier.cluster_method = args.cluster_method
 
     classifier.active_focus_text = args.focus_text if args.focus_text else ''
     if external:
@@ -4607,82 +4158,8 @@ def main():
         get_metrics_csv=args.get_metrics_csv,
     )
 
-    # Export for gameologist if requested
     if args.export_gameologist:
-        if not GAMEOLOGIST_AVAILABLE:
-            print("Error: gameologist export requested but atlas_gameologist module not available")
-            return
-
-        # The similarity matrices are indexed by the *successful* texts
-        # (classifier.successful), NOT by args.texts.  If even one input
-        # failed to process, the two lists differ and using args.texts
-        # here would silently misalign every row and column of the
-        # exported relationships.  classifiers may also have re-sorted
-        # args.texts internally, further scrambling the order.
-        successful_texts = list(
-            getattr(classifier, 'successful', None)
-            or classifier.embeddings.keys()
-        )
-        n_successful = len(successful_texts)
-
-        if n_successful == 0:
-            print("Error: no channels processed successfully; nothing to export to gameologist")
-            return
-
-        similarity_matrix = classifier.similarity_matrix
-        burrows_similarity_matrix = classifier.burrows_similarity_matrix
-
-        if similarity_matrix is None or burrows_similarity_matrix is None:
-            print("Error: similarity matrices not available; skipping gameologist export")
-            return
-
-        if (
-            similarity_matrix.shape[0] != n_successful
-            or burrows_similarity_matrix.shape[0] != n_successful
-        ):
-            print(
-                f"Error: matrix shape mismatch "
-                f"(successful={n_successful}, "
-                f"semantic={similarity_matrix.shape[0]}, "
-                f"burrows={burrows_similarity_matrix.shape[0]})"
-            )
-            return
-
-        if n_successful < 1500:
-            print(
-                f"Warning: gameologist usually targets 1500+ channels; "
-                f"exporting {n_successful} channels instead.  The export "
-                f"will still work, but the sister project is designed "
-                f"around a larger corpus."
-            )
-
-        if args.gameologist_dir:
-            gameologist_dir = Path(args.gameologist_dir).expanduser().resolve()
-        else:
-            gameologist_dir = Path(__file__).resolve().parents[1] / "gameologist"
-
-        exporter = GameologistExporter(
-            centroids_dir=Path(__file__).resolve().parents[1],
-            gameologist_dir=gameologist_dir,
-        )
-
-        try:
-            exporter.export_all(
-                texts=successful_texts,
-                cluster_labels=None,
-                similarity_matrix=similarity_matrix,
-                burrows_similarity_matrix=burrows_similarity_matrix,
-                cluster_method=args.cluster_method,
-                leiden_resolution=1.5,
-                cluster_variant_labels=classifier.cluster_variant_labels,
-                cluster_metric_labels=classifier.cluster_metric_labels,
-                burrows_cluster_variant_labels=classifier.burrows_cluster_variant_labels,
-                burrows_cluster_metric_labels=classifier.burrows_cluster_metric_labels,
-            )
-        except Exception as exc:
-            import traceback
-            print(f"Error: gameologist export failed: {exc}")
-            traceback.print_exc()
+        _export_gameologist(args, classifier)
 
 
 if __name__ == "__main__":

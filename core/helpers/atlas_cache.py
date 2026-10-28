@@ -4,8 +4,8 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
-from atlas_config import *  # noqa
-from atlas_config import (
+from helpers.atlas_config import *  # noqa
+from helpers.atlas_config import (
     JSON_LIB,
     METRICS_VERSION,
     MetricConfig,

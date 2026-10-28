@@ -176,6 +176,7 @@ enchant_dict = None
 enchant_word_check_cache: Dict[str, bool] = {}
 spacy_embedding_cache = {}
 sbert_token_embedding_cache = {}
+vader_cache = {}
 
 TOKEN_REGEX = re.compile(r"([^\w\s']|(?<!\w)'|'(?!\w)|\s+|'+\s)")
 

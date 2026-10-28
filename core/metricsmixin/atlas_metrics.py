@@ -1,6 +1,6 @@
-from atlas_config import *  # noqa
-from atlas_config import _install_spacy_model
-import atlas_config as cfg
+from helpers.atlas_config import *  # noqa
+from helpers.atlas_config import _install_spacy_model
+import helpers.atlas_config as cfg
 import re
 import math
 import lzma
@@ -565,3 +565,6 @@ class TextMetricsMixin:
 
     def _compute_color_count(self, tokens: List[str]) -> float:
         return self._compute_pattern_count(tokens, COLOR_PATTERNS)
+
+    def _compute_tomotopy_topic(self, tokens: List[str]) -> float:
+        return 0.0
