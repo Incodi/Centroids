@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -8,6 +9,7 @@ from helpers.atlas_config import (
     _install_spacy_model,
     extract_video_id,
     hms_to_seconds,
+    huggingface_local_files_only,
     perplexity_model,
     perplexity_tokenizer,
     sanitize_filename,
@@ -39,6 +41,7 @@ class TextProcessor:
         enable_spacy: bool = False,
         model_tokenizer=None,
         model_context_window: Optional[int] = None,
+        change_fword_to_stupid: bool = False,
     ):
         self.base_dir = base_dir
         self.external_documents: Dict[str, Tuple[str, str]] = {}
@@ -47,6 +50,11 @@ class TextProcessor:
         self._token_length_cache: Dict[str, int] = {}
         self._model = None
         self.embedding_batch_size = 256
+
+        # When True, standalone token "fuck" is replaced with "stupid" during
+        # tokenization. Only exact token matches are affected, so "fucker",
+        # "fucking", "fuck's" etc. are left alone.
+        self.change_fword_to_stupid = bool(change_fword_to_stupid)
 
         self.embedding_model_name_for_cache: str = ''
         self.video_centroid_cache_dir = self.base_dir / "cache" / "video_centroids"
@@ -67,7 +75,7 @@ class TextProcessor:
             inferred_min_chunk = max(16, int(inferred_chunk_size * 0.65))
 
         self.chunk_size = int(inferred_chunk_size)
-        self.min_chunk = int(min(inferred_min_chunk, self.chunk_size))
+        self.min_chunk = int(inferred_min_chunk, self.chunk_size)
         self.needs_perplexity_model = needs_perplexity_model
         self.enable_spacy = enable_spacy
 
@@ -112,6 +120,8 @@ class TextProcessor:
             return
 
         print("Loading perplexity model...")
+        if huggingface_local_files_only(model_name):
+            os.environ['HF_HUB_OFFLINE'] = '1'
         try:
             perplexity_tokenizer = AutoTokenizer.from_pretrained(
                 model_name,
@@ -147,7 +157,12 @@ class TextProcessor:
 
     def tokenize(self, text: str) -> List[str]:
         text = TOKEN_REGEX.sub(' ', text)
-        return text.lower().split()
+        tokens = text.lower().split()
+        if self.change_fword_to_stupid:
+            # Only exact plain "fuck" tokens are substituted; derived forms
+            # ("fucker", "fucking", "fuck's", etc.) are left untouched.
+            tokens = ['stupid' if tok == 'fuck' else tok for tok in tokens]
+        return tokens
 
     def _video_centroid_signature(self, txt_path: Path) -> Dict[str, Any]:
         try:
@@ -161,6 +176,7 @@ class TextProcessor:
             'chunk_size': int(self.chunk_size),
             'min_chunk': int(self.min_chunk),
             'file_sig': file_sig,
+            'change_fword_to_stupid': bool(getattr(self, 'change_fword_to_stupid', False)),
         }
 
     def _video_centroid_cache_paths(self, video_id: str) -> Tuple[Path, Path]:

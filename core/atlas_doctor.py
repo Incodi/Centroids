@@ -289,11 +289,7 @@ def check_external_tools() -> List[Tuple[str, str, str, str, Optional[str]]]:
 def check_models() -> List[Tuple[str, str, str, str, Optional[str]]]:
     results = []
 
-<<<<<<< HEAD
     from helpers.atlas_config import EMBEDDING_MODEL_PROFILES, resolve_embedding_model_name
-=======
-    from atlas_config import EMBEDDING_MODEL_PROFILES, resolve_embedding_model_name
->>>>>>> 63ad25e08477451841dc8631e5730701ce0bc488
 
     default_model = resolve_embedding_model_name(None)
     hf_cache = Path.home() / '.cache' / 'huggingface' / 'hub'
@@ -519,34 +515,40 @@ def main():
 
     all_results = []
 
-    all_results.extend(check_python())
+    python_results = check_python()
+    all_results.extend(python_results)
     print("Interpreter & Platform:")
-    print_report(all_results)
+    print_report(python_results)
     print()
 
-    all_results.extend(check_hardware())
+    hardware_results = check_hardware()
+    all_results.extend(hardware_results)
     print("Hardware:")
-    print_report(check_hardware())
+    print_report(hardware_results)
     print()
 
-    all_results.extend(check_packages())
+    packages_results = check_packages()
+    all_results.extend(packages_results)
     print("Required Packages:")
-    print_report(check_packages())
+    print_report(packages_results)
     print()
 
-    all_results.extend(check_external_tools())
+    external_results = check_external_tools()
+    all_results.extend(external_results)
     print("External Tools:")
-    print_report(check_external_tools())
+    print_report(external_results)
     print()
 
-    all_results.extend(check_models())
+    models_results = check_models()
+    all_results.extend(models_results)
     print("Model Cache:")
-    print_report(check_models())
+    print_report(models_results)
     print()
 
-    all_results.extend(check_dirs())
+    dirs_results = check_dirs()
+    all_results.extend(dirs_results)
     print("Directory Sanity:")
-    print_report(check_dirs())
+    print_report(dirs_results)
     print()
 
     corpus_estimate = estimate_corpus()
