@@ -1,18 +1,29 @@
+# Data
+data/
+cache/
+# Outputs
+core/data/
+demo_output/
+# Playwright files
+tests/
+# Outside projects using this codebase
+core/atlas_gameologist.py
+gameologist/data/
+gameologist/
+# Debug helpers
+clean_comps.py
+debug/
+temp/
+bgutil-ytdlp-pot-provider/
+old_core/
+core/old_core
+# Suggestions
+bugfixesiwant.txt
+# Common byproducts
 .DS_Store
 README copy.md
 __pycache__/
+core/__pycache__/
 *.py[cod]
-demo_output/
-data/
-cache/
-core/SBERTClustersHD.html
-core/data/output/
-temp/
-testing/
-bugfixesiwant.txt
-croob.png
-coconuts/
-gameologist/data/
-gameologist/
-clean_comps.py
-debug/
+incodi
+incodi.pub
