@@ -525,6 +525,8 @@ Current: Learn about PyTest and Playwright to test functions and web display.
 
 Current: Actually getting findings from this tool.
 
+Improve the UI and add tutorials, it is currently confusing for broad use.
+
 ## TODOs from suggestions
 
 **Problem:** Installing Centroids is painful because of mixed dependencies 
