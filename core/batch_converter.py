@@ -361,4 +361,4 @@ if __name__ == "__main__":
         force_channels=args.channels
     )
 
-# python3 core/batch_converter.py --delete-vtt --channels Ctop
+# python3 core/batch_converter.py --delete-vtt --channels Ctop necrosvideos the_schwep

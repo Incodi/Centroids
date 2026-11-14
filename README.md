@@ -224,7 +224,7 @@ and `average_sentence_length` metrics.
 
 --leiden-resolution-min FLOAT  Minimum Leiden resolution (default: 1.15)
 --leiden-resolution-max FLOAT  Maximum Leiden resolution (default: 3.0)
---leiden-k-neighbors N        k-NN graph neighbors for Leiden (default: 20)
+--leiden-k-neighbors N        k-NN graph neighbors for Leiden (default: 25)
 --no-leiden-whiten            Disable PCA whitening before k-NN (use for homogeneous datasets)
 ```
 

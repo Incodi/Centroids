@@ -75,7 +75,7 @@ class TextProcessor:
             inferred_min_chunk = max(16, int(inferred_chunk_size * 0.65))
 
         self.chunk_size = int(inferred_chunk_size)
-        self.min_chunk = int(inferred_min_chunk, self.chunk_size)
+        self.min_chunk = min(int(inferred_min_chunk), self.chunk_size)
         self.needs_perplexity_model = needs_perplexity_model
         self.enable_spacy = enable_spacy
 
@@ -171,13 +171,15 @@ class TextProcessor:
         except OSError:
             file_sig = None
 
-        return {
+        sig = {
             'model': self.embedding_model_name_for_cache or '',
             'chunk_size': int(self.chunk_size),
             'min_chunk': int(self.min_chunk),
             'file_sig': file_sig,
-            'change_fword_to_stupid': bool(getattr(self, 'change_fword_to_stupid', False)),
         }
+        if getattr(self, 'change_fword_to_stupid', False):
+            sig['change_fword_to_stupid'] = True
+        return sig
 
     def _video_centroid_cache_paths(self, video_id: str) -> Tuple[Path, Path]:
         safe = sanitize_filename(video_id) or 'unknown'

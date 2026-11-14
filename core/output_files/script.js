@@ -1,5 +1,5 @@
 /*
-drawing of thing i (script file) analyze
+diagram of thing i (script file) analyze
                                                                            x  x   x  x x                     
                                                               xx xx xxxx x                x  x x             
                                                           xxxx                                   x xx        
@@ -20,9 +20,9 @@ x                      xx                                                  xxxxx
 xx                       xxx xx x                                                                            
  xx                              x xxx xxxxxxxxx                                                          
    xx                                           xx                                                         
-     xx                                           x                                                         
+     xx                                           x                                                        
        xxx                                     xxx                                                         
-           xxxxxxx                    xxx xxxxx                                                            
+           xxxxxxx                    xxx xxxxxxx                                                          
                   x xx x xx x x xxxxxx                                                                       
 */
 
@@ -30,26 +30,26 @@ const CONFIG = {
     highlightSize: 80, normalSize: 15, focusStarSize: 40,
     dimmedOpacity: 0.2, highlightDuration: 2000, textOutlineDelay: 100,
     pointFontSize: 7, colorScaleZoomRatio: 0.25, regressionLinePoints: 100,
-    defaultColorScale: 'rdbu_r', defaultFocusText: __FOCUS_TEXT__
+    defaultColorScale: 'rdbu_r', defaultFocusText: window.DATA_CONFIG?.focusText || ''
 };
 
-const metricsData = __METRICS_JSON__;
-const chartTitles = __TITLES_JSON__;
-const textNames = __TEXTS_JSON__;
-const metricDisplayNames = __METRIC_NAMES_JSON__;
-const metricColorScales = __METRIC_COLORScales_JSON__;
-const metricKeys = __METRIC_KEYS_JSON__;
-const hoverPanelPalettes = __HOVER_PANEL_PALETTES_JSON__;
-const hoverTextPalettes = __HOVER_TEXT_PALETTES_JSON__;
-const semanticEmbeddings = __SEMANTIC_EMBEDDINGS_JSON__;
-const burrowsSimilarity = __BURROWS_SIMILARITY_JSON__;
-const fightingWordsUnigrams = __FIGHTING_WORDS_UNIGRAMS_JSON__;
-const burrowsReduced = __BURROWS_REDUCED_JSON__;
-const burrowsFunctionWords = __BURROWS_FUNCTION_WORDS_JSON__;
-const burrowsWordFrequencies = __BURROWS_WORD_FREQUENCIES_JSON__;
-const CAPITAL_CITIES = __CAPITAL_CITIES_JSON__;
+const metricsData = window.DATA_CONFIG?.metricsData || {};
+const chartTitles = window.DATA_CONFIG?.chartTitles || {};
+const textNames = window.DATA_CONFIG?.textNames || [];
+const metricNames = window.DATA_CONFIG?.metricDisplayNames || {};
+const metricScales = window.DATA_CONFIG?.metricColorScales || {};
+const metricKeys = window.DATA_CONFIG?.metricKeys || [];
+const panelPalettes = window.DATA_CONFIG?.hoverPanelPalettes || {};
+const textPalettes = window.DATA_CONFIG?.hoverTextPalettes || {};
+const embeddings = window.DATA_CONFIG?.semanticEmbeddings || [];
+const burrowsSimilarity = window.DATA_CONFIG?.burrowsSimilarity || [];
+const fightingWordsUnigrams = window.DATA_CONFIG?.fightingWordsUnigrams || {};
+const burrowsReduced = window.DATA_CONFIG?.burrowsReduced || [];
+const burrowsFW = window.DATA_CONFIG?.burrowsFunctionWords || [];
+const burrowsFreq = window.DATA_CONFIG?.burrowsWordFrequencies || {};
+const capitalCities = window.DATA_CONFIG?.capitalCities || {};
 
-const CLUSTER_TURBO_COLORSCALE = [
+const TURBO_SCALE = [
     [0.0, '#30123b'], [0.08, '#4145ab'], [0.16, '#4675ed'], [0.24, '#39a2fc'],
     [0.32, '#1bcfd4'], [0.40, '#24eca6'], [0.48, '#61fc6c'], [0.56, '#a4fc3b'],
     [0.64, '#d1e834'], [0.72, '#f3c63a'], [0.80, '#fe9b2d'], [0.88, '#f36315'],
@@ -57,26 +57,26 @@ const CLUSTER_TURBO_COLORSCALE = [
 ];
 
 const FOCUS_OVERLAY_META = 'focusOverlay';
-const CORR_FOCUS_OVERLAY_META = 'corrFocusOverlay';
+const CORR_OVERLAY = 'corrFocusOverlay';
 const CONNECTION_META = 'semanticConnection';
 const PLOT_CONFIG = { responsive: true };
 const GRID_STYLE = { showgrid: true, gridwidth: 1, gridcolor: '#e0e0e0' };
 const FOCUS_CLUSTER_COLOR = '#ffeb3b';
-const FOCUS_CLUSTER_LINE_COLOR = '#b8860b';
+const FOCUS_CL_LINE = '#b8860b';
 const EVIL_CLUSTER_COLOR = 'rgba(168, 85, 247, 0.30)';
-const EVIL_CLUSTER_LINE_COLOR = 'rgba(168, 85, 247, 0.40)';
-const MAIN_PLOT_RIGHT_RESERVE_PX = 230;
+const EVIL_CL_LINE = 'rgba(168, 85, 247, 0.40)';
+const RIGHT_RESERVE_PX = 230;
 const HIST_FILL = '#85EDFF80';
 const HIST_LINE = '#85EDFF';
 const NORMAL_CURVE_COLOR = '#FFBCD9';
 const FOCUS_AREA_FILL = 'rgba(255, 212, 0, 0.20)';
-const WORLD_CAPITAL_OUTLINE = '#ffd400';
+const WORLD_OUTLINE = '#ffd400';
 
-const CLUSTER_BAR_POS_GRADIENT = 'linear-gradient(90deg, #fbd0d0, #E85A93)';
-const CLUSTER_BAR_NEG_GRADIENT = 'linear-gradient(90deg, #d0d6fb, #2FA3E6)';
-const CLUSTER_BAR_TRACK_COLOR = '#f0f0f0';
-const CLUSTER_BAR_TEXT_POS_COLOR = '#E85A93';
-const CLUSTER_BAR_TEXT_NEG_COLOR = '#2FA3E6';
+const BAR_POS_GRAD = 'linear-gradient(90deg, #fbd0d0, #E85A93)';
+const BAR_NEG_GRAD = 'linear-gradient(90deg, #d0d6fb, #2FA3E6)';
+const BAR_TRACK = '#f0f0f0';
+const BAR_TXT_POS = '#E85A93';
+const BAR_TXT_NEG = '#2FA3E6';
 
 const VIEW_ELEMENT_IDS = {
     correlation: ['correlationContainer', 'correlationControls', 'correlationStats'],
@@ -95,32 +95,32 @@ let mainPlot = null;
 let originalPlotX = null;
 let originalPlotY = null;
 let originalAxes = null;
-let mainPlotResizeBound = false;
-let mainPlotResizeTimer = null;
+let resizeBound = false;
+let resizeTimer = null;
 let baseHoverTexts = null;
 
-let currentMetric = __ACTIVE_METRIC_JSON__;
-let currentColorDataForPlot = [];
-let currentColorscale = CLUSTER_TURBO_COLORSCALE;
+let currentMetric = window.DATA_CONFIG?.activeMetric || 'cluster';
+let plotColors = [];
+let currentColorscale = TURBO_SCALE;
 let currentCmin = 0;
 let currentCmax = 1;
 
 let viewMode = 'umap';
 let mapMode = 'semantic';
-let umapLabelsVisible = true;
-let correlationLabelsVisible = true;
+let mapLabelsOn = true;
+let corrLabelsOn = true;
 let hideGrayPoints = false;
 
-let focusedTextName = null;
-let focusedTextIndex = -1;
+let focusName = null;
+let focusIdx = -1;
 let focusClusterOnly = false;
-let focusClusterMetric = null;
-let focusClusterMetricUserSelected = false;
+let clusterMetric = null;
+let clusterPinned = false;
 let focusSimilarityMode = 'cosine';
-let evilFocusTextIndex = -1;
-let evilFocusTextName = null;
+let evilIdx = -1;
+let evilName = null;
 
-const clusterStatsState = {
+const clusterState = {
     view: 'word',
     source: null,
     clusterId: null,
@@ -132,29 +132,31 @@ const clusterStatsState = {
     inspectWord: null
 };
 
-let semanticLineModeEnabled = false;
-let semanticLineCount = 10;
-let mainConnectionToken = 0;
-let correlationConnectionToken = 0;
+let connOn = false;
+let connN = 10;
+let mainConnTok = 0;
+let corrConnTok = 0;
 
-let correlationXMetric = metricKeys[0];
-let correlationYMetric = metricKeys.length > 1 ? metricKeys[1] : metricKeys[0];
+let corrX = metricKeys[0];
+let corrY = metricKeys.length > 1 ? metricKeys[1] : metricKeys[0];
 
-const functionWordSelection = new Set(
-    burrowsFunctionWords && burrowsFunctionWords.length ? [burrowsFunctionWords[0]] : ['the']
+const fwSel = new Set(
+    burrowsFW && burrowsFW.length ? [burrowsFW[0]] : ['the']
 );
-let functionWordShowHistogram = true;
-let functionWordShowMarkers = true;
-let functionWordPlotMode = 'zscore';
+let fwShowHist = true;
+let fwShowMarks = true;
+let fwMode = 'zscore';
+let fwLegendVis = false;
 
 const deltaState = {
     textA: null, textB: null, sortMode: 'separators', topN: 25,
     wordStats: null, deltaDistribution: null, totalWordCount: 0, initialized: false
 };
 
-const clusterMetricKeys = [];
+const clusterKeys = [];
 const textLookup = {};
 const metricCatalog = [];
+const panelSaves = {};
 
 const isNum = v => v !== null && v !== undefined && !isNaN(v);
 const asNum = v => isNum(v) ? Number(v) : null;
@@ -218,7 +220,7 @@ const clearBody = panelId => {
     return body;
 };
 const fwStats = title => {
-    const c = document.getElementById('functionWordStatsContent');
+    const c = document.getElementById('fwStatsContent');
     if (!c) return null;
     c.innerHTML = '';
     if (title) {
@@ -487,12 +489,12 @@ const svgToPng = (svg, width, height) => {
 
 const isBurrows = key => {
     if (!key) return false;
-    const s = (key + ' ' + (metricDisplayNames[key] || '')).toLowerCase();
+    const s = (key + ' ' + (metricNames[key] || '')).toLowerCase();
     return s.indexOf('burrows') !== -1;
-}; /* hi :) */
+};
 const getAlgo = key => {
     if (!key) return '';
-    const s = (key + ' ' + (metricDisplayNames[key] || '')).toLowerCase();
+    const s = (key + ' ' + (metricNames[key] || '')).toLowerCase();
     if (s.indexOf('leiden') !== -1) return 'Leiden';
     if (s.indexOf('louvain') !== -1) return 'Louvain';
     if (s.indexOf('kmeans') !== -1 || s.indexOf('k-means') !== -1) return 'k-means';
@@ -503,7 +505,7 @@ const getAlgo = key => {
 const isClusterKey = key => {
     if (!key) return false;
     if (key === 'cluster' || key.indexOf('cluster_') === 0) return true;
-    const s = (key + ' ' + (metricDisplayNames[key] || '')).toLowerCase();
+    const s = (key + ' ' + (metricNames[key] || '')).toLowerCase();
     if (s.indexOf('burrows') === -1) return false;
     const kw = ['cluster', 'leiden', 'louvain', 'kmeans', 'k-means', 'hdbscan'];
     for (let i = 0; i < kw.length; i++) {
@@ -513,7 +515,7 @@ const isClusterKey = key => {
 };
 const clusterLabel = key => {
     if (!key) return '';
-    return metricDisplayNames[key] || key;
+    return metricNames[key] || key;
 };
 const clusterValueLabel = (key, id) => {
     const algo = getAlgo(key) || 'Leiden';
@@ -522,13 +524,13 @@ const clusterValueLabel = (key, id) => {
 };
 const colorbarTitle = key => {
     if (isClusterKey(key)) return clusterLabel(key);
-    return metricDisplayNames[key] || key;
+    return metricNames[key] || key;
 };
 const preferredCluster = mode => {
     const b = [], reg = [];
-    for (let i = 0; i < clusterMetricKeys.length; i++) {
-        if (isBurrows(clusterMetricKeys[i])) b.push(clusterMetricKeys[i]);
-        else reg.push(clusterMetricKeys[i]);
+    for (let i = 0; i < clusterKeys.length; i++) {
+        if (isBurrows(clusterKeys[i])) b.push(clusterKeys[i]);
+        else reg.push(clusterKeys[i]);
     }
     if (mode === 'burrows' && b.length) {
         for (let j = 0; j < b.length; j++) if (b[j] === 'burrows_cluster') return 'burrows_cluster';
@@ -538,7 +540,7 @@ const preferredCluster = mode => {
         for (let k = 0; k < reg.length; k++) if (reg[k] === 'cluster') return 'cluster';
         return reg[0];
     }
-    return clusterMetricKeys[0] || null;
+    return clusterKeys[0] || null;
 };
 const metricRange = values => {
     let lo = Infinity, hi = -Infinity, ok = false;
@@ -572,20 +574,20 @@ const colorData = key => {
     for (let p = 0; p < raw.length; p++) out.push(isNum(raw[p]) ? raw[p] : NaN);
     return out;
 };
-const stripBurrowsClusterLine = line => {
+const stripBCLine = line => {
     return !/burrow[s]?_cluster/i.test(line);
 };
-const stripBurrowsClusterFromHoverString = s => {
+const stripBCText = s => {
     if (typeof s !== 'string') return s;
     if (!/burrow[s]?_cluster/i.test(s)) return s;
     const parts = s.split(/<br\s*\/?>|\n/i);
     const kept = [];
     for (let i = 0; i < parts.length; i++) {
-        if (stripBurrowsClusterLine(parts[i])) kept.push(parts[i]);
+        if (stripBCLine(parts[i])) kept.push(parts[i]);
     }
     return kept.join('<br>');
 };
-const sanitizeMainHoverText = () => {
+const cleanHover = () => {
     if (!mainPlot || !mainPlot.data) return;
     for (let i = 0; i < mainPlot.data.length; i++) {
         const tr = mainPlot.data[i];
@@ -593,14 +595,14 @@ const sanitizeMainHoverText = () => {
             let changed = false;
             const ht = [];
             for (let j = 0; j < tr.hovertext.length; j++) {
-                const v = stripBurrowsClusterFromHoverString(tr.hovertext[j]);
+                const v = stripBCText(tr.hovertext[j]);
                 if (v !== tr.hovertext[j]) changed = true;
                 ht.push(v);
             }
             if (changed) Plotly.restyle(mainPlot, { hovertext: [ht] }, [i]);
         }
         if (typeof tr.hovertemplate === 'string') {
-            const tmpl = stripBurrowsClusterFromHoverString(tr.hovertemplate);
+            const tmpl = stripBCText(tr.hovertemplate);
             if (tmpl !== tr.hovertemplate) Plotly.restyle(mainPlot, { hovertemplate: [tmpl] }, [i]);
         }
     }
@@ -643,8 +645,8 @@ const addHoverGradient = (colors, index) => {
     return 'url(#' + id + ')';
 };
 const styleMainHover = pointIndex => {
-    const panelColors = hoverPanelPalettes[pointIndex];
-    const textColors = hoverTextPalettes[pointIndex];
+    const panelColors = panelPalettes[pointIndex];
+    const textColors = textPalettes[pointIndex];
     if ((!panelColors || panelColors.length < 2) &&
         (!textColors || textColors.length < 2)) return;
     const hoverGroups = mainPlot.querySelectorAll('.hoverlayer .hovertext');
@@ -690,7 +692,7 @@ const styleMainHover = pointIndex => {
         }
     }
 };
-const setupHoverStyling = () => {
+const hookHover = () => {
     if (!mainPlot || typeof mainPlot.on !== 'function') return;
     if (typeof MutationObserver === 'undefined') return;
 
@@ -782,7 +784,7 @@ const addCollapse = (panel, handle) => {
     btn.textContent = '-';
     btn.title = 'Collapse or expand this panel';
     let savedHeight = '';
-    let savedBottom = ''; // i remembered your bottom
+    let savedBottom = '';
     btn.addEventListener('click', () => {
         const body = panel.querySelector('.panelBody');
         const collapsing = body.style.display !== 'none';
@@ -892,9 +894,9 @@ const resetAxes = mode => {
     }
     return Plotly.relayout(mainPlot, update);
 };
-const applyPlotViewportSize = () => {
+const sizePlot = () => {
     if (!mainPlot) return;
-    mainPlot.style.width = 'calc(100% - ' + MAIN_PLOT_RIGHT_RESERVE_PX + 'px)';
+    mainPlot.style.width = 'calc(100% - ' + RIGHT_RESERVE_PX + 'px)';
     mainPlot.style.margin = '0';
     mainPlot.style.boxSizing = 'border-box';
     mainPlot.style.height = '100vh';
@@ -904,11 +906,11 @@ const applyPlotViewportSize = () => {
 };
 const mainPlotDoResize = () => {
     if (!mainPlot || !mainPlot.data) return;
-    applyPlotViewportSize();
+    sizePlot();
     let w = mainPlot.clientWidth;
     let h = mainPlot.clientHeight;
     if (!w || !h) {
-        w = window.innerWidth - MAIN_PLOT_RIGHT_RESERVE_PX;
+        w = window.innerWidth - RIGHT_RESERVE_PX;
         h = window.innerHeight;
     }
     if (!w || !h) return;
@@ -918,10 +920,10 @@ const mainPlotDoResize = () => {
         height: h
     });
 };
-const mainPlotScheduleResize = () => {
-    if (mainPlotResizeTimer) clearTimeout(mainPlotResizeTimer);
-    mainPlotResizeTimer = setTimeout(() => {
-        mainPlotResizeTimer = null;
+const schedResize = () => {
+    if (resizeTimer) clearTimeout(resizeTimer);
+    resizeTimer = setTimeout(() => {
+        resizeTimer = null;
         mainPlotDoResize();
     }, 100);
 };
@@ -929,17 +931,17 @@ const fitPlot = () => {
     if (!mainPlot) return;
     mainPlotDoResize();
 
-    if (mainPlotResizeBound) return;
-    mainPlotResizeBound = true;
+    if (resizeBound) return;
+    resizeBound = true;
 
-    window.addEventListener('resize', mainPlotScheduleResize);
-    window.addEventListener('orientationchange', mainPlotScheduleResize);
-    window.addEventListener('load', mainPlotScheduleResize);
+    window.addEventListener('resize', schedResize);
+    window.addEventListener('orientationchange', schedResize);
+    window.addEventListener('load', schedResize);
     if (window.visualViewport) {
-        window.visualViewport.addEventListener('resize', mainPlotScheduleResize);
+        window.visualViewport.addEventListener('resize', schedResize);
     }
     if (typeof ResizeObserver !== 'undefined') {
-        const ro = new ResizeObserver(mainPlotScheduleResize);
+        const ro = new ResizeObserver(schedResize);
         ro.observe(document.body);
         if (mainPlot.parentElement && mainPlot.parentElement !== document.body) {
             ro.observe(mainPlot.parentElement);
@@ -974,23 +976,23 @@ const fillMetricSelect = (sel, value, filter) => {
 const fillClusterSelect = (sel, value) => {
     if (!sel) return value;
     sel.innerHTML = '';
-    for (let i = 0; i < clusterMetricKeys.length; i++) {
+    for (let i = 0; i < clusterKeys.length; i++) {
         const o = document.createElement('option');
-        o.value = clusterMetricKeys[i];
-        o.text = clusterLabel(clusterMetricKeys[i]);
+        o.value = clusterKeys[i];
+        o.text = clusterLabel(clusterKeys[i]);
         sel.appendChild(o);
     }
-    for (let j = 0; j < clusterMetricKeys.length; j++) {
-        if (clusterMetricKeys[j] === value) { sel.value = value; return value; }
+    for (let j = 0; j < clusterKeys.length; j++) {
+        if (clusterKeys[j] === value) { sel.value = value; return value; }
     }
-    if (clusterMetricKeys.length > 0) { sel.value = clusterMetricKeys[0]; return clusterMetricKeys[0]; }
+    if (clusterKeys.length > 0) { sel.value = clusterKeys[0]; return clusterKeys[0]; }
     return value;
 };
 const applyCluster = mode => {
-    if (focusClusterMetricUserSelected) return;
+    if (clusterPinned) return;
     const pref = preferredCluster(mode);
     if (!pref) return;
-    focusClusterMetric = fillClusterSelect(document.getElementById('focusClusterMetricSelect'), pref);
+    clusterMetric = fillClusterSelect(document.getElementById('clusterSel'), pref);
 };
 const buildSizes = () => {
     const a = [];
@@ -998,15 +1000,15 @@ const buildSizes = () => {
     return a;
 };
 const buildOpacity = () => {
-    const cluster = focusClusterOnly && focusClusterMetric ? metricsData[focusClusterMetric] : null;
+    const cluster = focusClusterOnly && clusterMetric ? metricsData[clusterMetric] : null;
     let focusVal = null;
-    if (cluster && focusedTextIndex >= 0 && isNum(cluster[focusedTextIndex])) {
-        focusVal = cluster[focusedTextIndex];
+    if (cluster && focusIdx >= 0 && isNum(cluster[focusIdx])) {
+        focusVal = cluster[focusIdx];
     }
     const a = [];
     for (let i = 0; i < textNames.length; i++) {
-        if (i === focusedTextIndex) { a.push(1); continue; }
-        if (hideGrayPoints && !isNum(currentColorDataForPlot[i])) { a.push(0); continue; }
+        if (i === focusIdx) { a.push(1); continue; }
+        if (hideGrayPoints && !isNum(plotColors[i])) { a.push(0); continue; }
         if (focusVal !== null && cluster[i] !== focusVal) { a.push(0); continue; }
         a.push(1);
     }
@@ -1048,22 +1050,8 @@ const baseColor = (plot, pi) => {
     return typeof c === 'string' ? c : null;
 };
 
-/* ==================================================================
- * CAPITAL CITIES
- * ------------------------------------------------------------------
- * Capital markers are rendered by restyling the MAIN trace's markers
- * in place (no extra traces), exactly as in the old atlas_template.html.
- *
- * For the currently-active cluster metric key, we set:
- *   - non-capitals      → circle, black 1px outline (metric-colored fill)
- *   - cluster capitals  → pentagon, black 1px outline (metric-colored fill)
- *   - world capital     → pentagon, gold (#ffd400) 3px outline
- * and prepend a "<i>capital of the corpus/cluster</i>" note to the
- * hovertext of the relevant point.
- * ================================================================== */
-
 const capitalsForMetric = key =>
-    (CAPITAL_CITIES && CAPITAL_CITIES[key]) ? CAPITAL_CITIES[key] : null;
+    (capitalCities && capitalCities[key]) ? capitalCities[key] : null;
 
 const capitalKindFor = (caps, name) => {
     if (!caps) return null;
@@ -1100,7 +1088,7 @@ const applyCapitals = key => {
         const isWorld = kind === 'world';
         const isCap = kind !== null;
         symbols.push(isCap ? 'pentagon' : 'circle');
-        lineColors.push(isWorld ? WORLD_CAPITAL_OUTLINE : 'black');
+        lineColors.push(isWorld ? WORLD_OUTLINE : 'black');
         lineWidths.push(isWorld ? 3 : 1);
         hovers.push(withCapitalNote(baseHoverTexts[i] || '', kind));
     }
@@ -1115,16 +1103,16 @@ const applyCapitals = key => {
 const updateOverlay = () => {
     const idx = findTrace(mainPlot, FOCUS_OVERLAY_META);
     if (idx < 0) return Promise.resolve();
-    if (focusedTextIndex < 0 || !focusedTextName) {
+    if (focusIdx < 0 || !focusName) {
         return Plotly.restyle(mainPlot, { x: [[]], y: [[]], text: [[]] }, [idx]);
     }
     const update = {
-        x: [[plotCoord(mainPlot, 0, 'x', focusedTextIndex)]],
-        y: [[plotCoord(mainPlot, 0, 'y', focusedTextIndex)]],
-        text: [[focusedTextName]]
+        x: [[plotCoord(mainPlot, 0, 'x', focusIdx)]],
+        y: [[plotCoord(mainPlot, 0, 'y', focusIdx)]],
+        text: [[focusName]]
     };
-    const bc = baseColor(mainPlot, focusedTextIndex);
-    const fv = currentColorDataForPlot[focusedTextIndex];
+    const bc = baseColor(mainPlot, focusIdx);
+    const fv = plotColors[focusIdx];
     if (typeof bc === 'string') update['marker.color'] = [[bc]];
     else if (!isNum(fv)) update['marker.color'] = [['#808080']];
     else {
@@ -1135,26 +1123,26 @@ const updateOverlay = () => {
     }
     return Plotly.restyle(mainPlot, update, [idx]);
 };
-const refreshFocusMarker = () => {
+const refFocus = () => {
     Plotly.restyle(mainPlot, { 'marker.opacity': [buildOpacity()] }, [0]);
     ensureOverlay(mainPlot, FOCUS_OVERLAY_META)
         .then(updateOverlay)
-        .then(refreshConnections)
+        .then(refConns)
         .then(() => overlayFront(mainPlot, FOCUS_OVERLAY_META));
 };
 const syncColors = () => {
     const t = mainPlot.data && mainPlot.data[0];
     const c = t && t.marker && t.marker.color;
     if (c === undefined || c === null) {
-        currentColorDataForPlot = [];
-        for (let i = 0; i < textNames.length; i++) currentColorDataForPlot.push(null);
+        plotColors = [];
+        for (let i = 0; i < textNames.length; i++) plotColors.push(null);
     } else if (Array.isArray(c)) {
-        currentColorDataForPlot = c.slice();
+        plotColors = c.slice();
     } else if (ArrayBuffer.isView(c)) {
-        currentColorDataForPlot = Array.from(c);
+        plotColors = Array.from(c);
     } else {
-        currentColorDataForPlot = [];
-        for (let j = 0; j < textNames.length; j++) currentColorDataForPlot.push(c);
+        plotColors = [];
+        for (let j = 0; j < textNames.length; j++) plotColors.push(c);
     }
 };
 const readColorState = () => {
@@ -1172,11 +1160,11 @@ const connColor = (rank, total) => {
     return 'rgb(' + r + ', ' + g + ', ' + b + ')';
 };
 const cosineNeighbors = idx => {
-    const fe = semanticEmbeddings[idx];
+    const fe = embeddings[idx];
     if (!fe) return [];
     const out = [];
     for (let i = 0; i < textNames.length; i++) {
-        const e = semanticEmbeddings[i];
+        const e = embeddings[i];
         if (i === idx || !e) continue;
         const len = Math.min(fe.length, e.length);
         let sim = 0;
@@ -1216,44 +1204,44 @@ const removeConns = plot => {
     if (!idxs.length) return Promise.resolve();
     return Plotly.deleteTraces(plot, idxs.reverse());
 };
-const refreshConnections = () => {
-    const token = ++mainConnectionToken;
+const refConns = () => {
+    const token = ++mainConnTok;
     return removeConns(mainPlot).then(() => {
-        if (token !== mainConnectionToken) return;
-        if (!semanticLineModeEnabled || focusedTextIndex < 0 || !focusedTextName) return;
+        if (token !== mainConnTok) return;
+        if (!connOn || focusIdx < 0 || !focusName) return;
         const fp = {
-            x: plotCoord(mainPlot, 0, 'x', focusedTextIndex),
-            y: plotCoord(mainPlot, 0, 'y', focusedTextIndex)
+            x: plotCoord(mainPlot, 0, 'x', focusIdx),
+            y: plotCoord(mainPlot, 0, 'y', focusIdx)
         };
-        const nb = focusNeighbors(focusedTextIndex).slice(0, semanticLineCount);
+        const nb = focusNeighbors(focusIdx).slice(0, connN);
         const traces = [];
         for (let i = 0; i < nb.length; i++) {
             const tp = { x: plotCoord(mainPlot, 0, 'x', nb[i].index),
                          y: plotCoord(mainPlot, 0, 'y', nb[i].index) };
             traces.push(connTrace(fp, tp, i, nb.length));
         }
-        if (traces.length && token === mainConnectionToken) {
+        if (traces.length && token === mainConnTok) {
             return Plotly.addTraces(mainPlot, traces);
         }
     }).then(() => {
         return overlayFront(mainPlot, FOCUS_OVERLAY_META);
     });
 };
-const refreshCorrConnections = () => {
+const refCorrConn = () => {
     const plot = document.getElementById('correlationPlot');
     if (!plot || !plot.data || !plot.data[0]) return Promise.resolve();
-    const token = ++correlationConnectionToken;
+    const token = ++corrConnTok;
     return removeConns(plot).then(() => {
-        if (token !== correlationConnectionToken) return;
-        if (!semanticLineModeEnabled || !focusedTextName) return;
+        if (token !== corrConnTok) return;
+        if (!connOn || !focusName) return;
         const texts = plot.data[0].text || [];
         let fp = -1;
-        for (let i = 0; i < texts.length; i++) if (texts[i] === focusedTextName) { fp = i; break; }
+        for (let i = 0; i < texts.length; i++) if (texts[i] === focusName) { fp = i; break; }
         if (fp < 0) return;
-        const entry = textLookup[focusedTextName.toLowerCase()];
+        const entry = textLookup[focusName.toLowerCase()];
         if (!entry) return;
         const from = { x: plot.data[0].x[fp], y: plot.data[0].y[fp] };
-        const nb = focusNeighbors(entry.index).slice(0, semanticLineCount);
+        const nb = focusNeighbors(entry.index).slice(0, connN);
         const traces = [];
         for (let j = 0; j < nb.length; j++) {
             let target = -1;
@@ -1263,11 +1251,11 @@ const refreshCorrConnections = () => {
                 { x: plot.data[0].x[target], y: plot.data[0].y[target] },
                 j, nb.length));
         }
-        if (traces.length && token === correlationConnectionToken) {
+        if (traces.length && token === corrConnTok) {
             return Plotly.addTraces(plot, traces);
         }
     }).then(() => {
-        return overlayFront(plot, CORR_FOCUS_OVERLAY_META);
+        return overlayFront(plot, CORR_OVERLAY);
     });
 };
 const refreshCorrFocus = () => {
@@ -1275,23 +1263,23 @@ const refreshCorrFocus = () => {
     if (!plot || !plot.data || !plot.data[0]) return;
     const texts = plot.data[0].text || [];
     let pi = -1;
-    if (focusedTextName) {
-        for (let i = 0; i < texts.length; i++) if (texts[i] === focusedTextName) { pi = i; break; }
+    if (focusName) {
+        for (let i = 0; i < texts.length; i++) if (texts[i] === focusName) { pi = i; break; }
     }
-    ensureOverlay(plot, CORR_FOCUS_OVERLAY_META).then(() => {
-        const idx = findTrace(plot, CORR_FOCUS_OVERLAY_META);
+    ensureOverlay(plot, CORR_OVERLAY).then(() => {
+        const idx = findTrace(plot, CORR_OVERLAY);
         if (idx < 0) return null;
         if (pi < 0) return Plotly.restyle(plot, { x: [[]], y: [[]], text: [[]] }, [idx]);
         const update = {
             x: [[plot.data[0].x[pi]]], y: [[plot.data[0].y[pi]]],
-            text: [[focusedTextName]]
+            text: [[focusName]]
         };
         const bc = baseColor(plot, pi);
         if (typeof bc === 'string') update['marker.color'] = [[bc]];
         return Plotly.restyle(plot, update, [idx]);
     }).then(() => {
-        return overlayFront(plot, CORR_FOCUS_OVERLAY_META);
-    }).then(refreshCorrConnections);
+        return overlayFront(plot, CORR_OVERLAY);
+    }).then(refCorrConn);
 };
 const percentileOf = (key, idx) => {
     const vals = metricsData[key];
@@ -1307,9 +1295,9 @@ const percentileOf = (key, idx) => {
 const updatePctLabel = () => {
     const lbl = document.getElementById('focusMetricPercentile');
     if (!lbl) return;
-    if (!focusedTextName || focusedTextIndex < 0) { lbl.textContent = ''; return; }
-    const mlabel = metricDisplayNames[currentMetric] || currentMetric;
-    const info = percentileOf(currentMetric, focusedTextIndex);
+    if (!focusName || focusIdx < 0) { lbl.textContent = ''; return; }
+    const mlabel = metricNames[currentMetric] || currentMetric;
+    const info = percentileOf(currentMetric, focusIdx);
     if (!info || info.percentile === null) {
         lbl.textContent = mlabel + ': no score';
         return;
@@ -1319,45 +1307,45 @@ const updatePctLabel = () => {
     lbl.textContent = mlabel + ': ' + ordinal(info.percentile) + ' percentile (' + disp + ')';
 };
 const afterFocusChange = () => {
-    refreshFocusMarker();
+    refFocus();
     refreshCorrFocus();
     updateTextList();
     updatePctLabel();
     const focusSelect = document.getElementById('focusTextSelect');
-    if (focusSelect && focusedTextName) {
-        const idx = textNames.indexOf(focusedTextName);
+    if (focusSelect && focusName) {
+        const idx = textNames.indexOf(focusName);
         if (idx >= 0 && focusSelect.querySelector('option[value="' + idx + '"]')) {
             focusSelect.value = String(idx);
         }
     }
     if (viewMode === 'functionWord') {
         updateFwPlot();
-        if (clusterStatsState.view === 'cluster') {
-            if (!clusterStatsState.clusterIdUserSelected) clusterStatsState.clusterId = null;
-            renderClusterStats();
+        if (clusterState.view === 'cluster') {
+            if (!clusterState.clusterIdUserSelected) clusterState.clusterId = null;
+            renderClStats();
         }
     }
 };
 const focusText = name => {
     const typed = (name || '').trim();
     if (!typed) {
-        focusedTextName = null;
-        focusedTextIndex = -1;
+        focusName = null;
+        focusIdx = -1;
         afterFocusChange();
         return;
     }
     const match = textLookup[typed.toLowerCase()];
     if (!match) { alert('No text named "' + typed + '" was found.'); return; }
-    focusedTextName = match.name;
-    focusedTextIndex = match.index;
+    focusName = match.name;
+    focusIdx = match.index;
     afterFocusChange();
-    if (viewMode === 'delta' && focusedTextIndex >= 0 && deltaState.textA !== focusedTextIndex) {
-        deltaState.textA = focusedTextIndex;
-        if (deltaState.textB === null || deltaState.textB === focusedTextIndex) {
-            deltaState.textB = defaultDeltaPartner(focusedTextIndex);
+    if (viewMode === 'delta' && focusIdx >= 0 && deltaState.textA !== focusIdx) {
+        deltaState.textA = focusIdx;
+        if (deltaState.textB === null || deltaState.textB === focusIdx) {
+            deltaState.textB = defaultDeltaPartner(focusIdx);
         }
         syncDeltaDropdowns();
-        updateDeltaPlot();
+        refDeltaPlot();
     }
 };
 const flashPoint = idx => {
@@ -1369,7 +1357,7 @@ const flashPoint = idx => {
     Plotly.restyle(mainPlot, { 'marker.size': [sizes], 'marker.opacity': [ops] }, [0]);
     setTimeout(() => {
         Plotly.restyle(mainPlot, { 'marker.size': [buildSizes()], 'marker.opacity': [buildOpacity()] }, [0])
-            .then(refreshFocusMarker);
+            .then(refFocus);
     }, CONFIG.highlightDuration);
 };
 const updateTextList = () => {
@@ -1378,12 +1366,12 @@ const updateTextList = () => {
     const head = document.getElementById('textListHeading');
     list.innerHTML = '';
 
-    if (semanticLineModeEnabled && focusedTextName) {
+    if (connOn && focusName) {
         const isB = focusSimilarityMode === 'burrows';
         const modeLbl = isB ? 'Stylistically (Burrows)' : 'Semantically';
         const scoreLbl = isB ? 'burrows' : 'cosine';
-        head.textContent = 'Most ' + modeLbl + ' Similar to ' + focusedTextName + ':';
-        const nb = focusNeighbors(focusedTextIndex);
+        head.textContent = 'Most ' + modeLbl + ' Similar to ' + focusName + ':';
+        const nb = focusNeighbors(focusIdx);
         for (let i = 0; i < nb.length; i++) {
             const row = makeDiv((i + 1) + '. ' + nb[i].text + ' (' + scoreLbl + ': ' + fmt(nb[i].similarity, 4) + ')');
             row.title = 'Click to puff this text on the map (does not change focus)';
@@ -1413,7 +1401,7 @@ const updateTextList = () => {
         const txt = (k + 1) + '. ' + items[k].name + ' (' + fmt(items[k].value, 4) + ')' + (u ? ' ' + u : '');
         const r = makeDiv(txt);
         r.title = 'Click to puff this text on the map (does not change focus)';
-        if (items[k].index === focusedTextIndex) r.classList.add('focusedTextItem');
+        if (items[k].index === focusIdx) r.classList.add('focusedTextItem');
         ((idx) => {
             r.addEventListener('click', () => { flashPoint(idx); });
         })(items[k].index);
@@ -1421,7 +1409,7 @@ const updateTextList = () => {
     }
 };
 
-const updateColorInputs = () => {
+const syncColorIn = () => {
     const m = mainPlot.data[0] && mainPlot.data[0].marker;
     if (!m) return;
     document.getElementById('colorMin').value = m.cmin;
@@ -1431,7 +1419,7 @@ const applyColorScale = (lo, hi) => {
     Plotly.restyle(mainPlot, { 'marker.cmin': lo, 'marker.cmax': hi }, [0]).then(() => {
         currentCmin = lo;
         currentCmax = hi;
-        refreshFocusMarker();
+        refFocus();
     });
 };
 const zoomColor = factor => {
@@ -1452,10 +1440,10 @@ const changeMetric = key => {
     const range = metricRange(data);
     if (!range) return;
     const cluster = isClusterKey(key);
-    const scale = cluster ? CLUSTER_TURBO_COLORSCALE : (metricColorScales[key] || CONFIG.defaultColorScale);
+    const scale = cluster ? TURBO_SCALE : (metricScales[key] || CONFIG.defaultColorScale);
 
     currentMetric = key;
-    currentColorDataForPlot = data;
+    plotColors = data;
     currentColorscale = scale;
     currentCmin = range.min;
     currentCmax = range.max;
@@ -1480,10 +1468,10 @@ const changeMetric = key => {
         Plotly.restyle(mainPlot, markerUpdate, [0]),
         Plotly.relayout(mainPlot, { 'title.text': chartTitles[key] || 'Text Semantic Clusters' })
     ]).then(() => {
-        updateColorInputs();
+        syncColorIn();
         updateTextList();
         updatePctLabel();
-        refreshFocusMarker();
+        refFocus();
         applyCapitals(key);
     });
 };
@@ -1541,15 +1529,15 @@ const updateCorrPlot = () => {
     const xs = document.getElementById('xMetricSelect');
     const ys = document.getElementById('yMetricSelect');
     const type = document.getElementById('regressionType').value;
-    correlationXMetric = xs.value;
-    correlationYMetric = ys.value;
-    const xd = metricsData[correlationXMetric];
-    const yd = metricsData[correlationYMetric];
+    corrX = xs.value;
+    corrY = ys.value;
+    const xd = metricsData[corrX];
+    const yd = metricsData[corrY];
     if (!xd || !yd) { alert('One of the selected metrics has no data.'); return; }
     const points = collectPoints(xd, yd);
     const corr = pearson(xd, yd);
-    const xl = metricDisplayNames[correlationXMetric];
-    const yl = metricDisplayNames[correlationYMetric];
+    const xl = metricNames[corrX];
+    const yl = metricNames[corrY];
     let title = xl + ' vs ' + yl;
     if (corr !== null) title += ' (r = ' + corr.toFixed(3) + ')';
 
@@ -1590,21 +1578,21 @@ const updateCorrPlot = () => {
     });
     updateCorrStats(points, corr, type, model);
 };
-const populateCorrDropdowns = () => {
+const fillCorrSel = () => {
     const xs = document.getElementById('xMetricSelect');
     const ys = document.getElementById('yMetricSelect');
     if (!xs || !ys) return;
-    fillMetricSelect(xs, correlationXMetric, document.getElementById('xMetricSearchInput').value);
-    fillMetricSelect(ys, correlationYMetric, document.getElementById('yMetricSearchInput').value);
-    if (xs.value) correlationXMetric = xs.value;
-    if (ys.value) correlationYMetric = ys.value;
+    fillMetricSelect(xs, corrX, document.getElementById('xMetricSearchInput').value);
+    fillMetricSelect(ys, corrY, document.getElementById('yMetricSearchInput').value);
+    if (xs.value) corrX = xs.value;
+    if (ys.value) corrY = ys.value;
 };
 
 
 const selectedWords = () => {
     const out = [];
-    functionWordSelection.forEach(w => {
-        if (Array.isArray(burrowsWordFrequencies[w])) out.push(w);
+    fwSel.forEach(w => {
+        if (Array.isArray(burrowsFreq[w])) out.push(w);
     });
     out.sort((a, b) => a.localeCompare(b));
     return out;
@@ -1618,7 +1606,7 @@ const aggregatedRates = () => {
     for (let i = 0; i < textNames.length; i++) {
         let sum = 0, bad = false;
         for (let w = 0; w < words.length; w++) {
-            const v = burrowsWordFrequencies[words[w]][i];
+            const v = burrowsFreq[words[w]][i];
             if (!isNum(v)) { bad = true; break; }
             sum += v;
         }
@@ -1639,24 +1627,24 @@ const axisTitle = words => {
     if (words.length === 1) return 'Proportion of tokens that are "' + words[0] + '"';
     return 'Combined proportion of tokens that are any of ' + wordLabel(words);
 };
-const updateWordSummary = () => {
-    const s = document.getElementById('functionWordSelectionSummary');
+const syncWordSum = () => {
+    const s = document.getElementById('fwSelSummary');
     if (!s) return;
     const w = selectedWords();
     s.textContent = w.length ? 'Selected (' + w.length + '): ' + w.join(', ') : 'No function words selected.';
 };
-const populateWordControls = () => {
+const fillWordCtl = () => {
     const sel = document.getElementById('functionWordSelect');
     if (!sel) return;
-    const filter = document.getElementById('functionWordSearchInput').value.trim().toLowerCase();
-    const words = burrowsFunctionWords || [];
+    const filter = document.getElementById('fwSearch').value.trim().toLowerCase();
+    const words = burrowsFW || [];
     sel.innerHTML = '';
     for (let i = 0; i < words.length; i++) {
         if (filter && words[i].toLowerCase().indexOf(filter) === -1) continue;
         const o = document.createElement('option');
         o.value = words[i];
         o.text = words[i];
-        o.selected = functionWordSelection.has(words[i]);
+        o.selected = fwSel.has(words[i]);
         sel.appendChild(o);
     }
     if (!sel.options.length) {
@@ -1664,14 +1652,14 @@ const populateWordControls = () => {
         o2.value = ''; o2.text = 'No matching function words'; o2.disabled = true;
         sel.appendChild(o2);
     }
-    document.getElementById('functionWordPlotModeSelect').value = functionWordPlotMode;
-    updateWordSummary();
+    document.getElementById('fwModeSel').value = fwMode;
+    syncWordSum();
 };
 const focusedCluster = () => {
-    if (focusedTextIndex < 0 || !focusClusterMetric) return null;
-    const data = metricsData[focusClusterMetric];
-    if (!data || focusedTextIndex >= data.length) return null;
-    return isNum(data[focusedTextIndex]) ? data[focusedTextIndex] : null;
+    if (focusIdx < 0 || !clusterMetric) return null;
+    const data = metricsData[clusterMetric];
+    if (!data || focusIdx >= data.length) return null;
+    return isNum(data[focusIdx]) ? data[focusIdx] : null;
 };
 const wordCtx = (words, rates) => {
     const validIdx = [], validVal = [];
@@ -1699,7 +1687,7 @@ const wordCtx = (words, rates) => {
         evilFocusRate: null, evilFocusPercentile: null, evilFocusZ: null
     };
 
-    const cdata = focusClusterMetric ? metricsData[focusClusterMetric] : null;
+    const cdata = clusterMetric ? metricsData[clusterMetric] : null;
     const fcv = focusedCluster();
     ctx.isInFocusedCluster = i => fcv !== null && cdata && cdata[i] === fcv;
     if (fcv !== null) {
@@ -1714,19 +1702,19 @@ const wordCtx = (words, rates) => {
             ctx.clusterPercentileMean = empPct(sorted, ctx.clusterMean);
         }
     }
-    if (focusedTextIndex >= 0 && isNum(rates[focusedTextIndex])) {
-        ctx.focusRate = rates[focusedTextIndex];
+    if (focusIdx >= 0 && isNum(rates[focusIdx])) {
+        ctx.focusRate = rates[focusIdx];
         ctx.focusPercentile = empPct(sorted, ctx.focusRate);
         ctx.focusZ = ctx.zOf(ctx.focusRate);
         ctx.focusNormalPercentile = normalCdf(ctx.focusZ) * 100;
     }
 
-    ctx.evilClusterId = (clusterStatsState.compareMode === 'cluster') ? clusterStatsState.compareClusterId : null;
-    if (ctx.evilClusterId !== null && asNum(ctx.evilClusterId) === asNum(clusterStatsState.clusterId)) {
+    ctx.evilClusterId = (clusterState.compareMode === 'cluster') ? clusterState.compareClusterId : null;
+    if (ctx.evilClusterId !== null && asNum(ctx.evilClusterId) === asNum(clusterState.clusterId)) {
         ctx.evilClusterId = null;
     }
 
-    const evilCdata = clusterStatsState.source ? metricsData[clusterStatsState.source] : null;
+    const evilCdata = clusterState.source ? metricsData[clusterState.source] : null;
     if (ctx.evilClusterId !== null && evilCdata) {
         ctx.isInEvilCluster = i => asNum(evilCdata[i]) === asNum(ctx.evilClusterId);
         const ecr = [];
@@ -1743,8 +1731,8 @@ const wordCtx = (words, rates) => {
         ctx.isInEvilCluster = () => false;
     }
 
-    if (evilFocusTextIndex >= 0 && isNum(rates[evilFocusTextIndex])) {
-        ctx.evilFocusRate = rates[evilFocusTextIndex];
+    if (evilIdx >= 0 && isNum(rates[evilIdx])) {
+        ctx.evilFocusRate = rates[evilIdx];
         ctx.evilFocusPercentile = empPct(sorted, ctx.evilFocusRate);
         ctx.evilFocusZ = ctx.zOf(ctx.evilFocusRate);
     }
@@ -1757,7 +1745,7 @@ const groupIdx = ctx => {
         const idx = ctx.validIndices[i];
         const inCluster = ctx.isInFocusedCluster(idx);
         const inEvil = ctx.isInEvilCluster && ctx.isInEvilCluster(idx);
-        if (idx === focusedTextIndex) g.focus.push(idx);
+        if (idx === focusIdx) g.focus.push(idx);
         else if (inCluster && inEvil) { g.cluster.push(idx); g.evil.push(idx); }
         else if (inCluster) g.cluster.push(idx);
         else if (inEvil) g.evil.push(idx);
@@ -1788,13 +1776,13 @@ const groupTraces = (groups, ptFn, hover) => {
     if (groups.cluster.length) {
         traces.push(markerTrace(groups.cluster, ptFn, 'Focused cluster', {
             size: 9, color: FOCUS_CLUSTER_COLOR,
-            line: { color: FOCUS_CLUSTER_LINE_COLOR, width: 1.5 }
+            line: { color: FOCUS_CL_LINE, width: 1.5 }
         }, hover));
     }
     if (groups.evil.length) {
         traces.push(markerTrace(groups.evil, ptFn, 'Evil focus cluster', {
             size: 9, color: EVIL_CLUSTER_COLOR,
-            line: { color: EVIL_CLUSTER_LINE_COLOR, width: 1.5 }
+            line: { color: EVIL_CL_LINE, width: 1.5 }
         }, hover));
     }
     return traces;
@@ -1833,7 +1821,7 @@ const evilFocusStar = (x, y, text, hover) => {
         x: [x], y: [y], mode: 'markers+text', type: 'scatter',
         name: 'Evil focus text', text: [text], textposition: 'bottom center',
         textfont: { size: 10, color: 'rgba(107, 33, 168, 0.85)' },
-        marker: { symbol: 'star', size: CONFIG.focusStarSize, color: EVIL_CLUSTER_LINE_COLOR, opacity: 0.8,
+        marker: { symbol: 'star', size: CONFIG.focusStarSize, color: EVIL_CL_LINE, opacity: 0.8,
                   line: { color: '#6b21a8', width: 2 } },
         hoverinfo: hover ? 'text+x' : 'text',
         hovertemplate: hover || '%{text}<extra></extra>'
@@ -1844,7 +1832,7 @@ const evilClusterDiamond = (x, y, text) => {
         x: [x], y: [y], mode: 'markers+text', type: 'scatter',
         name: 'Evil cluster mean :(', showlegend: false, text: [text], textposition: 'bottom center',
         textfont: { size: 10, color: 'rgba(107, 33, 168, 0.85)' },
-        marker: { symbol: 'diamond', size: 14, color: EVIL_CLUSTER_LINE_COLOR, opacity: 0.85,
+        marker: { symbol: 'diamond', size: 14, color: EVIL_CL_LINE, opacity: 0.85,
                   line: { color: '#6b21a8', width: 2 } },
         hoverinfo: 'text', hovertemplate: '%{text}<extra></extra>'
     };
@@ -1853,7 +1841,7 @@ const evilClusterLine = (x, topY, ctx) => {
     return {
         x: [x, x], y: [0, topY], mode: 'lines', type: 'scatter',
         name: ctx.evilClusterRates ? 'Evil cluster mean (n=' + ctx.evilClusterRates.length + ')' : 'Evil cluster mean',
-        line: { color: EVIL_CLUSTER_LINE_COLOR, width: 2, dash: 'dot' }, hoverinfo: 'skip'
+        line: { color: EVIL_CL_LINE, width: 2, dash: 'dot' }, hoverinfo: 'skip'
     };
 };
 const histTrace = (values, s, minX, maxX, kind) => {
@@ -1892,17 +1880,23 @@ const wordLayout = (title, xaxis, yaxis, bottomMargin) => {
     ya.showgrid = GRID_STYLE.showgrid; ya.gridwidth = GRID_STYLE.gridwidth;
     ya.gridcolor = GRID_STYLE.gridcolor; ya.zeroline = false;
     for (const k2 in yaxis) ya[k2] = yaxis[k2];
-    return {
+    const layout = {
         title: { text: title, x: 0.5, xanchor: 'center', font: { size: 14 } },
         xaxis: xa, yaxis: ya,
         plot_bgcolor: '#f8f9fa', paper_bgcolor: 'white',
-        hovermode: 'closest', showlegend: true,
-        legend: { orientation: 'h', x: 0.5, xanchor: 'center', y: 1.0, yanchor: 'bottom',
-                  bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#ccc', borderwidth: 1 },
+        hovermode: 'closest',
+        showlegend: fwLegendVis,
         barmode: 'overlay',
         font: { family: 'Arial, sans-serif' },
         margin: { t: 70, l: 70, r: 70, b: bottomMargin }
     };
+    if (fwLegendVis) {
+        layout.legend = {
+            orientation: 'h', x: 0.5, xanchor: 'center', y: 1.0, yanchor: 'bottom',
+            bgcolor: 'rgba(255,255,255,0.85)', bordercolor: '#ccc', borderwidth: 1
+        };
+    }
+    return layout;
 };
 const wordTitle = (prefix, ctx) => {
     return prefix + ' ' + ctx.wordLabel + ' rate';
@@ -1921,7 +1915,7 @@ const focusAnnotation = ctx => {
     base.borderwidth = 1;
     base.borderpad = 6;
     base.font = { size: 13, color: '#000' };
-    base.text = '<b>' + focusedTextName + '</b><br>' +
+    base.text = '<b>' + focusName + '</b><br>' +
                 ordinal(ctx.focusPercentile) + ' percentile (actual)<br>' +
                 ordinal(ctx.focusNormalPercentile) + ' percentile (normal curve)<br>' +
                 'z = ' + ctx.focusZ.toFixed(2);
@@ -1933,7 +1927,7 @@ const zView = ctx => {
     const stdNorm = z => normalPdf(z, 0, 1);
     const curve = sampleCurve(zmin, zmax, 360, stdNorm);
     const traces = [];
-    if (functionWordShowHistogram) {
+    if (fwShowHist) {
         const zvals = [];
         for (let i = 0; i < ctx.validValues.length; i++) zvals.push(ctx.zOf(ctx.validValues[i]));
         traces.push(histTrace(zvals, 1, zmin, zmax, 'z'));
@@ -1972,7 +1966,7 @@ const zView = ctx => {
         traces.push(evilClusterDiamond(ezc2, ecy,
             'evil cluster mean :(<br>z=' + ezc2.toFixed(2) + '<br>' + ctx.evilClusterPercentileMean.toFixed(1) + '%'));
     }
-    if (functionWordShowMarkers) {
+    if (fwShowMarks) {
         const groups = groupIdx(ctx);
         const ptFn = i => {
             const z = ctx.zOf(ctx.wordRates[i]);
@@ -1984,11 +1978,11 @@ const zView = ctx => {
     }
     if (ctx.focusZ !== null) {
         traces.push(focusStar(ctx.focusZ, stdNorm(ctx.focusZ),
-            focusedTextName + '<br>z=' + ctx.focusZ.toFixed(2) + '<br>' + ctx.focusPercentile.toFixed(1) + '%'));
+            focusName + '<br>z=' + ctx.focusZ.toFixed(2) + '<br>' + ctx.focusPercentile.toFixed(1) + '%'));
     }
     if (ctx.evilFocusZ !== null) {
         traces.push(evilFocusStar(ctx.evilFocusZ, stdNorm(ctx.evilFocusZ),
-            'Evil focus: ' + evilFocusTextName + '<br>z=' + ctx.evilFocusZ.toFixed(2) + '<br>' + ctx.evilFocusPercentile.toFixed(1) + '%'));
+            'Evil focus: ' + evilName + '<br>z=' + ctx.evilFocusZ.toFixed(2) + '<br>' + ctx.evilFocusPercentile.toFixed(1) + '%'));
     }
     const low = Math.ceil(zmin), high = Math.floor(zmax);
     const step = Math.max(1, Math.ceil((high - low) / 12));
@@ -2020,11 +2014,11 @@ const pctView = ctx => {
           hoverinfo: 'skip' }
     ];
     const pctOf = r => empPct(ctx.sortedValues, r);
-    if (functionWordShowMarkers && !hideGrayPoints) {
+    if (fwShowMarks && !hideGrayPoints) {
         const others = [];
         for (let j = 0; j < ctx.validIndices.length; j++) {
             const idx = ctx.validIndices[j];
-            if (idx !== focusedTextIndex && !ctx.isInFocusedCluster(idx) &&
+            if (idx !== focusIdx && !ctx.isInFocusedCluster(idx) &&
                 !(ctx.isInEvilCluster && ctx.isInEvilCluster(idx))) others.push(ctx.wordRates[idx]);
         }
         if (others.length) {
@@ -2045,7 +2039,7 @@ const pctView = ctx => {
             x: ctx.clusterRates, y: cys, mode: 'markers', type: 'scatter',
             name: 'Focused cluster (n=' + ctx.clusterRates.length + ')',
             marker: { size: 9, color: FOCUS_CLUSTER_COLOR,
-                      line: { color: FOCUS_CLUSTER_LINE_COLOR, width: 1.5 } },
+                      line: { color: FOCUS_CL_LINE, width: 1.5 } },
             hoverinfo: 'skip'
         });
     }
@@ -2056,7 +2050,7 @@ const pctView = ctx => {
             x: ctx.evilClusterRates, y: ecys, mode: 'markers', type: 'scatter',
             name: 'Evil cluster (n=' + ctx.evilClusterRates.length + ')',
             marker: { size: 9, color: EVIL_CLUSTER_COLOR,
-                      line: { color: EVIL_CLUSTER_LINE_COLOR, width: 1.5 } },
+                      line: { color: EVIL_CL_LINE, width: 1.5 } },
             hoverinfo: 'skip'
         });
     }
@@ -2070,7 +2064,7 @@ const pctView = ctx => {
     }
     if (ctx.focusRate !== null) {
         traces.push(focusStar(ctx.focusRate, ctx.focusPercentile,
-            focusedTextName + '<br>' + ctx.focusPercentile.toFixed(1) + '%'));
+            focusName + '<br>' + ctx.focusPercentile.toFixed(1) + '%'));
         traces.push({
             x: [ctx.focusRate, ctx.focusRate], y: [0, ctx.focusPercentile],
             mode: 'lines', type: 'scatter', name: 'Focus guide',
@@ -2080,7 +2074,7 @@ const pctView = ctx => {
     }
     if (ctx.evilFocusRate !== null) {
         traces.push(evilFocusStar(ctx.evilFocusRate, ctx.evilFocusPercentile,
-            'Evil focus: ' + evilFocusTextName + '<br>' + ctx.evilFocusPercentile.toFixed(1) + '%'));
+            'Evil focus: ' + evilName + '<br>' + ctx.evilFocusPercentile.toFixed(1) + '%'));
     }
     const layout = wordLayout(wordTitle('Percentile of', ctx),
         { title: ctx.axisTitle, range: [ctx.minX, ctx.maxX] },
@@ -2092,14 +2086,14 @@ const densityView = ctx => {
     const at = x => normalPdf(x, ctx.mean, ctx.std);
     const curve = sampleCurve(ctx.minX, ctx.maxX, 240, at);
     const traces = [];
-    if (functionWordShowHistogram) traces.push(histTrace(ctx.validValues, ctx.std, ctx.minX, ctx.maxX, 'rate'));
+    if (fwShowHist) traces.push(histTrace(ctx.validValues, ctx.std, ctx.minX, ctx.maxX, 'rate'));
     traces.push({
         x: curve.x, y: curve.y, mode: 'lines', type: 'scatter',
         name: 'Normal fit', line: { color: NORMAL_CURVE_COLOR, width: 3 }, hoverinfo: 'skip'
     });
     if (ctx.clusterMean !== null) traces.push(clusterLine(ctx.clusterMean, at(ctx.clusterMean), ctx));
     if (ctx.evilClusterMean !== null) traces.push(evilClusterLine(ctx.evilClusterMean, at(ctx.evilClusterMean), ctx));
-    if (functionWordShowMarkers) {
+    if (fwShowMarks) {
         const groups = groupIdx(ctx);
         const ptFn = i => {
             return { x: ctx.wordRates[i], y: at(ctx.wordRates[i]), label: textNames[i] };
@@ -2107,9 +2101,9 @@ const densityView = ctx => {
         const hover = '%{text}<br>rate: %{x:.4f}<extra></extra>';
         const grp = groupTraces(groups, ptFn, hover);
         for (let i = 0; i < grp.length; i++) traces.push(grp[i]);
-        if (groups.focus.length) traces.push(focusStar(ctx.focusRate, at(ctx.focusRate), focusedTextName, hover));
+        if (groups.focus.length) traces.push(focusStar(ctx.focusRate, at(ctx.focusRate), focusName, hover));
         if (ctx.evilFocusRate !== null) {
-            traces.push(evilFocusStar(ctx.evilFocusRate, at(ctx.evilFocusRate), 'Evil focus: ' + evilFocusTextName, hover));
+            traces.push(evilFocusStar(ctx.evilFocusRate, at(ctx.evilFocusRate), 'Evil focus: ' + evilName, hover));
         }
     }
     const layout = wordLayout(wordTitle('Distribution of', ctx),
@@ -2136,8 +2130,8 @@ const updateWordStats = ctx => {
         add('Focus percentile (normal)', ctx.focusNormalPercentile.toFixed(2) + '% (' + ordinal(ctx.focusNormalPercentile) + ')');
     }
     const fcv = focusedCluster();
-    if (fcv !== null && focusClusterMetric) {
-        add('Focus cluster', clusterValueLabel(focusClusterMetric, fcv));
+    if (fcv !== null && clusterMetric) {
+        add('Focus cluster', clusterValueLabel(clusterMetric, fcv));
     }
     if (ctx.clusterMean !== null) {
         add('Focused cluster mean', ctx.clusterMean.toFixed(6) + (ctx.clusterRates ? ' (n=' + ctx.clusterRates.length + ')' : ''));
@@ -2165,7 +2159,7 @@ const updateFwPlot = () => {
     const agg = aggregatedRates();
     if (!agg) {
         emptyPlot('functionWordPlot', 'Select at least one function word');
-        if (clusterStatsState.view !== 'cluster') {
+        if (clusterState.view !== 'cluster') {
             const c1 = fwStats();
             if (c1) c1.appendChild(makeDiv('No function words selected.'));
         }
@@ -2175,7 +2169,7 @@ const updateFwPlot = () => {
     for (let i = 0; i < agg.rates.length; i++) if (isNum(agg.rates[i])) valid++;
     if (valid < 2) {
         emptyPlot('functionWordPlot', 'Not enough data for ' + wordLabel(agg.words));
-        if (clusterStatsState.view !== 'cluster') {
+        if (clusterState.view !== 'cluster') {
             const c2 = fwStats();
             if (c2) c2.appendChild(makeDiv('Not enough data.'));
         }
@@ -2183,19 +2177,19 @@ const updateFwPlot = () => {
     }
     const ctx = wordCtx(agg.words, agg.rates);
     let view;
-    if (functionWordPlotMode === 'zscore') view = zView(ctx);
-    else if (functionWordPlotMode === 'cdf') view = pctView(ctx);
+    if (fwMode === 'zscore') view = zView(ctx);
+    else if (fwMode === 'cdf') view = pctView(ctx);
     else view = densityView(ctx);
     drawPlot('functionWordPlot', view.traces, view.layout, null)
         .then(() => Plotly.Plots.resize(document.getElementById('functionWordPlot')));
-    if (clusterStatsState.view !== 'cluster') updateWordStats(ctx);
+    if (clusterState.view !== 'cluster') updateWordStats(ctx);
 };
-const computeWordStats = () => {
-    if (!Array.isArray(burrowsFunctionWords) || !burrowsWordFrequencies) return null;
+const calcWordStats = () => {
+    if (!Array.isArray(burrowsFW) || !burrowsFreq) return null;
     const stats = {}, zscores = {};
-    for (let i = 0; i < burrowsFunctionWords.length; i++) {
-        const word = burrowsFunctionWords[i];
-        const rates = burrowsWordFrequencies[word];
+    for (let i = 0; i < burrowsFW.length; i++) {
+        const word = burrowsFW[i];
+        const rates = burrowsFreq[word];
         if (!Array.isArray(rates)) continue;
         const valid = [];
         for (let j = 0; j < rates.length; j++) if (isNum(rates[j])) valid.push(rates[j]);
@@ -2261,7 +2255,7 @@ const deltaPair = (a, b) => {
         const minAbs = Math.min(Math.abs(za), Math.abs(zb));
         contrib.push({
             word: w, zA: za, zB: zb, absDiff, avgZ,
-            rateA: burrowsWordFrequencies[w][a], rateB: burrowsWordFrequencies[w][b],
+            rateA: burrowsFreq[w][a], rateB: burrowsFreq[w][b],
             driverScore: sameDir ? minAbs * Math.exp(-absDiff) : 0,
             sharedScore: Math.abs(avgZ) * Math.exp(-absDiff),
             deltaContribution: absDiff
@@ -2280,7 +2274,7 @@ const sortContrib = (arr, mode) => {
     copy.sort((a, b) => b[key] - a[key]);
     return copy;
 };
-const deltaPlotHeight = (words, top, bot) => {
+const deltaHeight = (words, top, bot) => {
     return Math.max(800, words * 24 + top + bot);
 };
 const fillDeltaSelect = (sel, filter, selIdx) => {
@@ -2299,7 +2293,7 @@ const fillDeltaSelect = (sel, filter, selIdx) => {
     else if (sel.options.length > 0) sel.value = sel.options[0].value;
     return sel.value === '' ? null : Number(sel.value);
 };
-const populateDeltaSelects = () => {
+const fillDeltaSel = () => {
     const a = fillDeltaSelect(document.getElementById('deltaTextASelect'),
         document.getElementById('deltaTextASearch').value, deltaState.textA);
     const b = fillDeltaSelect(document.getElementById('deltaTextBSelect'),
@@ -2315,6 +2309,17 @@ const syncDeltaDropdowns = () => {
             s.value = String(pairs[i][1]);
         }
     }
+    
+    const sum = document.getElementById('deltaPairSummary');
+    if (sum) {
+        const a = deltaState.textA, b = deltaState.textB;
+        if (a === null || b === null || !textNames[a] || !textNames[b]) {
+            sum.textContent = 'Pick two texts to compare';
+        } else {
+            sum.innerHTML = '<span style="color:#D81D23;">A:</span> ' + textNames[a] +
+                            '<br><span style="color:#50498A;">B:</span> ' + textNames[b];
+        }
+    }
 };
 const setDeltaTopN = n => {
     deltaState.topN = n;
@@ -2323,28 +2328,28 @@ const setDeltaTopN = n => {
 };
 const initDelta = () => {
     if (deltaState.initialized) return;
-    if (!deltaState.wordStats) deltaState.wordStats = computeWordStats();
+    if (!deltaState.wordStats) deltaState.wordStats = calcWordStats();
     if (!deltaState.wordStats) return;
     deltaState.deltaDistribution = computeDist();
     deltaState.totalWordCount = Object.keys(deltaState.wordStats.stats).length;
     document.getElementById('deltaTopNRange').max = String(deltaState.totalWordCount);
     setDeltaTopN(Math.min(deltaState.topN, deltaState.totalWordCount));
-    if (deltaState.textA === null) deltaState.textA = focusedTextIndex >= 0 ? focusedTextIndex : 0;
+    if (deltaState.textA === null) deltaState.textA = focusIdx >= 0 ? focusIdx : 0;
     if (deltaState.textB === null) deltaState.textB = defaultDeltaPartner(deltaState.textA);
-    populateDeltaSelects();
+    fillDeltaSel();
     syncDeltaDropdowns();
     deltaState.initialized = true;
 };
 const recomputeDelta = () => {
-    deltaState.wordStats = computeWordStats();
+    deltaState.wordStats = calcWordStats();
     deltaState.deltaDistribution = computeDist();
     deltaState.totalWordCount = Object.keys(deltaState.wordStats ? deltaState.wordStats.stats : {}).length;
 };
-const updateDeltaPlot = () => {
-    if (!deltaState.wordStats) deltaState.wordStats = computeWordStats();
+const refDeltaPlot = () => {
+    if (!deltaState.wordStats) deltaState.wordStats = calcWordStats();
     if (!deltaState.wordStats) {
         emptyPlot('deltaPlot', 'No Burrows function-word data available');
-        updateDeltaStats(null);
+        refDeltaStats(null);
         return;
     }
     renderDeltaPair();
@@ -2358,13 +2363,13 @@ const renderDeltaPair = () => {
     const a = deltaState.textA, b = deltaState.textB;
     if (a === null || b === null || a < 0 || b < 0 || a === b) {
         emptyPlot('deltaPlot', 'Select two different texts to compare');
-        updateDeltaStats(null);
+        refDeltaStats(null);
         return;
     }
     const pair = deltaPair(a, b);
     if (!pair || !pair.contributions.length) {
         emptyPlot('deltaPlot', 'Insufficient overlapping data for these texts');
-        updateDeltaStats(null);
+        refDeltaStats(null);
         return;
     }
     const sorted = sortContrib(pair.contributions, deltaState.sortMode);
@@ -2378,7 +2383,7 @@ const renderDeltaPair = () => {
         const it = shown[j];
         const ratio = it.absDiff / maxDiff;
         const r = Math.round(39 + 208 * ratio);
-        const g = Math.round(164 - 94 * ratio);
+        const g = Math.round(164 - 9 * ratio);
         const bl = Math.round(217 - 148 * ratio);
         gaps.push({
             x: [Math.min(it.zA, it.zB), Math.max(it.zA, it.zB)],
@@ -2440,8 +2445,8 @@ const renderDeltaPair = () => {
         font: { family: 'Arial, sans-serif' },
         margin: { t: 120, l: 130, r: 60, b: 70 }
     };
-    drawDelta(traces, layout, deltaPlotHeight(shown.length, 120, 70));
-    updateDeltaStats(pair);
+    drawDelta(traces, layout, deltaHeight(shown.length, 120, 70));
+    refDeltaStats(pair);
 };
 const deltaRow = (word, main, sec) => {
     const r = document.createElement('div');
@@ -2481,7 +2486,7 @@ const deltaSection = (title, color, count, buildList) => {
     det.appendChild(listWrap);
     return det;
 };
-const updateDeltaStats = pair => {
+const refDeltaStats = pair => {
     const body = clearBody('deltaStats');
     if (!body) return;
     if (!pair) {
@@ -2590,8 +2595,8 @@ const clusterCount = (labels, id) => {
     return n;
 };
 const defaultCluster = (labels, ids) => {
-    if (focusedTextIndex >= 0 && labels && isNum(labels[focusedTextIndex])) {
-        const fcv = Number(labels[focusedTextIndex]);
+    if (focusIdx >= 0 && labels && isNum(labels[focusIdx])) {
+        const fcv = Number(labels[focusIdx]);
         if (ids.indexOf(fcv) !== -1) return fcv;
     }
     return ids[0];
@@ -2601,23 +2606,23 @@ const compareCluster = (ids, excludeId) => {
     for (let i = 0; i < ids.length; i++) if (ids[i] !== exclude) return ids[i];
     return null;
 };
-const initClusterState = () => {
-    if (!deltaState.wordStats) deltaState.wordStats = computeWordStats();
-    if (!clusterMetricKeys.length) return;
-    if (clusterStatsState.source === null) {
-        clusterStatsState.source = focusClusterMetric || clusterMetricKeys[0];
+const initCluster = () => {
+    if (!deltaState.wordStats) deltaState.wordStats = calcWordStats();
+    if (!clusterKeys.length) return;
+    if (clusterState.source === null) {
+        clusterState.source = clusterMetric || clusterKeys[0];
     }
-    const labels = metricsData[clusterStatsState.source];
+    const labels = metricsData[clusterState.source];
     const ids = clusterIds(labels);
     if (!ids.length) return;
-    if (clusterStatsState.clusterId === null || ids.indexOf(asNum(clusterStatsState.clusterId)) === -1) {
-        clusterStatsState.clusterId = defaultCluster(labels, ids);
+    if (clusterState.clusterId === null || ids.indexOf(asNum(clusterState.clusterId)) === -1) {
+        clusterState.clusterId = defaultCluster(labels, ids);
     }
-    if (clusterStatsState.compareMode === 'cluster' && clusterStatsState.compareClusterId !== null) {
-        const cmp = asNum(clusterStatsState.compareClusterId);
+    if (clusterState.compareMode === 'cluster' && clusterState.compareClusterId !== null) {
+        const cmp = asNum(clusterState.compareClusterId);
         const missing = ids.indexOf(cmp) === -1;
-        const same = cmp === asNum(clusterStatsState.clusterId);
-        if (missing || same) clusterStatsState.compareClusterId = null;
+        const same = cmp === asNum(clusterState.clusterId);
+        if (missing || same) clusterState.compareClusterId = null;
     }
 };
 const clusterDecomp = (source, clusterId, compareClusterId) => {
@@ -2704,13 +2709,13 @@ const filterContribs = (contribs, state) => {
     return arr;
 };
 const selectWord = (word, additive) => {
-    if (additive) functionWordSelection.add(word);
+    if (additive) fwSel.add(word);
     else {
-        functionWordSelection.clear();
-        functionWordSelection.add(word);
+        fwSel.clear();
+        fwSel.add(word);
     }
-    updateWordSummary();
-    populateWordControls();
+    syncWordSum();
+    fillWordCtl();
     if (viewMode === 'functionWord') updateFwPlot();
 };
 
@@ -2726,9 +2731,7 @@ const wordRow = (t, maxAbs) => {
     const fill = document.createElement('span');
     fill.className = 'cfill';
     fill.style.width = Math.min(100, Math.abs(t.delta) / maxAbs * 100) + '%';
-    fill.style.background = t.delta >= 0
-        ? 'linear-gradient(90deg, #fbd0d0, #E85A93)'
-        : 'linear-gradient(90deg, #d0d6fb, #2FA3E6)';
+    fill.style.background = t.delta >= 0 ? BAR_POS_GRAD : BAR_NEG_GRAD;
     bar.appendChild(fill);
     const val = document.createElement('span');
     val.className = 'cval';
@@ -2754,7 +2757,7 @@ const tableRow = (t, i) => {
     const z = document.createElement('span');
     z.className = 'ctv';
     z.textContent = fmtDelta(t.delta, 2);
-    z.style.color = t.delta >= 0 ? CLUSTER_BAR_TEXT_POS_COLOR : CLUSTER_BAR_TEXT_NEG_COLOR;
+    z.style.color = t.delta >= 0 ? BAR_TXT_POS : BAR_TXT_NEG;
     const sh = document.createElement('span');
     sh.className = 'ctv';
     sh.textContent = t.share.toFixed(1) + '%';
@@ -2767,7 +2770,7 @@ const tableRow = (t, i) => {
     });
     return row;
 };
-const renderInspector = (decomp, word) => {
+const renderInsp = (decomp, word) => {
     const wrap = document.createElement('div');
     wrap.style.cssText = 'margin:6px 0; padding:5px 6px; border:1px solid #ddd; border-radius:2px; font-size:10px; line-height:1.45;';
     const head = document.createElement('div');
@@ -2874,12 +2877,12 @@ const searchRow = (labelText, selectedIdx, onChange) => {
     });
     return wrap;
 };
-const evilClusterMean = () => {
-    if (evilFocusTextIndex < 0) return null;
-    const labels = metricsData[clusterStatsState.source];
-    if (!labels || !isNum(labels[evilFocusTextIndex])) return null;
-    const evilClusterId = Number(labels[evilFocusTextIndex]);
-    if (evilClusterId === asNum(clusterStatsState.clusterId)) return null;
+const evilAvg = () => {
+    if (evilIdx < 0) return null;
+    const labels = metricsData[clusterState.source];
+    if (!labels || !isNum(labels[evilIdx])) return null;
+    const evilClusterId = Number(labels[evilIdx]);
+    if (evilClusterId === asNum(clusterState.clusterId)) return null;
     const ws = deltaState.wordStats;
     if (!ws) return null;
     let sum = 0, numWords = 0;
@@ -2905,28 +2908,26 @@ const clusterControls = () => {
     const wrap = document.createElement('div');
     wrap.style.cssText = 'margin:6px 0; font-size:10px; line-height:1.5;';
 
-    const labels = metricsData[clusterStatsState.source];
+    const labels = metricsData[clusterState.source];
     const ids = clusterIds(labels);
-    const focusedClusterId = (focusedTextIndex >= 0 && labels && isNum(labels[focusedTextIndex]))
-        ? Number(labels[focusedTextIndex]) : null;
-    const curClusterId = asNum(clusterStatsState.clusterId);
+    const focusedClusterId = (focusIdx >= 0 && labels && isNum(labels[focusIdx]))
+        ? Number(labels[focusIdx]) : null;
+    const curClusterId = asNum(clusterState.clusterId);
 
     wrap.appendChild(makeSelect('Cluster source:',
-        clusterMetricKeys.map(k => [k, clusterLabel(k)]),
-        clusterStatsState.source,
+        clusterKeys.map(k => [k, clusterLabel(k)]),
+        clusterState.source,
         v => {
-            clusterStatsState.source = v;
-            /* Sync the focus cluster metric so the yellow dots on the
-             * function-word plot follow the newly-selected cluster source. */
-            focusClusterMetric = fillClusterSelect(
-                document.getElementById('focusClusterMetricSelect'), v
+            clusterState.source = v;
+            clusterMetric = fillClusterSelect(
+                document.getElementById('clusterSel'), v
             );
-            clusterStatsState.clusterId = null;
-            clusterStatsState.clusterIdUserSelected = false;
-            clusterStatsState.compareClusterId = null;
-            evilFocusTextIndex = -1;
-            evilFocusTextName = null;
-            renderClusterStats();
+            clusterState.clusterId = null;
+            clusterState.clusterIdUserSelected = false;
+            clusterState.compareClusterId = null;
+            evilIdx = -1;
+            evilName = null;
+            renderClStats();
             updateFwPlot();
         }));
 
@@ -2938,48 +2939,48 @@ const clusterControls = () => {
         }),
         curClusterId,
         v => {
-            clusterStatsState.clusterId = Number(v);
-            clusterStatsState.clusterIdUserSelected = true;
-            evilFocusTextIndex = -1;
-            evilFocusTextName = null;
-            renderClusterStats();
+            clusterState.clusterId = Number(v);
+            clusterState.clusterIdUserSelected = true;
+            evilIdx = -1;
+            evilName = null;
+            renderClStats();
             updateFwPlot();
         }));
 
     wrap.appendChild(makeSelect('Compare:',
         [['corpus', 'Corpus mean'], ['cluster', 'Another cluster']],
-        clusterStatsState.compareMode,
+        clusterState.compareMode,
         v => {
-            clusterStatsState.compareMode = v;
+            clusterState.compareMode = v;
             if (v === 'corpus') {
-                evilFocusTextIndex = -1;
-                evilFocusTextName = null;
-                clusterStatsState.compareClusterId = null;
+                evilIdx = -1;
+                evilName = null;
+                clusterState.compareClusterId = null;
             } else {
-                if (clusterStatsState.compareClusterId === null ||
-                    asNum(clusterStatsState.compareClusterId) === curClusterId) {
-                    clusterStatsState.compareClusterId = compareCluster(ids, curClusterId);
+                if (clusterState.compareClusterId === null ||
+                    asNum(clusterState.compareClusterId) === curClusterId) {
+                    clusterState.compareClusterId = compareCluster(ids, curClusterId);
                 }
             }
-            renderClusterStats();
+            renderClStats();
             updateFwPlot();
         }));
 
-    if (clusterStatsState.compareMode === 'cluster') {
-        const evilRow = searchRow('Evil focus (text):', evilFocusTextIndex >= 0 ? evilFocusTextIndex : null, idx => {
+    if (clusterState.compareMode === 'cluster') {
+        const evilRow = searchRow('Evil focus (text):', evilIdx >= 0 ? evilIdx : null, idx => {
             if (idx === null) {
-                evilFocusTextIndex = -1;
-                evilFocusTextName = null;
+                evilIdx = -1;
+                evilName = null;
             } else {
-                evilFocusTextIndex = idx;
-                evilFocusTextName = textNames[idx];
-                const labels2 = metricsData[clusterStatsState.source];
+                evilIdx = idx;
+                evilName = textNames[idx];
+                const labels2 = metricsData[clusterState.source];
                 if (labels2 && isNum(labels2[idx])) {
                     const evilCluster = Number(labels2[idx]);
-                    clusterStatsState.compareClusterId = evilCluster !== curClusterId ? evilCluster : null;
+                    clusterState.compareClusterId = evilCluster !== curClusterId ? evilCluster : null;
                 }
             }
-            renderClusterStats();
+            renderClStats();
             updateFwPlot();
         });
         wrap.appendChild(evilRow);
@@ -2989,20 +2990,20 @@ const clusterControls = () => {
             const n = clusterCount(labels, id);
             vsOpts.push([id, id < 0 ? 'unclustered (n=' + n + ')' : 'cluster ' + id + ' (n=' + n + ')']);
         });
-        wrap.appendChild(makeSelect('vs cluster:', vsOpts, asNum(clusterStatsState.compareClusterId),
+        wrap.appendChild(makeSelect('vs cluster:', vsOpts, asNum(clusterState.compareClusterId),
             v => {
-                clusterStatsState.compareClusterId = v === '' ? null : Number(v);
-                evilFocusTextIndex = -1;
-                evilFocusTextName = null;
-                renderClusterStats();
+                clusterState.compareClusterId = v === '' ? null : Number(v);
+                evilIdx = -1;
+                evilName = null;
+                renderClStats();
                 updateFwPlot();
             }));
 
-        const evilInfo = evilClusterMean();
-        if (evilFocusTextIndex >= 0) {
+        const evilInfo = evilAvg();
+        if (evilIdx >= 0) {
             const box = document.createElement('div');
             box.style.cssText = 'margin:3px 0 4px 0; padding:4px 6px; background:#faf5ff; border:1px solid #d8b4fe; border-radius:3px; font-size:9px; line-height:1.4; color:#6b21a8;';
-            box.innerHTML = '<b>Evil focus:</b> ' + evilFocusTextName +
+            box.innerHTML = '<b>Evil focus:</b> ' + evilName +
                 (evilInfo
                     ? '<br>Cluster ' + evilInfo.clusterId + ' (n=' + evilInfo.n + ')<br>Mean |z\u0304| = ' + evilInfo.meanAbsZ.toFixed(4)
                     : '<br><i>Same cluster as focus; evil cluster suppressed.</i>');
@@ -3012,50 +3013,50 @@ const clusterControls = () => {
 
     wrap.appendChild(makeSelect('Sort:',
         [['share', 'Contribution'], ['signed', 'Signed z'], ['consistency', 'Consistency']],
-        clusterStatsState.sortMode,
-        v => { clusterStatsState.sortMode = v; renderClusterStats(); }));
+        clusterState.sortMode,
+        v => { clusterState.sortMode = v; renderClStats(); }));
 
     wrap.appendChild(makeSelect('Sign:',
         [['both', 'Both signs'], ['over', 'Over-used'], ['under', 'Under-used']],
-        clusterStatsState.signFilter,
-        v => { clusterStatsState.signFilter = v; renderClusterStats(); }));
+        clusterState.signFilter,
+        v => { clusterState.signFilter = v; renderClStats(); }));
 
     const wordOpts = [['', '\u2014 pick a word \u2014']];
     if (deltaState.wordStats) {
         const ws = Object.keys(deltaState.wordStats.stats).sort();
         for (let i = 0; i < ws.length; i++) wordOpts.push([ws[i], ws[i]]);
     }
-    wrap.appendChild(makeSelect('Check a word:', wordOpts, clusterStatsState.inspectWord || '',
+    wrap.appendChild(makeSelect('Check a word:', wordOpts, clusterState.inspectWord || '',
         v => {
-            clusterStatsState.inspectWord = v || null;
-            renderClusterStats();
+            clusterState.inspectWord = v || null;
+            renderClStats();
         }));
 
     return wrap;
 };
-const renderClusterStats = () => {
-    const c = document.getElementById('functionWordStatsContent');
+const renderClStats = () => {
+    const c = document.getElementById('fwStatsContent');
     if (!c) return;
     c.innerHTML = '';
 
-    if (!clusterMetricKeys.length) { c.appendChild(makeDiv('No cluster metrics available.')); return; }
-    if (!deltaState.wordStats) deltaState.wordStats = computeWordStats();
+    if (!clusterKeys.length) { c.appendChild(makeDiv('No cluster metrics available.')); return; }
+    if (!deltaState.wordStats) deltaState.wordStats = calcWordStats();
     if (!deltaState.wordStats) { c.appendChild(makeDiv('No function-word data available.')); return; }
 
-    initClusterState();
-    const source = clusterStatsState.source;
-    const clusterId = clusterStatsState.clusterId;
+    initCluster();
+    const source = clusterState.source;
+    const clusterId = clusterState.clusterId;
     if (source === null || clusterId === null) { c.appendChild(makeDiv('No cluster selected.')); return; }
 
-    const compareClusterId = clusterStatsState.compareMode === 'cluster'
-        ? asNum(clusterStatsState.compareClusterId) : null;
+    const compareClusterId = clusterState.compareMode === 'cluster'
+        ? asNum(clusterState.compareClusterId) : null;
     const decomp = clusterDecomp(source, clusterId, compareClusterId);
 
     let filtered = [];
     if (decomp) {
-        filtered = filterContribs(decomp.contributions, clusterStatsState);
-        if (!clusterStatsState.inspectWord && filtered.length) {
-            clusterStatsState.inspectWord = filtered[0].word;
+        filtered = filterContribs(decomp.contributions, clusterState);
+        if (!clusterState.inspectWord && filtered.length) {
+            clusterState.inspectWord = filtered[0].word;
         }
     }
 
@@ -3114,7 +3115,7 @@ const renderClusterStats = () => {
         c.appendChild(makeDiv('No words match the current filter.'));
     }
 
-    c.appendChild(renderInspector(decomp, clusterStatsState.inspectWord));
+    c.appendChild(renderInsp(decomp, clusterState.inspectWord));
 
     if (filtered.length) {
         const det = document.createElement('details');
@@ -3140,7 +3141,7 @@ const updateViewVis = () => {
         }
     }
 };
-const updateSwitchLabel = () => {
+const syncViewBtn = () => {
     const b = document.getElementById('toggleViewBtn');
     if (!b) return;
     if (viewMode !== 'umap') b.textContent = 'Switch to Map View';
@@ -3157,12 +3158,12 @@ const setView = mode => {
     }
     viewMode = mode;
     updateViewVis();
-    updateSwitchLabel();
+    syncViewBtn();
     if (viewMode === 'correlation') updateCorrPlot();
     else if (viewMode === 'functionWord') {
         updateFwPlot();
-        if (clusterStatsState.view === 'cluster') renderClusterStats();
-    } else if (viewMode === 'delta') { initDelta(); updateDeltaPlot(); }
+        if (clusterState.view === 'cluster') renderClStats();
+    } else if (viewMode === 'delta') { initDelta(); refDeltaPlot(); }
 };
 const coordsFor = mode => {
     if (!snapshotXY()) {
@@ -3200,19 +3201,19 @@ const setMapMode = mode => {
         .then(() => resetAxes(mode))
         .then(updateOverlay)
         .then(() => overlayFront(mainPlot, FOCUS_OVERLAY_META))
-        .then(refreshConnections)
+        .then(refConns)
         .then(() => {
             if (isB) {
                 focusSimilarityMode = 'burrows';
-                document.getElementById('focusSimilarityModeSelect').value = 'burrows';
+                document.getElementById('simModeSel').value = 'burrows';
             } else {
                 focusSimilarityMode = 'cosine';
-                document.getElementById('focusSimilarityModeSelect').value = 'cosine';
+                document.getElementById('simModeSel').value = 'cosine';
             }
             applyCluster(mode);
-            refreshFocusMarker();
+            refFocus();
             updateTextList();
-            updateSwitchLabel();
+            syncViewBtn();
             if (viewMode === 'functionWord') updateFwPlot();
         });
 };
@@ -3238,31 +3239,27 @@ const exportMap = () => {
     }
     const spanX = maxX - minX || 1;
     const spanY = maxY - minY || 1;
-    let xr = [minX - spanX * 0.04, maxX + spanX * 0.04];
-    let yr = [minY - spanY * 0.04, maxY + spanY * 0.04];
-    const da = (xr[1] - xr[0]) / (yr[1] - yr[0]);
-    const MAX = 3200, MIN = 700;
-    let w, h;
-    if (da >= 1) { w = MAX; h = Math.round(MAX / da); }
-    else { h = MAX; w = Math.round(MAX * da); }
-    w = Math.max(MIN, w); h = Math.max(MIN, h);
-    const ca = w / h;
-    const cx = (xr[0] + xr[1]) / 2;
-    const cy = (yr[0] + yr[1]) / 2;
-    let xs2 = xr[1] - xr[0], ys2 = yr[1] - yr[0];
-    if (ca > xs2 / ys2) xs2 = ys2 * ca;
-    else ys2 = xs2 / ca;
-    xr = [cx - xs2 / 2, cx + xs2 / 2];
-    yr = [cy - ys2 / 2, cy + ys2 / 2];
+
+    const PAD = 0.02;
+    const xr = [minX - spanX * PAD, maxX + spanX * PAD];
+    const yr = [minY - spanY * PAD, maxY + spanY * PAD];
+    const SCALE = 2;
+    const w = 2880 * SCALE;
+    const h = 1800 * SCALE;
+
+    const sf = h / 1800;
+    const markerSize = Math.round(60 * sf);
+    const fontSize = Math.round(22 * sf);
+    const markerLine = Math.max(1, 1.5 * sf);
 
     const hidden = document.createElement('div');
     hidden.style.cssText = 'position:fixed; left:-99999px; top:0; width:' + w + 'px; height:' + h + 'px;';
     document.body.appendChild(hidden);
 
     const colors = [];
-    if (currentColorDataForPlot.length === xs.length) {
-        for (let k = 0; k < currentColorDataForPlot.length; k++) {
-            colors.push(isNum(currentColorDataForPlot[k]) ? currentColorDataForPlot[k] : null);
+    if (plotColors.length === xs.length) {
+        for (let k = 0; k < plotColors.length; k++) {
+            colors.push(isNum(plotColors[k]) ? plotColors[k] : null);
         }
     } else {
         for (let m = 0; m < xs.length; m++) colors.push(null);
@@ -3272,21 +3269,23 @@ const exportMap = () => {
         x: xs, y: ys, mode: 'markers+text', type: 'scatter',
         text: textNames.slice(0, xs.length),
         textposition: 'middle center',
-        textfont: { size: 13, color: 'black' },
-        marker: { size: 42, color: colors, colorscale: currentColorscale,
+        textfont: { size: fontSize, color: 'black' },
+        marker: { size: markerSize, color: colors, colorscale: currentColorscale,
                   cmin: currentCmin, cmax: currentCmax, showscale: false,
-                  line: { color: 'black', width: 1 } },
+                  line: { color: 'black', width: markerLine } },
         hoverinfo: 'skip'
     };
     const layout = {
         width: w, height: h,
-        xaxis: { range: xr, visible: false, fixedrange: true, showgrid: false, zeroline: false },
-        yaxis: { range: yr, visible: false, fixedrange: true, showgrid: false, zeroline: false },
+        xaxis: { range: xr, visible: false, fixedrange: true,
+                 showgrid: false, zeroline: false },
+        yaxis: { range: yr, visible: false, fixedrange: true,
+                 showgrid: false, zeroline: false },
         plot_bgcolor: 'white', paper_bgcolor: 'white',
         showlegend: false, margin: { t: 0, l: 0, r: 0, b: 0 }
     };
 
-    Plotly.newPlot(hidden, [trace], layout, { staticPlot: false })
+    Plotly.newPlot(hidden, [trace], layout, { staticPlot: false, responsive: false })
         .then(() => Plotly.toImage(hidden, { format: 'svg', width: w, height: h, scale: 1 }))
         .then(svgUrl => {
             const svgText = decodeSvg(svgUrl);
@@ -3311,7 +3310,7 @@ const exportMap = () => {
         .finally(() => { document.body.removeChild(hidden); });
 };
 
-const injectClusterStatsStyles = () => {
+const injectStatsCSS = () => {
     if (document.getElementById('clusterStatsStyles')) return;
     const style = document.createElement('style');
     style.id = 'clusterStatsStyles';
@@ -3320,12 +3319,12 @@ const injectClusterStatsStyles = () => {
         '#correlationStats, #deltaStats { font-size:10px; line-height:1.4; }',
         '#functionWordStats strong { display:block; margin-bottom:8px; padding-bottom:4px; font-size:11px; }',
         '#correlationStats strong { display:block; margin-bottom:8px; padding-bottom:4px; font-size:11px; }',
-        '#functionWordStatsToolbar { display:flex; justify-content:flex-end; margin-bottom:4px; }',
-        '#toggleClusterStatsBtn { font-size:10px; padding:1px 6px; font-weight:bold; cursor:pointer; }',
+        '#fwStatsBar { display:flex; justify-content:flex-end; margin-bottom:4px; }',
+        '#clStatsBtn { font-size:10px; padding:1px 6px; font-weight:bold; cursor:pointer; }',
         '.clusterWordRow { display:flex; align-items:center; gap:6px; padding:1px 0; font-size:10px; cursor:pointer; border-bottom:1px dotted #eee; }',
         '.clusterWordRow:hover { background:#f5f5f5; }',
         '.clusterWordRow .cword { flex:0 0 64px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }',
-        '.clusterWordRow .cbar { flex:1 1 auto; height:8px; background:' + CLUSTER_BAR_TRACK_COLOR + '; border-radius:2px; overflow:hidden; position:relative; }',
+        '.clusterWordRow .cbar { flex:1 1 auto; height:8px; background:' + BAR_TRACK + '; border-radius:2px; overflow:hidden; position:relative; }',
         '.clusterWordRow .cfill { display:block; height:100%; }',
         '.clusterWordRow .cval { flex:0 0 48px; text-align:right; font-variant-numeric:tabular-nums; color:#333; }',
         '.clusterTableRow { display:flex; align-items:center; gap:6px; padding:1px 2px; font-size:10px; cursor:pointer; border-bottom:1px dotted #eee; }',
@@ -3336,13 +3335,71 @@ const injectClusterStatsStyles = () => {
         '#deltaStats .deltaWordRow { display:flex; justify-content:space-between; gap:6px; padding:1px 0; border-bottom:1px dotted #eee; }',
         '#deltaStats .deltaWordRow span:first-child { font-weight:600; white-space:nowrap; }',
         '#deltaStats .deltaWordRow .val { text-align:right; font-variant-numeric:tabular-nums; color:#333; min-width:0; word-break:break-word; }',
-        '#deltaStats .deltaSectionHead, #functionWordStatsContent .deltaSectionHead { margin-top:10px; margin-bottom:4px; padding-bottom:2px; border-bottom:1px solid #ccc; font-weight:700; }',
+        '#deltaStats .deltaSectionHead, #fwStatsContent .deltaSectionHead { margin-top:10px; margin-bottom:4px; padding-bottom:2px; border-bottom:1px solid #ccc; font-weight:700; }',
         '#deltaStats details > summary::-webkit-details-marker { color:#888; }'
     ].join('\n');
     document.head.appendChild(style);
 };
 
-const createMainPanels = () => {
+const savePanelPos = () => {
+    const ids = [
+        'toggleViewPanel', 'metricPanel', 'focusButtonPanel', 'focusPanel', 'colorPanel', 'textPanel',
+        'experimentalPanel', 'correlationControls', 'correlationStats',
+        'functionWordControls', 'functionWordStats', 'deltaControls', 'deltaStats'
+    ];
+    for (let i = 0; i < ids.length; i++) {
+        const p = document.getElementById(ids[i]);
+        if (!p) continue;
+        panelSaves[ids[i]] = {
+            left: p.style.left,
+            top: p.style.top,
+            right: p.style.right,
+            bottom: p.style.bottom,
+            width: p.style.width,
+            height: p.style.height,
+            display: p.style.display
+        };
+    }
+};
+
+const resetPanels = () => {
+    const ids = Object.keys(panelSaves);
+    for (let i = 0; i < ids.length; i++) {
+        const p = document.getElementById(ids[i]);
+        if (!p) continue;
+        const s = panelSaves[ids[i]];
+        p.style.left = s.left;
+        p.style.top = s.top;
+        p.style.right = s.right;
+        p.style.bottom = s.bottom;
+        p.style.width = s.width;
+        p.style.height = s.height;
+        p.style.display = s.display;
+        const body = p.querySelector('.panelBody');
+        if (body) body.style.display = '';
+        const cbtn = p.querySelector('.panelCollapseBtn');
+        if (cbtn) cbtn.textContent = '-';
+    }
+    const isMap = viewMode === 'umap';
+    const mapPanels = ['metricPanel', 'colorPanel', 'textPanel'];
+    for (let j = 0; j < mapPanels.length; j++) {
+        const p = document.getElementById(mapPanels[j]);
+        if (!p) continue;
+        p.style.display = isMap ? (mapPanels[j] === 'textPanel' ? 'flex' : 'block') : 'none';
+    }
+    updateViewVis();
+};
+
+const makeResetBtn = () => {
+    const btn = document.createElement('button');
+    btn.id = 'resetPanelsBtn';
+    btn.textContent = 'Reset Panels';
+    btn.title = 'Put all panels back to their starting positions';
+    btn.addEventListener('click', resetPanels);
+    document.body.appendChild(btn);
+};
+
+const makeMainPanels = () => {
     const togglePanel = makePanel('toggleViewPanel',
         { left: '10px', top: '5px' }, '0.5px solid darkblue',
         '<button id="toggleViewBtn" style="font-weight: bold; min-width: 260px; text-align: left;">Switch to Correlation View</button>',
@@ -3365,12 +3422,12 @@ const createMainPanels = () => {
         '<input id="focusTextSearchInput" class="searchableMetricInput" type="text" placeholder="Search texts...">' +
         '<select id="focusTextSelect" class="searchableMetricSelect"></select>' +
         '<input id="focusTextInput" type="text" size="20" placeholder="Enter text name"><br/>' +
-        '<label style="font-size: 10px;">Similarity: <select id="focusSimilarityModeSelect" style="font-size: 10px;">' +
-        '<option value="cosine">Cosine</option><option value="burrows">Burrows</option></select></label><br/>' +
-        '<label style="font-size: 10px;"><input id="focusClusterOnlyCheckbox" type="checkbox"> Hide texts outside focused text cluster</label><br/>' +
-        '<label style="font-size: 10px;">Clustering: <select id="focusClusterMetricSelect" style="font-size: 10px;"></select></label><br/>' +
-        '<label style="font-size: 10px;"><input id="semanticLinesCheckbox" type="checkbox"> Show semantic connections</label><br/>' +
-        '<label style="font-size: 10px;">Connections: <input id="semanticLinesSlider" type="range" min="1" max="50" value="10"> <span id="semanticLinesValue">10</span></label><br/>' +
+        '<label style="font-size: 10px;">Similarity: <select id="simModeSel" style="font-size: 10px;">' +
+        '<option value="cosine">Semantic</option><option value="burrows">Burrows</option></select></label><br/>' +
+        '<label style="font-size: 10px;"><input id="clusterOnlyChk" type="checkbox"> Hide texts outside focused text cluster</label><br/>' +
+        '<label style="font-size: 10px;">Clustering: <select id="clusterSel" style="font-size: 10px;"></select></label><br/>' +
+        '<label style="font-size: 10px;"><input id="connChk" type="checkbox"> Show semantic connections</label><br/>' +
+        '<label style="font-size: 10px;">Connections: <input id="connSlider" type="range" min="1" max="50" value="10"> <span id="semanticLinesValue">10</span></label><br/>' +
         '<button id="applyFocusBtn" style="margin-top: 5px;">Apply</button> ' +
         '<button id="clearFocusBtn" style="margin-top: 5px;">Clear</button>',
         { zIndex: 10050, minWidth: '180px', dragLabel: 'focus text' });
@@ -3405,7 +3462,7 @@ const createMainPanels = () => {
             { resizable: false, zIndex: 10020, dragLabel: 'experimental' });
     }
 };
-const createSecondaryViews = () => {
+const makeSecViews = () => {
     makeFullView('correlationContainer', 'correlationPlot');
     makeFullView('functionWordContainer', 'functionWordPlot');
     makeFullView('deltaContainer', 'deltaPlot');
@@ -3418,7 +3475,7 @@ const createSecondaryViews = () => {
         '<select id="yMetricSelect" class="searchableMetricSelect"></select><br/><b>Regression</b><br/>' +
         '<select id="regressionType"><option value="linear">Linear</option><option value="polynomial">Polynomial</option><option value="logistic">Logistic</option></select><br/>' +
         '<button id="updateCorrelationBtn" style="margin-top: 5px;">Update Plot</button><br/>' +
-        '<button id="toggleCorrelationLabelsBtn" style="margin-top: 5px;">Toggle Labels</button>',
+        '<button id="corrLabelsBtn" style="margin-top: 5px;">Toggle Labels</button>',
         { minWidth: '220px', dragLabel: 'correlation analysis' });
 
     makePanel('correlationStats', { right: '10px', top: '45px', display: 'none' }, '0.5px solid black', '',
@@ -3426,30 +3483,32 @@ const createSecondaryViews = () => {
 
     makePanel('functionWordControls', { left: '10px', top: '45px', display: 'none', width: '300px' }, '0.5px solid #7a0403',
         '<b>Function Word Frequency</b><br/>' +
-        '<input id="functionWordSearchInput" class="searchableMetricInput" type="text" placeholder="Search function words..."><br/>' +
+        '<input id="fwSearch" class="searchableMetricInput" type="text" placeholder="Search function words..."><br/>' +
         '<select id="functionWordSelect" class="searchableMetricSelect" multiple size="8"></select><br/>' +
         '<div style="font-size: 9px; color: #555;">Ctrl/Cmd-click or Shift-click to pick several. Rates of all selected words are summed.</div>' +
-        '<button id="functionWordSelectShownBtn" style="margin-top: 4px; font-size: 10px;">Select all shown</button> ' +
+        '<button id="fwSelAllBtn" style="margin-top: 4px; font-size: 10px;">Select all shown</button> ' +
         '<button id="functionWordClearBtn" style="margin-top: 4px; font-size: 10px;">Clear</button>' +
-        '<div id="functionWordSelectionSummary"></div>' +
-        '<label style="font-size: 10px;">View: <select id="functionWordPlotModeSelect" style="font-size: 10px;">' +
+        '<div id="fwSelSummary"></div>' +
+        '<label style="font-size: 10px;">View: <select id="fwModeSel" style="font-size: 10px;">' +
         '<option value="zscore">Z-score bell curve (percentile)</option><option value="density">Density</option>' +
         '<option value="cdf">Percentile (CDF)</option></select></label><br/>' +
         '<div style="font-size: 9px; color: #7a0403; margin-top: 4px; line-height:1.35;">The focused text\u2019s cluster is highlighted in yellow automatically.</div>' +
-        '<label style="font-size: 10px; margin-top:4px; display:block;"><input id="functionWordShowHistogram" type="checkbox" checked> Show histogram (density &amp; z-score views)</label><br/>' +
-        '<label style="font-size: 10px;"><input id="functionWordShowMarkers" type="checkbox" checked> Show individual texts</label><br/>' +
-        '<button id="updateFunctionWordBtn" style="margin-top: 5px;">Update Curve</button>',
+        '<label style="font-size: 10px; margin-top:4px; display:block;"><input id="fwHistChk" type="checkbox" checked> Show histogram (density &amp; z-score views)</label><br/>' +
+        '<label style="font-size: 10px;"><input id="fwMarksChk" type="checkbox" checked> Show individual texts</label><br/>' +
+        '<button id="updateFunctionWordBtn" style="margin-top: 5px;">Update Curve</button>' +
+        '<button id="fwLegendBtn" style="margin-top:5px; font-size:10px;">Show Legend</button>',
         { minWidth: '300px', dragLabel: 'function word' });
 
     makePanel('functionWordStats', { right: '10px', top: '45px', display: 'none', width: '320px' }, '0.5px solid #7a0403',
-        '<div id="functionWordStatsToolbar">' +
-        '<button id="toggleClusterStatsBtn" title="Switch the panel between single word statistics and cluster contribution statistics">Show Cluster Stats</button>' +
+        '<div id="fwStatsBar">' +
+        '<button id="clStatsBtn" title="Switch the panel between single word statistics and cluster contribution statistics">Show Cluster Stats</button>' +
         '</div>' +
-        '<div id="functionWordStatsContent"></div>',
+        '<div id="fwStatsContent"></div>',
         { minWidth: '180px', dragLabel: 'word stats' });
 
     makePanel('deltaControls', { left: '10px', top: '45px', width: '240px', display: 'none' }, '0.5px solid #7a0403',
         '<b>\u0394 Delta Explorer</b>' +
+        '<div id="deltaPairSummary" style="font-size:11px; font-weight:600; margin:4px 0 6px 0; padding:4px 6px; background:#fff8e1; border:1px solid #ffd54f; border-radius:3px; line-height:1.4;"></div>' +
         '<div style="font-size:9px; color:#555; margin:2px 0 6px 0; line-height:1.3;">Which function words make two texts similar, and which split them apart?</div>' +
         '<label style="font-size:10px; font-weight:600;">Text A</label><br/>' +
         '<input id="deltaTextASearch" class="searchableMetricInput" type="text" placeholder="Search texts...">' +
@@ -3485,14 +3544,14 @@ const wireMetric = () => {
     });
     sel.addEventListener('change', () => { changeMetric(sel.value); });
     listen('toggleLabelsBtn', 'click', e => {
-        umapLabelsVisible = !umapLabelsVisible;
-        Plotly.restyle(mainPlot, { mode: umapLabelsVisible ? 'markers+text' : 'markers' }, [0]);
-        e.target.textContent = umapLabelsVisible ? 'Hide Labels' : 'Show Labels';
+        mapLabelsOn = !mapLabelsOn;
+        Plotly.restyle(mainPlot, { mode: mapLabelsOn ? 'markers+text' : 'markers' }, [0]);
+        e.target.textContent = mapLabelsOn ? 'Hide Labels' : 'Show Labels';
     });
     listen('toggleGrayPointsBtn', 'click', e => {
         hideGrayPoints = !hideGrayPoints;
         e.target.textContent = hideGrayPoints ? 'Show Gray Points' : 'Hide Gray Points';
-        refreshFocusMarker();
+        refFocus();
         if (viewMode === 'functionWord') updateFwPlot();
     });
     listen('textSortOrder', 'change', updateTextList);
@@ -3505,7 +3564,7 @@ const wireColorScale = () => {
         applyColorScale(lo, hi);
     });
     listen('resetColorBtn', 'click', () => {
-        const c = metricRange(currentColorDataForPlot);
+        const c = metricRange(plotColors);
         if (!c) return;
         document.getElementById('colorMin').value = c.min;
         document.getElementById('colorMax').value = c.max;
@@ -3519,7 +3578,7 @@ const wireFocus = () => {
     const populateFocusSelect = filter => {
         const sel = document.getElementById('focusTextSelect');
         const f = (filter || '').trim().toLowerCase();
-        const prev = focusedTextName ? textNames.indexOf(focusedTextName) : -1;
+        const prev = focusName ? textNames.indexOf(focusName) : -1;
         sel.innerHTML = '';
         for (let i = 0; i < textNames.length; i++) {
             if (f && textNames[i].toLowerCase().indexOf(f) === -1) continue;
@@ -3563,47 +3622,47 @@ const wireFocus = () => {
         focusText('');
     });
     listen('focusTextInput', 'keydown', e => { if (e.key === 'Enter') focusText(e.target.value); });
-    listen('focusSimilarityModeSelect', 'change', e => {
+    listen('simModeSel', 'change', e => {
         focusSimilarityMode = e.target.value;
-        refreshFocusMarker();
+        refFocus();
         refreshCorrFocus();
         updateTextList();
     });
-    listen('focusClusterOnlyCheckbox', 'change', e => {
+    listen('clusterOnlyChk', 'change', e => {
         focusClusterOnly = e.target.checked;
-        refreshFocusMarker();
+        refFocus();
     });
-    listen('focusClusterMetricSelect', 'change', e => {
-        focusClusterMetricUserSelected = true;
-        focusClusterMetric = e.target.value;
-        refreshFocusMarker();
+    listen('clusterSel', 'change', e => {
+        clusterPinned = true;
+        clusterMetric = e.target.value;
+        refFocus();
         if (viewMode === 'functionWord') {
-            if (clusterStatsState.view === 'cluster') {
-                clusterStatsState.source = focusClusterMetric;
-                clusterStatsState.clusterId = null;
-                clusterStatsState.clusterIdUserSelected = false;
-                clusterStatsState.compareClusterId = null;
-                evilFocusTextIndex = -1;
-                evilFocusTextName = null;
-                renderClusterStats();
+            if (clusterState.view === 'cluster') {
+                clusterState.source = clusterMetric;
+                clusterState.clusterId = null;
+                clusterState.clusterIdUserSelected = false;
+                clusterState.compareClusterId = null;
+                evilIdx = -1;
+                evilName = null;
+                renderClStats();
                 updateFwPlot();
             } else {
                 updateFwPlot();
             }
         }
     });
-    listen('semanticLinesCheckbox', 'change', e => {
-        semanticLineModeEnabled = e.target.checked;
-        refreshFocusMarker();
+    listen('connChk', 'change', e => {
+        connOn = e.target.checked;
+        refFocus();
         refreshCorrFocus();
         updateTextList();
     });
-    listen('semanticLinesSlider', 'input', e => {
-        semanticLineCount = Math.max(1, Math.min(50, Number(e.target.value) || 1));
-        document.getElementById('semanticLinesValue').textContent = semanticLineCount;
-        if (semanticLineModeEnabled) {
-            refreshConnections();
-            refreshCorrConnections();
+    listen('connSlider', 'input', e => {
+        connN = Math.max(1, Math.min(50, Number(e.target.value) || 1));
+        document.getElementById('semanticLinesValue').textContent = connN;
+        if (connOn) {
+            refConns();
+            refCorrConn();
             updateTextList();
         }
     });
@@ -3619,84 +3678,89 @@ const wireViews = () => {
     listen('deltaExplorerBtn', 'click', () => { setView('delta'); });
 };
 const wireCorr = () => {
-    populateCorrDropdowns();
+    fillCorrSel();
     listen('updateCorrelationBtn', 'click', updateCorrPlot);
     listen('regressionType', 'change', updateCorrPlot);
-    listen('xMetricSearchInput', 'input', populateCorrDropdowns);
-    listen('yMetricSearchInput', 'input', populateCorrDropdowns);
-    listen('toggleCorrelationLabelsBtn', 'click', e => {
-        correlationLabelsVisible = !correlationLabelsVisible;
+    listen('xMetricSearchInput', 'input', fillCorrSel);
+    listen('yMetricSearchInput', 'input', fillCorrSel);
+    listen('corrLabelsBtn', 'click', e => {
+        corrLabelsOn = !corrLabelsOn;
         Plotly.restyle(document.getElementById('correlationPlot'),
-            { mode: correlationLabelsVisible ? 'markers+text' : 'markers' }, [0]).then(() => {
-                if (correlationLabelsVisible) addOutlines('#correlationPlot .scatterlayer .textpoint text', 'correlationStrokeText');
+            { mode: corrLabelsOn ? 'markers+text' : 'markers' }, [0]).then(() => {
+                if (corrLabelsOn) addOutlines('#correlationPlot .scatterlayer .textpoint text', 'correlationStrokeText');
             });
-        e.target.textContent = correlationLabelsVisible ? 'Hide Labels' : 'Show Labels';
+        e.target.textContent = corrLabelsOn ? 'Hide Labels' : 'Show Labels';
     });
 };
 const wireWords = () => {
-    if (hasBurrowsData()) populateWordControls();
+    if (hasBurrowsData()) fillWordCtl();
     const sel = document.getElementById('functionWordSelect');
-    listen('functionWordSearchInput', 'input', populateWordControls);
+    listen('fwSearch', 'input', fillWordCtl);
     sel.addEventListener('change', () => {
         for (let i = 0; i < sel.options.length; i++) {
             const o = sel.options[i];
             if (!o.value) continue;
-            if (o.selected) functionWordSelection.add(o.value);
-            else functionWordSelection.delete(o.value);
+            if (o.selected) fwSel.add(o.value);
+            else fwSel.delete(o.value);
         }
-        updateWordSummary();
+        syncWordSum();
         updateFwPlot();
     });
-    listen('functionWordSelectShownBtn', 'click', () => {
+    listen('fwSelAllBtn', 'click', () => {
         for (let i = 0; i < sel.options.length; i++) {
             const o = sel.options[i];
             if (!o.value) continue;
             o.selected = true;
-            functionWordSelection.add(o.value);
+            fwSel.add(o.value);
         }
-        updateWordSummary();
+        syncWordSum();
         updateFwPlot();
     });
     listen('functionWordClearBtn', 'click', () => {
-        functionWordSelection.clear();
+        fwSel.clear();
         for (let i = 0; i < sel.options.length; i++) sel.options[i].selected = false;
-        updateWordSummary();
+        syncWordSum();
         updateFwPlot();
     });
-    listen('functionWordPlotModeSelect', 'change', e => {
-        functionWordPlotMode = e.target.value;
+    listen('fwModeSel', 'change', e => {
+        fwMode = e.target.value;
         updateFwPlot();
     });
-    listen('functionWordShowHistogram', 'change', e => {
-        functionWordShowHistogram = e.target.checked;
+    listen('fwHistChk', 'change', e => {
+        fwShowHist = e.target.checked;
         updateFwPlot();
     });
-    listen('functionWordShowMarkers', 'change', e => {
-        functionWordShowMarkers = e.target.checked;
+    listen('fwMarksChk', 'change', e => {
+        fwShowMarks = e.target.checked;
         updateFwPlot();
     });
     listen('updateFunctionWordBtn', 'click', updateFwPlot);
+    listen('fwLegendBtn', 'click', e => {
+        fwLegendVis = !fwLegendVis;
+        e.target.textContent = fwLegendVis ? 'Hide Legend' : 'Show Legend';
+        updateFwPlot();
+    });
 
-    listen('toggleClusterStatsBtn', 'click', () => {
-        const btn = document.getElementById('toggleClusterStatsBtn');
+    listen('clStatsBtn', 'click', () => {
+        const btn = document.getElementById('clStatsBtn');
         if (!btn) return;
-        if (clusterStatsState.view === 'cluster') {
-            clusterStatsState.view = 'word';
+        if (clusterState.view === 'cluster') {
+            clusterState.view = 'word';
             btn.textContent = 'Show Cluster Stats';
             updateFwPlot();
         } else {
-            clusterStatsState.view = 'cluster';
-            clusterStatsState.clusterId = null;
-            clusterStatsState.clusterIdUserSelected = false;
-            clusterStatsState.compareClusterId = null;
-            evilFocusTextIndex = -1;
-            evilFocusTextName = null;
+            clusterState.view = 'cluster';
+            clusterState.clusterId = null;
+            clusterState.clusterIdUserSelected = false;
+            clusterState.compareClusterId = null;
+            evilIdx = -1;
+            evilName = null;
             btn.textContent = 'Back to Word Stats';
-            renderClusterStats();
+            renderClStats();
         }
     });
 };
-const wireDeltaPicker = (searchId, selectId, stateKey) => {
+const wireDeltaPick = (searchId, selectId, stateKey) => {
     const si = document.getElementById(searchId);
     const sel = document.getElementById(selectId);
 
@@ -3704,73 +3768,73 @@ const wireDeltaPicker = (searchId, selectId, stateKey) => {
         const n = fillDeltaSelect(sel, si.value, deltaState[stateKey]);
         if (n !== null && n !== deltaState[stateKey]) {
             deltaState[stateKey] = n;
-            updateDeltaPlot();
+            refDeltaPlot();
         }
     });
 
     sel.addEventListener('change', () => {
         deltaState[stateKey] = Number(sel.value);
-        updateDeltaPlot();
+        refDeltaPlot();
     });
 };
 const wireDelta = () => {
-    wireDeltaPicker('deltaTextASearch', 'deltaTextASelect', 'textA');
-    wireDeltaPicker('deltaTextBSearch', 'deltaTextBSelect', 'textB');
+    wireDeltaPick('deltaTextASearch', 'deltaTextASelect', 'textA');
+    wireDeltaPick('deltaTextBSearch', 'deltaTextBSelect', 'textB');
     listen('deltaSwapBtn', 'click', () => {
         const t = deltaState.textA;
         deltaState.textA = deltaState.textB;
         deltaState.textB = t;
         syncDeltaDropdowns();
-        updateDeltaPlot();
+        refDeltaPlot();
     });
     listen('deltaUseFocusedBtn', 'click', () => {
-        if (focusedTextIndex < 0) { alert('No text is focused.'); return; }
-        deltaState.textA = focusedTextIndex;
-        if (deltaState.textB === focusedTextIndex) deltaState.textB = defaultDeltaPartner(focusedTextIndex);
+        if (focusIdx < 0) { alert('No text is focused.'); return; }
+        deltaState.textA = focusIdx;
+        if (deltaState.textB === focusIdx) deltaState.textB = defaultDeltaPartner(focusIdx);
         syncDeltaDropdowns();
-        updateDeltaPlot();
+        refDeltaPlot();
     });
     listen('deltaUseNearestBtn', 'click', () => {
         if (deltaState.textA === null) return;
         deltaState.textB = defaultDeltaPartner(deltaState.textA);
         syncDeltaDropdowns();
-        updateDeltaPlot();
+        refDeltaPlot();
     });
     listen('deltaSortSelect', 'change', e => {
         deltaState.sortMode = e.target.value;
-        updateDeltaPlot();
+        refDeltaPlot();
     });
     listen('deltaTopNRange', 'input', e => {
         const max = deltaState.totalWordCount || 80;
         setDeltaTopN(Math.max(5, Math.min(max, Number(e.target.value) || 25)));
-        updateDeltaPlot();
+        refDeltaPlot();
     });
     listen('deltaShowAllBtn', 'click', () => {
         const total = deltaState.totalWordCount || 80;
         document.getElementById('deltaTopNRange').max = String(total);
         setDeltaTopN(total);
-        updateDeltaPlot();
+        refDeltaPlot();
     });
     listen('deltaUpdateBtn', 'click', () => {
         recomputeDelta();
-        updateDeltaPlot();
+        refDeltaPlot();
     });
 };
-const buildClusterMetricKeys = () => {
+const buildClusterKeys = () => {
     for (let i = 0; i < metricKeys.length; i++) {
-        if (isClusterKey(metricKeys[i])) clusterMetricKeys.push(metricKeys[i]);
+        if (isClusterKey(metricKeys[i])) clusterKeys.push(metricKeys[i]);
     }
 };
-const buildTextLookup = () => {
+const buildLookup = () => {
     for (let ti = 0; ti < textNames.length; ti++) {
         textLookup[textNames[ti].toLowerCase()] = { name: textNames[ti], index: ti };
     }
 };
-const buildMetricCatalog = () => {
+const buildCatalog = () => {
     for (let mi = 0; mi < metricKeys.length; mi++) {
         const mk = metricKeys[mi];
         if (mk in metricsData && metricsData[mk] !== null) {
-            const lbl = isClusterKey(mk) ? clusterLabel(mk) : (metricDisplayNames[mk] || mk);
+            const lbl = isClusterKey(mk) ? clusterLabel(mk) : (metricNames[mk] || mk);
             metricCatalog.push({ key: mk, label: lbl, search: (mk + ' ' + lbl).toLowerCase() });
         }
     }
@@ -3779,19 +3843,21 @@ const initPage = () => {
     mainPlot = document.querySelector('.plotly-graph-div');
     if (!mainPlot) return;
 
-    injectClusterStatsStyles();
+    injectStatsCSS();
 
-    buildClusterMetricKeys();
-    buildTextLookup();
-    buildMetricCatalog();
+    buildClusterKeys();
+    buildLookup();
+    buildCatalog();
 
-    sanitizeMainHoverText();
+    cleanHover();
 
-    createMainPanels();
-    createSecondaryViews();
+    makeMainPanels();
+    makeSecViews();
+    savePanelPos();
+    makeResetBtn();
 
     if (typeof mainPlot.on === 'function') mainPlot.on('plotly_afterplot', () => { addOutlines(); });
-    setupHoverStyling();
+    hookHover();
     snapshotXY();
     snapshotAxes();
     fitPlot();
@@ -3802,7 +3868,7 @@ const initPage = () => {
     fillMetricSelect(metricSel, currentMetric, '');
     if (metricSel.value) currentMetric = metricSel.value;
 
-    focusClusterMetric = fillClusterSelect(document.getElementById('focusClusterMetricSelect'), preferredCluster('semantic'));
+    clusterMetric = fillClusterSelect(document.getElementById('clusterSel'), preferredCluster('semantic'));
     document.getElementById('focusTextInput').value = CONFIG.defaultFocusText || '';
 
     syncColors();
@@ -3811,7 +3877,7 @@ const initPage = () => {
     if (isBurrows(currentMetric)) {
         const filled = colorData(currentMetric);
         if (filled) {
-            currentColorDataForPlot = filled;
+            plotColors = filled;
             Plotly.restyle(mainPlot, { 'marker.color': [filled] }, [0]);
         }
     }
@@ -3827,7 +3893,7 @@ const initPage = () => {
     }
     Plotly.restyle(mainPlot, initCb, [0]);
 
-    sanitizeMainHoverText();
+    cleanHover();
 
     wireMetric();
     wireColorScale();
@@ -3837,11 +3903,11 @@ const initPage = () => {
     wireWords();
     wireDelta();
 
-    updateColorInputs();
+    syncColorIn();
     if (CONFIG.defaultFocusText) {
         focusText(CONFIG.defaultFocusText);
     } else {
-        refreshFocusMarker();
+        refFocus();
         updateTextList();
         updatePctLabel();
     }
@@ -3849,4 +3915,8 @@ const initPage = () => {
     applyCapitals(currentMetric);
 };
 
-document.addEventListener('DOMContentLoaded', initPage);
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initPage, { once: true });
+} else {
+    initPage();
+}

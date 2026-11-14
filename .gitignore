@@ -22,8 +22,11 @@ bugfixesiwant.txt
 # Common byproducts
 .DS_Store
 README copy.md
+README backup.md
 __pycache__/
 core/__pycache__/
 *.py[cod]
 incodi
 incodi.pub
+core/testnew_atlas_downloader.py
+core/output_files/

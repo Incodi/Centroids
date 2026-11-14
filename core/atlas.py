@@ -166,8 +166,8 @@ class TextClassifier(TextMetricsMixin):
     BURROWS_FUNCTION_WORDS = tuple(sorted({
         'i', 'you', 'he', 'it', 'we', 'they',
         'me', 'him', 'us', 'them',
-        'my', 'your', 'his', 'its', 'our', 'their', 'mine', 'yours', 'ours', 'theirs',
-        'myself', 'yourself', 'himself', 'themselves',
+        'my', 'your', 'his', 'its', 'our', 'their', 'yours', 'ours', 'theirs',
+        'myself', 'yourself', 'himself', 'themselves', 'itself', 'ourselves', 'yourselves', 'one',
         'be', 'is', 'am', 'are', 'was', 'were', 'been', 'being',
         'have', 'has', 'had', 'having',
         'do', 'does', 'did', 'doing',
@@ -175,13 +175,19 @@ class TextClassifier(TextMetricsMixin):
         'to', 'of', 'and', 'a', 'in', 'that', 'for', 'not', 'on', 'with', 'as', 'at',
         'but', 'by', 'from', 'or', 'an', 'if', 'about',
         'after', 'because', 'any', 'than', 'into', 'through', 'before',
-        'this', 'these', 'those', 'there', 'what', 'so', 'who', 'which', 'when',
+        'this', 'these', 'those', 'there', 'what', 'so', 'who', 'which', 'when', 'where',
         'no', 'only', 'other', 'some', 'then', 'now', 'look', 'come', 'go', 'get',
         'take', 'see', 'think', 'also', 'use', 'how', 'even', 'want', 'give',
         'most', 'each', 'every', 'both', 'few', 'more', 'such', 'own', 'same', 'too',
         'very', 'just', 'here', 'why', 'once', 'the',
         'oh', 'yeah', 'yes', 'okay', 'like', 'well', 'uh', 'um', 'right',
         'mhm', 'next', 'again',
+
+        # suggested additions
+        'all', 'many', 'much',
+        'never', 'ever',
+        'while', 'though',
+        'during', 'without',
     }))
 
     BURROWS_CONTRACTIONS = {
@@ -189,6 +195,7 @@ class TextClassifier(TextMetricsMixin):
         "you're": "you are", "you've": "you have", "you'd": "you would", "you'll": "you will",
         "he's": "he is", "he'd": "he would", "he'll": "he will",
         "she's": "he is", "he'd": "he would", "he'll": "he will",
+        "he'll": "he will", "she'll": "he will", "he'd": "he would", "she'd": "he would",
         "it's": "it is", "it'd": "it would", "it'll": "it will",
         "we're": "we are", "we've": "we have", "we'd": "we would", "we'll": "we will",
         "they're": "they are", "they've": "they have", "they'd": "they would", "they'll": "they will",
@@ -199,6 +206,7 @@ class TextClassifier(TextMetricsMixin):
         "don't": "do not", "doesn't": "does not", "didn't": "did not",
         "can't": "can not", "couldn't": "could not", "won't": "will not", "wouldn't": "would not",
         "shouldn't": "should not", "mustn't": "must not", "let's": "let us",
+        "haven't": "have not", "hasn't": "has not", "hadn't": "had not",
         "y'all": "you all",
         "her": "him",
         "she": "he",
@@ -299,7 +307,20 @@ class TextClassifier(TextMetricsMixin):
         sd[sd == 0] = 1e-12
         z = (mat - mu) / sd
 
-        return cdist(z, z, 'cityblock') / z.shape[1], valid
+        # Guard against the degenerate case where every profile is identical
+        # (e.g. all-zero profiles from channels with no usable tokens). In that
+        # case cosine distance on zero vectors produces NaN, which would break
+        # UMAP downstream. Fall back to a tiny random symmetric matrix instead.
+        if np.allclose(z, z[0]):
+            rng = np.random.default_rng(42)
+            n = len(valid)
+            d = rng.random((n, n)).astype(np.float64) * 0.1
+            d = (d + d.T) * 0.5
+            np.fill_diagonal(d, 0.0)
+            return d, valid
+
+        # manhattan distance: return cdist(z, z, 'cityblock') / z.shape[1], valid
+        return cdist(z, z, 'cosine'), valid
 
     @classmethod
     def _burrows_scores(
@@ -420,14 +441,21 @@ class TextClassifier(TextMetricsMixin):
 
     def _load_burrows_profile(
         self, text: str, filter_kwargs: Dict[str, Any]
-    ) -> Optional[np.ndarray]:
+    ) -> np.ndarray:
+        """Load a Burrows function-word profile for `text`.
+
+        Always returns a profile (possibly all zeros if no tokens are
+        available). This guarantees every successfully processed channel has a
+        style profile, so that every channel participates in Burrows distance
+        computation, Burrows clustering, and the "capital of the world" logic.
+        """
         filters = {k: v for k, v in filter_kwargs.items() if v is not None}
         ignore_ids = filter_kwargs.get('ignore_ids', set())
 
         if self.centroid_mode == 'video':
             files = self.processor._get_filtered_files(text, filters, ignore_ids)
             if not files:
-                return None
+                return self._burrows_profile([])
             result = self.processor.load_video_centroids(
                 text, self.centroid_videos, filters, ignore_ids,
                 max_accumulated_tokens=self.stat_word_count,
@@ -437,14 +465,14 @@ class TextClassifier(TextMetricsMixin):
                 need_centroid_tokens=True,
             )
             if not result:
-                return None
+                return self._burrows_profile([])
             stat_tokens, centroid_tokens = result[2], result[3]
             tokens = stat_tokens if stat_tokens else centroid_tokens
-            return self._burrows_profile(tokens) if tokens else None
+            return self._burrows_profile(tokens)
 
         result = self.processor.get_tokens(text, filters, ignore_ids)
         if not result:
-            return None
+            return self._burrows_profile([])
         tokens = result[0]
         if self.centroid_mode == 'word' and self.centroid_words > 0:
             tokens = tokens[-self.centroid_words:]
@@ -505,20 +533,20 @@ class TextClassifier(TextMetricsMixin):
             return np.array([[0.0, 0.0], [d, 0.0]], dtype=np.float32)
 
         n_neighbors = min(5 if n <= 30 else 50, n - 1)
-        if self.umap_neighbors is not None:
-            n_neighbors = min(self.umap_neighbors, n - 1)
+        if self.burrows_umap_neighbors is not None:
+            n_neighbors = min(self.burrows_umap_neighbors, n - 1)
         n_neighbors = max(2, n_neighbors)
 
         reducer = umap.UMAP(
             n_components=2,
             metric='precomputed',
             n_neighbors=n_neighbors,
-            min_dist=self.umap_min_dist,
+            min_dist=self.burrows_umap_min_dist,
             init='spectral',
             random_state=20,
             n_jobs=1,
             verbose=False,
-            n_epochs=self.umap_epochs,
+            n_epochs=self.burrows_umap_epochs,
             low_memory=False,
         )
         return reducer.fit_transform(distances)
@@ -649,16 +677,20 @@ class TextClassifier(TextMetricsMixin):
         cluster_method: str = 'hdbscan',
         leiden_resolution_min: float = 0.3,
         leiden_resolution_max: float = 2.0,
-        leiden_k_neighbors: int = 20,
+        leiden_k_neighbors: int = 25,
         leiden_whiten: bool = True,
         umap_neighbors: Optional[int] = None,
         umap_min_dist: float = 0.1,
         umap_epochs: int = 200,
+        burrows_umap_neighbors: Optional[int] = None,
+        burrows_umap_min_dist: Optional[float] = None,
+        burrows_umap_epochs: Optional[int] = None,
         tomotopy_num_topics: int = 0,
         tomotopy_iterations: int = 1000,
         tomotopy_threads: Optional[int] = None,
         tomotopy_max_tokens_per_channel: Optional[int] = None,
         change_fword_to_stupid: bool = False,
+        force_cache_same_stat: bool = False,
     ):
         self.embedding_model_name = resolve_embedding_model_name(embedding_model)
         if huggingface_local_files_only(self.embedding_model_name):
@@ -724,8 +756,9 @@ class TextClassifier(TextMetricsMixin):
             'embedding_context_window': int(self.embedding_context_window),
             'embedding_chunk_size': int(chunk),
             'embedding_min_chunk': int(embedding_min_chunk),
-            'change_fword_to_stupid': self.change_fword_to_stupid,
         }
+        if self.change_fword_to_stupid:
+            self.embedding_cache_signature['change_fword_to_stupid'] = True
 
         print(
             f"Embedding model: {self.embedding_model_name} "
@@ -768,6 +801,7 @@ class TextClassifier(TextMetricsMixin):
         self.centroid_videos = centroid_videos
         self.centroid_words = centroid_words
         self.stat_word_count = stat_word_count
+        self.force_cache_same_stat = force_cache_same_stat
 
         self.tomotopy_num_topics: int = int(tomotopy_num_topics or 0)
         self.tomotopy_iterations: int = max(1, int(tomotopy_iterations or 1000))
@@ -787,6 +821,17 @@ class TextClassifier(TextMetricsMixin):
         self.umap_neighbors = None if umap_neighbors is None else int(umap_neighbors)
         self.umap_min_dist = float(umap_min_dist)
         self.umap_epochs = int(umap_epochs)
+        self.burrows_umap_neighbors = (
+            None if burrows_umap_neighbors is None else int(burrows_umap_neighbors)
+        )
+        self.burrows_umap_min_dist = (
+            self.umap_min_dist if burrows_umap_min_dist is None
+            else float(burrows_umap_min_dist)
+        )
+        self.burrows_umap_epochs = (
+            self.umap_epochs if burrows_umap_epochs is None
+            else int(burrows_umap_epochs)
+        )
         self.cluster_metric_labels: Dict[str, str] = {}
         self.burrows_cluster_metric_labels: Dict[str, str] = {}
 
@@ -1220,8 +1265,9 @@ class TextClassifier(TextMetricsMixin):
             'centroid_words': int(self.centroid_words or 0),
             'stat_word_count': int(self.stat_word_count or 0),
             'filters': filter_sig,
-            'change_fword_to_stupid': bool(getattr(self, 'change_fword_to_stupid', False)),
         }
+        if getattr(self, 'change_fword_to_stupid', False):
+            sig['change_fword_to_stupid'] = True
 
         if sig_path.exists() and proportions_path.exists():
             try:
@@ -1962,6 +2008,7 @@ class TextClassifier(TextMetricsMixin):
                     'chunk_count': len(chunks),
                     'file_count': file_count,
                     'low_token_text': True,
+                    '_burrows_rate_profile': style_profile,
                 }
                 if self.cache and (cached_chunks is None or cached_emb is None):
                     self.cache.save(
@@ -2143,6 +2190,7 @@ class TextClassifier(TextMetricsMixin):
             needs_perplexity_model=self.processor.needs_perplexity_model,
             enable_ngram_entropy=self.enable_ngram_entropy,
             fast_mode=self.fast_mode,
+            force_cache_same_stat=self.force_cache_same_stat,
         )
 
         if self.cache:
@@ -2150,7 +2198,7 @@ class TextClassifier(TextMetricsMixin):
                 text, cache_filters, vids_for_cache,
                 embeddings_only=self.no_metrics,
                 force_latest_cache=self.force_latest_cache,
-                expected_token_count=cap,
+                expected_token_count=None,
                 **ckw,
             )
             if cached is not None and cached.get('mean_emb') is not None:
@@ -2177,7 +2225,18 @@ class TextClassifier(TextMetricsMixin):
                         for m in stat_names:
                             result_metrics.pop(m, None)
                     self.embeddings[text] = text_emb
+                    n_videos_for_centroid = min(len(vids_for_cache), self.centroid_videos)
+                    print(f"  Videos for centroid: {n_videos_for_centroid}")
                     print(f"  Complete: {text} ({cached_tokens:,} tokens, cached)")
+                    # Always include a Burrows profile. If the cached result
+                    # doesn't carry one, load it now (token-only load, no
+                    # embeddings) so every channel participates in Burrows
+                    # distance / clustering / capitals.
+                    burrows_profile = cached.get('_burrows_rate_profile')
+                    if burrows_profile is None:
+                        fallback_filters = dict(filters)
+                        fallback_filters['ignore_ids'] = ignore_ids
+                        burrows_profile = self._load_burrows_profile(text, fallback_filters)
                     return {
                         'mean_emb': text_emb,
                         'token_count': cached_tokens,
@@ -2185,6 +2244,7 @@ class TextClassifier(TextMetricsMixin):
                         'file_count': n_files,
                         'low_token_text': bool(cached_low),
                         '_centroid_only': bool(cached_low),
+                        '_burrows_rate_profile': burrows_profile,
                         **({} if self.no_metrics else result_metrics),
                     }
 
@@ -2211,6 +2271,10 @@ class TextClassifier(TextMetricsMixin):
             return None
 
         video_ids, video_embeddings, stat_tokens, centroid_tokens, avg_words = result
+
+        if video_ids:
+            n_videos_processed = len(video_ids)
+            print(f"  Videos for centroid: {n_videos_processed}")
 
         if text_emb is None:
             if not video_embeddings:
@@ -2428,6 +2492,7 @@ class TextClassifier(TextMetricsMixin):
                 needs_perplexity_model=self.processor.needs_perplexity_model,
                 enable_ngram_entropy=self.enable_ngram_entropy,
                 fast_mode=self.fast_mode,
+                force_cache_same_stat=self.force_cache_same_stat,
             )
 
         print(f"  Complete: {text} ({len(stat_tokens):,} tokens, {len(chunks)} chunks)")
@@ -2962,60 +3027,84 @@ class TextClassifier(TextMetricsMixin):
             )
             metric_keys_list.append(metric_name)
 
-        metrics_json_str = safe_json_dumps(metrics_json)
-        titles_json_str = safe_json_dumps(titles_json)
-        texts_json = safe_json_dumps(texts)
+        # Prepare data for JSON file
+        data_json = {
+            "focusText": focus_text,
+            "metricsData": metrics_json,
+            "chartTitles": titles_json,
+            "textNames": texts,
+            "metricDisplayNames": metric_names_dict,
+            "metricColorScales": metric_colorscale_dict,
+            "metricKeys": metric_keys_list,
+            "hoverPanelPalettes": hover_panel_palettes,
+            "hoverTextPalettes": hover_text_palettes,
+            "semanticEmbeddings": semantic_embeddings,
+            "burrowsSimilarity": burrows_similarity,
+            "lowTokenTexts": [tx for tx in texts if tx in low_token_texts],
+            "fightingWordsUnigrams": fighting_words_unigrams,
+            "activeMetric": active_metric or "cluster",
+            "burrowsReduced": burrows_reduced,
+            "burrowsFunctionWords": list(burrows_function_words),
+            "burrowsWordFrequencies": burrows_word_frequencies,
+            "capitalCities": capital_cities,
+        }
+
+        def normalize_json_value(value):
+            if isinstance(value, np.ndarray):
+                return normalize_json_value(value.tolist())
+            if isinstance(value, dict):
+                return {key: normalize_json_value(item) for key, item in value.items()}
+            if isinstance(value, (list, tuple)):
+                return [normalize_json_value(item) for item in value]
+            if isinstance(value, np.bool_):
+                return bool(value)
+            if isinstance(value, np.integer):
+                return int(value)
+            if isinstance(value, (float, np.floating)):
+                return float(value) if np.isfinite(value) else None
+            return value
 
         template_path = Path(__file__).parent / "output_files" / "template.html"
         script_path = Path(__file__).parent / "output_files" / "script.js"
+        data_js_path = Path(__file__).parent / "output_files" / "data.js"
 
         template = template_path.read_text(encoding="utf-8")
         script = script_path.read_text(encoding="utf-8")
-
-        values = {
-            "__PLOTLY_HTML__": plotly_html,
-            "__FOCUS_TEXT__": json.dumps(focus_text),
-            "__METRICS_JSON__": metrics_json_str,
-            "__TITLES_JSON__": titles_json_str,
-            "__TEXTS_JSON__": texts_json,
-            "__HOVER_PANEL_PALETTES_JSON__": safe_json_dumps(hover_panel_palettes),
-            "__HOVER_TEXT_PALETTES_JSON__": safe_json_dumps(hover_text_palettes),
-            "__METRIC_NAMES_JSON__": json.dumps(metric_names_dict),
-            "__METRIC_COLORScales_JSON__": json.dumps(metric_colorscale_dict),
-            "__METRIC_KEYS_JSON__": json.dumps(metric_keys_list),
-            "__SEMANTIC_EMBEDDINGS_JSON__": safe_json_dumps(semantic_embeddings),
-            "__BURROWS_SIMILARITY_JSON__": safe_json_dumps(burrows_similarity),
-            "__LOW_TOKEN_TEXTS_JSON__": json.dumps(
-                [tx for tx in texts if tx in low_token_texts]
-            ),
-            "__FIGHTING_WORDS_UNIGRAMS_JSON__": safe_json_dumps(fighting_words_unigrams),
-            "__ACTIVE_METRIC_JSON__": json.dumps(active_metric or "cluster"),
-            "__BURROWS_REDUCED_JSON__": safe_json_dumps(burrows_reduced),
-            "__BURROWS_FUNCTION_WORDS_JSON__": json.dumps(list(burrows_function_words)),
-            "__BURROWS_WORD_FREQUENCIES_JSON__": safe_json_dumps(burrows_word_frequencies),
-            "__CAPITAL_CITIES_JSON__": safe_json_dumps(capital_cities),
-        }
-
-        custom_script = script
-        for k, v in values.items():
-            custom_script = custom_script.replace(k, v)
+        data_js = data_js_path.read_text(encoding="utf-8")
 
         output_dir = Path(output_html).parent
         output_dir.mkdir(parents=True, exist_ok=True)
 
+        # Write data.json
+        data_json_path = output_dir / "data.json"
+        with open(data_json_path, 'w', encoding='utf-8') as f:
+            json.dump(
+                normalize_json_value(data_json),
+                f,
+                ensure_ascii=False,
+                separators=(',', ':'),
+                allow_nan=False,
+            )
+
+        # Copy data.js
+        data_js_out = output_dir / "data.js"
+        with open(data_js_out, 'w', encoding='utf-8') as f:
+            f.write(data_js)
+
+        # Copy script.js (no modifications needed, data is now in JSON)
         script_out = output_dir / "script.js"
-
         with open(script_out, 'w', encoding='utf-8') as f:
-            f.write(custom_script)
+            f.write(script)
 
-        custom = template
-        for k, v in values.items():
-            custom = custom.replace(k, v)
-
+        # Write HTML with only plotly HTML replacement
+        custom = template.replace("__PLOTLY_HTML__", plotly_html)
         with open(output_path, 'w', encoding='utf-8') as f:
             f.write(custom)
 
         print(f"\nExported interactive visualization to: {output_path}")
+        print(f"  - {data_json_path} (data)")
+        print(f"  - {data_js_out} (data loader)")
+        print(f"  - {script_out} (visualization logic)")
         print("Opening in browser...")
         time.sleep(0.1)
         try:
@@ -3402,8 +3491,12 @@ class TextClassifier(TextMetricsMixin):
                 fallback_filters['ignore_ids'] = ignore_ids
                 style_profile = self._load_burrows_profile(tx, fallback_filters)
 
-            if style_profile is not None:
-                style_profiles[tx] = style_profile
+            # Safety net: every successfully processed channel must have a
+            # style profile so that it participates in Burrows distance,
+            # Burrows clustering, and capital-of-the-world computation.
+            if style_profile is None:
+                style_profile = self._burrows_profile([])
+            style_profiles[tx] = style_profile
 
             if not result.get('low_token_text', False):
                 for name in metric_names:
@@ -3516,27 +3609,24 @@ class TextClassifier(TextMetricsMixin):
 
         # --- distance from center (burrows) ---
         # Mean absolute deviation of each text's function-word rate profile
-        # from the corpus mean profile.
-        if style_profiles:
-            style_matrix = np.vstack(
-                [style_profiles[tx] for tx in successful if tx in style_profiles]
-            )
-            style_center = style_matrix.mean(axis=0, keepdims=True)
-            burrows_center_distances: List[float] = []
-            for tx in successful:
-                if tx in style_profiles:
-                    d = float(np.mean(np.abs(style_profiles[tx] - style_center)))
-                else:
-                    d = np.nan
-                burrows_center_distances.append(d)
-            metrics_data['distance_from_center_burrows'] = np.array(
-                burrows_center_distances, dtype=float
-            )
-            MetricConfig.METRICS['distance_from_center_burrows'] = {
-                'name': 'Distance from Center (Burrows)',
-                'title_suffix': 'Burrows distance from corpus centroid',
-                'category': 'Centroid',
-            }
+        # from the corpus mean profile. Because every successful channel now
+        # has a profile, this covers all texts (not only those with stats).
+        style_matrix = np.vstack(
+            [style_profiles[tx] for tx in successful]
+        )
+        style_center = style_matrix.mean(axis=0, keepdims=True)
+        burrows_center_distances: List[float] = []
+        for tx in successful:
+            d = float(np.mean(np.abs(style_profiles[tx] - style_center)))
+            burrows_center_distances.append(d)
+        metrics_data['distance_from_center_burrows'] = np.array(
+            burrows_center_distances, dtype=float
+        )
+        MetricConfig.METRICS['distance_from_center_burrows'] = {
+            'name': 'Distance from Center (Burrows)',
+            'title_suffix': 'Burrows distance from corpus centroid',
+            'category': 'Centroid',
+        }
 
         burrows_distances, burrows_valid = self._burrows_dist(
             style_profiles, successful
@@ -3838,6 +3928,13 @@ def _arg_parser() -> argparse.ArgumentParser:
                         help='Minimum distance between points in UMAP space (default: 0.1; use 0 for tighter groups)')
     parser.add_argument('--umap-epochs', type=int, default=200,
                         help='Number of UMAP optimization epochs (default: 200)')
+    parser.add_argument('--burrows-umap-neighbors', type=int, dest='burrows_umap_neighbors',
+                        help='UMAP neighborhood size for the Burrows experimental map '
+                             '(defaults to --umap-neighbors if unset).')
+    parser.add_argument('--burrows-umap-min-dist', type=float, dest='burrows_umap_min_dist',
+                        help='UMAP min_dist for the Burrows map (defaults to --umap-min-dist).')
+    parser.add_argument('--burrows-umap-epochs', type=int, dest='burrows_umap_epochs',
+                        help='UMAP n_epochs for the Burrows map (defaults to --umap-epochs).')
     parser.add_argument('--cluster-variants', type=int, default=None,
                         help='Number of clustering variants to generate (minimum: 1). Defaults to 11 '
                              'for datasets up to 2,000 items and 1 for larger datasets.')
@@ -3847,8 +3944,8 @@ def _arg_parser() -> argparse.ArgumentParser:
                         help='Minimum Leiden resolution parameter (default: 1.15)')
     parser.add_argument('--leiden-resolution-max', type=float, default=3.0,
                         help='Maximum Leiden resolution parameter (default: 3.0)')
-    parser.add_argument('--leiden-k-neighbors', type=int, default=20,
-                        help='Number of nearest neighbors for the Leiden k-NN graph (default: 20)')
+    parser.add_argument('--leiden-k-neighbors', type=int, default=25,
+                        help='Number of nearest neighbors for the Leiden k-NN graph (default: 25)')
     parser.add_argument('--no-leiden-whiten', action='store_true', dest='no_leiden_whiten',
                         help='Disable PCA whitening before k-NN graph construction')
     parser.add_argument('--embedding-model', default=SBERT_MODEL,
@@ -3874,6 +3971,8 @@ def _arg_parser() -> argparse.ArgumentParser:
                         help='Number of words to use for word centroid computation (default: 1,000,000)')
     parser.add_argument('--stat-word-count', type=int, default=None,
                         help='Number of words to use for statistical metrics when using video centroids')
+    parser.add_argument('--force-cache-same-stat', action='store_true', dest='force_cache_same_stat',
+                        help='Force cache usage when stat_word_count is unchanged, even if centroid_videos differs')
     parser.add_argument('--focus-text', type=str, dest='focus_text',
                         help='Focus text for similarity mapping')
     parser.add_argument('--tomotopy-topics', type=int, default=0,
@@ -3983,6 +4082,12 @@ def main():
         parser.error('--umap-min-dist must be between 0 and 1')
     if args.umap_epochs < 1:
         parser.error('--umap-epochs must be positive')
+    if args.burrows_umap_neighbors is not None and args.burrows_umap_neighbors < 2:
+        parser.error('--burrows-umap-neighbors must be at least 2')
+    if args.burrows_umap_min_dist is not None and not 0.0 <= args.burrows_umap_min_dist <= 1.0:
+        parser.error('--burrows-umap-min-dist must be between 0 and 1')
+    if args.burrows_umap_epochs is not None and args.burrows_umap_epochs < 1:
+        parser.error('--burrows-umap-epochs must be positive')
     if args.tomotopy_topics < 0:
         parser.error('--tomotopy-topics must be zero or greater')
 
@@ -4112,10 +4217,14 @@ def main():
         umap_neighbors=args.umap_neighbors,
         umap_min_dist=args.umap_min_dist,
         umap_epochs=args.umap_epochs,
+        burrows_umap_neighbors=args.burrows_umap_neighbors,
+        burrows_umap_min_dist=args.burrows_umap_min_dist,
+        burrows_umap_epochs=args.burrows_umap_epochs,
         tomotopy_num_topics=args.tomotopy_topics,
         tomotopy_iterations=args.tomotopy_iterations,
         tomotopy_threads=args.tomotopy_threads,
         change_fword_to_stupid=args.change_fword_to_stupid,
+        force_cache_same_stat=args.force_cache_same_stat,
     )
 
     # Defensive: make sure the requested clustering method actually reached the

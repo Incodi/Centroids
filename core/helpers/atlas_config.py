@@ -526,7 +526,7 @@ class MetricConfig:
         'avg_word_length': {'name': 'Average Word Length', 'title_suffix': 'Average Word Length (characters)', 'compute_method': '_compute_avg_word_length', 'category': 'Lexical Diversity'},
         'word_burstiness': {'name': 'Word Burstiness', 'title_suffix': 'Word Burstiness (Gini Coefficient)', 'compute_method': '_compute_word_burstiness', 'category': 'Lexical Diversity'},
         'semantic_disparity': {'name': 'Semantic Disparity', 'title_suffix': 'Semantic Disparity (Word Meaning Spread)', 'compute_method': '_compute_semantic_disparity', 'requires_spacy_model': True, 'category': 'Lexical Diversity'},
-        'burrows_cosine_disagreement': {'name': 'Burrows/Cosine Disagreement', 'title_suffix': 'Burrows/Cosine Stylistic-Semantic Disagreement (Centroid)', 'compute_method': '_compute_burrows_cosine_disagreement', 'centroid_metric': True, 'centroid_only': True, 'category': 'Cross-Modal Similarity'},
+        'burrows_cosine_disagreement': {'name': 'Burrows/Semantic Disagreement', 'title_suffix': 'Stylistic-Semantic Disagreement (Centroid)', 'compute_method': '_compute_burrows_cosine_disagreement', 'centroid_metric': True, 'centroid_only': True, 'category': 'Cross-Modal Similarity'},
         'unique_bigrams': {'name': 'Unique Bigrams', 'title_suffix': 'Unique Bigram Count', 'compute_method': '_compute_unique_bigrams', 'category': 'Lexical Diversity'},
         'moving_unique_bigrams': {'name': 'Chunk Unique Bigrams', 'title_suffix': 'Avg Unique Bigrams per 5k Chunk', 'compute_method': '_compute_moving_unique_bigrams', 'category': 'Lexical Diversity'},
         'unique_trigrams': {'name': 'Unique Trigrams', 'title_suffix': 'Unique Trigram Count', 'compute_method': '_compute_unique_trigrams', 'category': 'Lexical Diversity'},
